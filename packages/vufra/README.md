@@ -31,6 +31,28 @@ const pdf = renderPdf({
 writeFileSync('report.pdf', pdf);
 ```
 
+## Multi-column tables
+
+```ts
+const catalog = renderPdf({
+  title: 'Catálogo',
+  table: {
+    columns: [
+      { header: 'Código', width: 110 },
+      { header: 'Descripción', width: 270 },
+      { header: 'Precio', width: 117 }
+    ],
+    rows: [
+      ['SKU-0001', 'Producto con descripción extensa que puede ocupar varias líneas', '$ 120.00']
+    ]
+  }
+}, font);
+```
+
+Column widths use PDF points, add up to **at most 497** on the fixed A4 layout, and have a minimum of 36 points each. The table starts on a new page; headers repeat whenever it continues onto another page. Rows are not split across page boundaries.
+
+For a complete runnable example, use `node examples/table-usage.mjs path/to/font.ttf artifacts/table-first.pdf` from the monorepo root.
+
 ## Current support
 
 - UTF-8 Spanish/Latin text with caller-supplied TTF/OTF font
@@ -38,5 +60,6 @@ writeFileSync('report.pdf', pdf);
 - A4 pages, running header/footer and row pagination from Rust
 - Error handling for invalid input (including too-tall paragraphs)
 - Returns PDF bytes, without requiring a filesystem from the Rust engine
+- Multi-column tables with explicit widths, borders, striped rows and repeated headers
 
-**Limitations:** no complex bidi, fallback, images, multi-column tables, arbitrary page size, configurable styling or splitting a single row across pages. No prebuilt platform packages yet. Only checked on a Linux x86_64 developer workspace.
+**Limitations:** no complex bidi, font fallback, images, merged cells, arbitrary page size, configurable themes or splitting a single row across pages. Each table starts on a fresh page after paragraphs/legacy rows. No prebuilt platform packages yet. Only checked on Linux x86_64.

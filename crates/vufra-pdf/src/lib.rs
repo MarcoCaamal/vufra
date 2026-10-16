@@ -14,6 +14,9 @@ use parley::{
     fontique::{Blob, Collection, CollectionOptions, SourceCache},
 };
 use std::{borrow::Cow, error::Error, fmt, sync::Arc};
+mod table;
+pub use table::{PdfColumn, PdfTable};
+use table::{draw_table_fragment, prepare_table};
 use vufra_core::TableRow;
 use vufra_layout::{PaginationError, paginate_all};
 
@@ -35,6 +38,8 @@ pub struct PdfDocument {
     pub title: String,
     pub paragraphs: Vec<String>,
     pub rows: Vec<String>,
+    /// A genuine multi-column table, rendered on its own page(s) after paragraphs/rows.
+    pub table: Option<PdfTable>,
 }
 
 /// Render settings. Defaults are chosen for an A4 document.
@@ -184,9 +189,25 @@ pub fn render_pdf(
         .iter()
         .map(|item| TableRow::new("rendered text block", item.height))
         .collect::<Vec<_>>();
-    let pages =
-        paginate_all(&layout_rows, CONTENT_HEIGHT, 0.0).map_err(RenderError::InvalidLayout)?;
-    let page_count = pages.len();
+    let pages = if layout_rows.is_empty() && document.table.is_some() {
+        Vec::new()
+    } else {
+        paginate_all(&layout_rows, CONTENT_HEIGHT, 0.0).map_err(RenderError::InvalidLayout)?
+    };
+    let prepared_table = document
+        .table
+        .as_ref()
+        .map(|table| {
+            prepare_table(
+                table,
+                &family,
+                &mut font_context,
+                &mut layout_context,
+                options,
+            )
+        })
+        .transpose()?;
+    let page_count = pages.len() + prepared_table.as_ref().map_or(0, |t| t.pages.len());
 
     let mut output = KrillaDocument::new();
     for (page_index, page_data) in pages.iter().enumerate() {
@@ -239,6 +260,41 @@ pub fn render_pdf(
         surface.finish();
         page.finish();
     }
+    if let Some(prepared_table) = prepared_table.as_ref() {
+        for (index, fragment) in prepared_table.pages.iter().enumerate() {
+            let settings = PageSettings::from_wh(PAGE_WIDTH, PAGE_HEIGHT)
+                .ok_or(RenderError::InvalidInput("invalid paper size"))?;
+            let mut page = output.start_page_with(settings);
+            let mut surface = page.surface();
+            surface.draw_text(
+                Point::from_xy(LEFT, 51.0),
+                font.clone(),
+                18.0,
+                &document.title,
+                false,
+                TextDirection::Auto,
+            );
+            surface.draw_text(
+                Point::from_xy(LEFT, 87.0),
+                font.clone(),
+                10.0,
+                "Vufra • Documento generado desde Rust",
+                false,
+                TextDirection::Auto,
+            );
+            surface.draw_text(
+                Point::from_xy(LEFT, 812.0),
+                font.clone(),
+                10.0,
+                &format!("Página {} / {}", pages.len() + index + 1, page_count),
+                false,
+                TextDirection::Auto,
+            );
+            draw_table_fragment(&mut surface, prepared_table, fragment, &font, options);
+            surface.finish();
+            page.finish();
+        }
+    }
     output
         .finish()
         .map_err(|error| RenderError::InvalidPdf(format!("{error:?}")))
@@ -255,22 +311,56 @@ fn prepare(
     if input.contains('\0') {
         return Err(RenderError::InvalidInput("text contains null byte"));
     }
+    let lines = measure_text_lines(
+        input,
+        CONTENT_WIDTH,
+        family,
+        fonts,
+        context,
+        options.text_size,
+    )?;
+    let height = lines.len() as f32 * options.line_height + if is_row { 4.0 } else { 9.0 };
+    if height > CONTENT_HEIGHT {
+        return Err(RenderError::InvalidInput(
+            "paragraph or row exceeds one printable page",
+        ));
+    }
+    Ok(PreparedEntry {
+        lines,
+        height,
+        is_row,
+    })
+}
+
+/// Text lines measured against a specific width and explicit caller-provided font.
+pub(crate) fn measure_text_lines(
+    input: &str,
+    width: f32,
+    family: &str,
+    fonts: &mut FontContext,
+    context: &mut LayoutContext<()>,
+    font_size: f32,
+) -> Result<Vec<String>, RenderError> {
+    if input.contains('\0') {
+        return Err(RenderError::InvalidInput("text contains null byte"));
+    }
     let lines = if input.trim().is_empty() {
         vec![String::new()]
     } else {
         let mut builder = context.ranged_builder(fonts, input, 1.0, false);
-        builder.push_default(StyleProperty::FontSize(options.text_size));
+        builder.push_default(StyleProperty::FontSize(font_size));
         builder.push_default(StyleProperty::FontFamily(FontFamily::Single(
             FontFamilyName::Named(Cow::Owned(family.to_string())),
         )));
         let mut layout: Layout<()> = builder.build(input);
-        layout.break_all_lines(Some(CONTENT_WIDTH));
+        layout.break_all_lines(Some(width));
         layout.align(Alignment::Start, AlignmentOptions::default());
         // Parley may hang trailing whitespace beyond the line box; don't count
         // that against visible text width.
-        if layout.lines().any(|line| {
-            line.metrics().advance - line.metrics().hanging_advance > CONTENT_WIDTH + 0.5
-        }) {
+        if layout
+            .lines()
+            .any(|line| line.metrics().advance - line.metrics().hanging_advance > width + 0.5)
+        {
             return Err(RenderError::InvalidInput(
                 "unbreakable text exceeds printable width",
             ));
@@ -284,17 +374,7 @@ fn prepare(
             })
             .collect::<Vec<_>>()
     };
-    let height = lines.len() as f32 * options.line_height + if is_row { 4.0 } else { 9.0 };
-    if height > CONTENT_HEIGHT {
-        return Err(RenderError::InvalidInput(
-            "paragraph or row exceeds one printable page",
-        ));
-    }
-    Ok(PreparedEntry {
-        lines,
-        height,
-        is_row,
-    })
+    Ok(lines)
 }
 
 #[cfg(test)]
@@ -334,6 +414,7 @@ mod tests {
             title: "Test".into(),
             rows: vec!["x".into(); 10001],
             paragraphs: vec![],
+            table: None,
         };
         assert!(matches!(
             render_pdf(&doc, &[1], RenderOptions::default()),

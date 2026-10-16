@@ -5,6 +5,20 @@
  * Returned bytes are a standard PDF. Text shaping is currently limited to
  * Latin-script test cases with no advanced bidi/fallback guarantee.
  */
+export interface PdfColumn {
+  /** Label repeated at the top of every table page. */
+  header: string;
+  /** Width in PDF points. 1 point = 1/72 inch; total widths <= 497pt on A4. */
+  width: number;
+}
+
+export interface PdfTable {
+  /** Between 1 and 12 columns. */
+  columns: PdfColumn[];
+  /** Each row contains exactly one string per column. */
+  rows: string[][];
+}
+
 export interface PdfDocument {
   /** Shown in the running header. Required, nonempty. */
   title: string;
@@ -12,10 +26,12 @@ export interface PdfDocument {
   paragraphs?: string[];
   /** A table-like list of rows; repeated headers and pagination are automatic. */
   rows?: string[];
+  /** Optional real multi-column table, placed on new pages after paragraphs and legacy rows. */
+  table?: PdfTable;
 }
 
 interface NativeBinding {
-  renderPdfNative(title: string, paragraphs: string[], rows: string[], font: Uint8Array): Uint8Array;
+  renderPdfNative(title: string, paragraphs: string[], rows: string[], font: Uint8Array, table?: PdfTable): Uint8Array;
 }
 declare const require: (path: string) => NativeBinding;
 
@@ -37,5 +53,21 @@ export function renderPdf(document: PdfDocument, font: Uint8Array): Uint8Array {
   if (!Array.isArray(rows) || !rows.every((item) => typeof item === 'string')) {
     throw new TypeError('document.rows must be an array of strings');
   }
-  return native.renderPdfNative(document.title, paragraphs, rows, font);
+  const table = document.table;
+  if (table !== undefined) {
+    if (!table || !Array.isArray(table.columns) || table.columns.length < 1 || table.columns.length > 12 ||
+        !Array.isArray(table.rows)) {
+      throw new TypeError('document.table requires columns (1-12) and rows arrays');
+    }
+    if (!table.columns.every(c => c && typeof c.header === 'string' && !!c.header.trim() &&
+        typeof c.width === 'number' && Number.isFinite(c.width) && c.width >= 36) ||
+        table.columns.reduce((sum, c) => sum + c.width, 0) > 497) {
+      throw new TypeError('document.table columns require valid headers and widths (total <= 497pt)');
+    }
+    if (!table.rows.every(row => Array.isArray(row) && row.length === table.columns.length &&
+        row.every(cell => typeof cell === 'string'))) {
+      throw new TypeError('document.table rows must contain one string per column');
+    }
+  }
+  return native.renderPdfNative(document.title, paragraphs, rows, font, table);
 }
