@@ -48,6 +48,35 @@ There is **no built-in concurrency limit, cancellation or streaming**. Jobs prod
 
 Run `node examples/async-usage.mjs /path/to/font.ttf artifacts/async-first.pdf` from repo root.
 
+## Bounded queue for Node.js and NestJS
+
+Use `PdfRenderQueue` when many concurrent requests may generate large PDFs. The queue is opt-in; bare `renderPdfAsync()` continues to work.
+
+```typescript
+import { PdfRenderQueue, PdfQueueError } from 'vufra';
+
+const queue = new PdfRenderQueue({
+  maxConcurrent: 2, maxQueued: 8,
+  maxQueuedBytes: 24 * 1024 * 1024,
+  maxJobBytes: 16 * 1024 * 1024,
+});
+
+try {
+  const result = await queue.render(document, font, { waitTimeoutMs: 5_000 });
+} catch (error) {
+  if (error instanceof PdfQueueError && error.code === 'QUEUE_FULL') {
+    // Return 503 (or 429 when your own request-rate policy is responsible).
+  }
+}
+
+console.log(queue.stats);
+queue.close();
+```
+
+Only waiting tasks can be removed by `AbortSignal` or `waitTimeoutMs`; **running native work cannot be cancelled** and consumes a slot until settled. `close()` rejects pending/new tasks and lets active tasks finish. Count/memory budgets are per queue, within one Node process. Memory budget is an estimate of waiting inputs, **not an RSS or PDF output limit**. Avoid creating one queue per request. For replicated NestJS instances, use external quotas as well.
+
+Runnable example: `node examples/queue-usage.mjs /path/to/font.ttf`. NestJS singleton integration snippets under `examples/nestjs/` are not a compiled NestJS service.
+
 ## Multi-column tables
 
 ```ts
@@ -123,4 +152,4 @@ Runnable: `node examples/styled-document.mjs /path/to/font.ttf artifacts/styled-
 - Synchronous and asynchronous PDF generation; Rust renderer requires no filesystem
 - Multi-column tables with explicit widths, borders, striped rows and repeated headers
 
-**Limitations:** no async job cancellation, streaming, concurrency quotas, complex bidi, font fallback, images, merged cells, per-span rich-text styles or custom table themes. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.
+**Limitations:** a bounded in-process queue is available, but native render cancellation, streaming, cross-process quotas, RSS/output limits, complex bidi, font fallback, images, merged cells, per-span rich-text styles and custom themes are not implemented. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.

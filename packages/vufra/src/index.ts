@@ -212,3 +212,6 @@ export async function renderPdfAsync(
 ): Promise<Uint8Array> {
   return native.renderPdfAsyncNative(...normalizePdf(document, font));
 }
+
+export { PdfRenderQueue, PdfQueueError } from './queue';
+export type { PdfAbortSignal, PdfEnqueueOptions, PdfQueueErrorCode, PdfRenderQueueOptions, PdfRenderQueueStats } from './queue';

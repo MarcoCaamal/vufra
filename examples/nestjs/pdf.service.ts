@@ -3,17 +3,33 @@
  * Copy this file into a NestJS project with @nestjs/common and local Vufra installed.
  * This example is intentionally not compiled by Vufra's SDK build.
  */
-import { Injectable } from '@nestjs/common';
+import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import { readFileSync } from 'node:fs';
-import { renderPdfAsync } from 'vufra';
+import { PdfRenderQueue } from 'vufra';
 
 @Injectable()
-export class PdfService {
-  // Reuse the source font Buffer across requests. Each native task owns its input.
+export class PdfService implements OnModuleDestroy {
+  // One singleton NestJS provider => one queue per Node.js process.
+  private readonly queue = new PdfRenderQueue({
+    maxConcurrent: 2,
+    maxQueued: 8,
+    maxQueuedBytes: 24 * 1024 * 1024,
+    maxJobBytes: 16 * 1024 * 1024,
+  });
+
+  onModuleDestroy(): void {
+    this.queue.close(); // Active jobs finish; waiting jobs reject.
+  }
+
+  get queueStats() {
+    return this.queue.stats;
+  }
+
+  // Reuse the font Buffer across requests; jobs own snapshots.
   private readonly font = readFileSync(process.env.VUFRA_FONT_PATH ?? '/path/to/NotoSans-Regular.ttf');
 
   async generateInventory(items: ReadonlyArray<{ code: string; name: string; amount: number }>): Promise<Buffer> {
-    const bytes = await renderPdfAsync({
+    const bytes = await this.queue.render({
       title: 'Reporte de inventario',
       blocks: [
         { type: 'heading', level: 1, text: 'Inventario actualizado' },
