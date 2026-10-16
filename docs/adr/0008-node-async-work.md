@@ -1,5 +1,7 @@
 # ADR-0008 — Renderizado asíncrono en Node con N-API
 
+> Histórico (Unidad 07): las limitaciones de cancelación aquí descritas fueron parcialmente superadas por [ADR-0010](0010-cancellation-observability.md), que implementa cancelación cooperativa del motor.
+
 - **Fecha:** 2026-10-16
 - **Estado:** aceptada para el prototipo (Unidad 07); API experimental.
 

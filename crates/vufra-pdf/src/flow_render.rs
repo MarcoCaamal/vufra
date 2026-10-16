@@ -1,4 +1,5 @@
 //! Rendering of ordered, styled blocks with configurable page geometry.
+use super::check_cancel;
 use super::{
     MAX_FONT_BYTES, MAX_TOTAL_TEXT_BYTES, PageGeometry, PdfBlock, RenderError, RenderOptions,
     TextStyle, draw_table_fragment, measure_text_lines, prepare_table,
@@ -13,7 +14,10 @@ use parley::{
     FontContext, FontFamily, FontFamilyName, Layout, LayoutContext, StyleProperty,
     fontique::{Blob, Collection, CollectionOptions, SourceCache},
 };
-use std::{borrow::Cow, sync::Arc};
+use std::{
+    borrow::Cow,
+    sync::{Arc, atomic::AtomicBool},
+};
 use vufra_layout::flow::{FlowBlock, FlowFragment, paginate_flow};
 
 enum PreparedBlock {
@@ -84,7 +88,9 @@ pub(super) fn render_flow(
     font_bytes: &[u8],
     options: RenderOptions,
     geometry: PageGeometry,
+    cancel: &AtomicBool,
 ) -> Result<Vec<u8>, RenderError> {
+    check_cancel(cancel)?;
     geometry.validate()?;
     validate_flow(title, blocks, font_bytes)?;
     let font = Font::new(font_bytes.to_vec().into(), 0).ok_or(RenderError::InvalidFont)?;
@@ -119,6 +125,7 @@ pub(super) fn render_flow(
     let mut prepared = Vec::with_capacity(blocks.len());
     let mut measurements = Vec::with_capacity(blocks.len());
     for block in blocks {
+        check_cancel(cancel)?;
         match block {
             PdfBlock::Paragraph(text)
             | PdfBlock::Heading { text, .. }
@@ -141,6 +148,7 @@ pub(super) fn render_flow(
                     &mut fonts,
                     &mut context,
                     style.font_size,
+                    cancel,
                 )?;
                 measurements.push(FlowBlock::Paragraph {
                     lines: lines.len(),
@@ -161,8 +169,8 @@ pub(super) fn render_flow(
                     &mut fonts,
                     &mut context,
                     options,
-                    geometry.content_width(),
-                    geometry.content_height(),
+                    (geometry.content_width(), geometry.content_height()),
+                    cancel,
                 )?;
                 measurements.push(FlowBlock::Table {
                     line_counts: layout.rows.iter().map(|r| r.line_count).collect(),
@@ -178,6 +186,7 @@ pub(super) fn render_flow(
         .map_err(RenderError::InvalidLayout)?;
     let mut output = KrillaDocument::new();
     for (index, plan) in pages.iter().enumerate() {
+        check_cancel(cancel)?;
         let settings = PageSettings::from_wh(geometry.width, geometry.height)
             .ok_or(RenderError::InvalidInput("invalid paper size"))?;
         let mut page = output.start_page_with(settings);
@@ -209,6 +218,7 @@ pub(super) fn render_flow(
         );
         let mut y = geometry.margin_top;
         for fragment in &plan.fragments {
+            check_cancel(cancel)?;
             match fragment {
                 FlowFragment::Spacer { height, .. } => y += height,
                 FlowFragment::Paragraph {
@@ -220,6 +230,7 @@ pub(super) fn render_flow(
                 } => {
                     if let PreparedBlock::Text { lines, style } = &prepared[*block] {
                         for (local, line) in lines[*start_line..*end_line].iter().enumerate() {
+                            check_cancel(cancel)?;
                             if !line.is_empty() {
                                 surface.draw_text(
                                     Point::from_xy(
@@ -248,6 +259,7 @@ pub(super) fn render_flow(
         surface.finish();
         page.finish();
     }
+    check_cancel(cancel)?;
     output
         .finish()
         .map_err(|e| RenderError::InvalidPdf(format!("{e:?}")))

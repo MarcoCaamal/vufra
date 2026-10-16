@@ -13,7 +13,23 @@ use parley::{
     StyleProperty,
     fontique::{Blob, Collection, CollectionOptions, SourceCache},
 };
-use std::{borrow::Cow, error::Error, fmt, sync::Arc};
+use std::{
+    borrow::Cow,
+    error::Error,
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
+static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
+pub(crate) fn check_cancel(cancel: &AtomicBool) -> Result<(), RenderError> {
+    if cancel.load(Ordering::Relaxed) {
+        Err(RenderError::Cancelled)
+    } else {
+        Ok(())
+    }
+}
 mod flow_render;
 mod style;
 mod table;
@@ -81,6 +97,7 @@ pub enum RenderError {
     InvalidFont,
     InvalidLayout(PaginationError),
     InvalidPdf(String),
+    Cancelled,
 }
 impl fmt::Display for RenderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -89,6 +106,7 @@ impl fmt::Display for RenderError {
             Self::InvalidFont => write!(f, "Font is missing, oversized, or unsupported"),
             Self::InvalidLayout(error) => write!(f, "Document pagination failed: {error}"),
             Self::InvalidPdf(error) => write!(f, "PDF generation failed: {error}"),
+            Self::Cancelled => write!(f, "VUFRA_CANCELLED: PDF rendering cancelled"),
         }
     }
 }
@@ -147,6 +165,17 @@ pub fn render_pdf(
     font_bytes: &[u8],
     options: RenderOptions,
 ) -> Result<Vec<u8>, RenderError> {
+    render_pdf_with_cancel(document, font_bytes, options, &NEVER_CANCELLED)
+}
+
+/// Cooperative cancellation at text, cell, and page boundaries.
+pub fn render_pdf_with_cancel(
+    document: &PdfDocument,
+    font_bytes: &[u8],
+    options: RenderOptions,
+    cancel: &AtomicBool,
+) -> Result<Vec<u8>, RenderError> {
+    check_cancel(cancel)?;
     validate(document, font_bytes, options)?;
     if document.blocks.is_none() && document.page.is_some() {
         return Err(RenderError::InvalidInput(
@@ -166,6 +195,7 @@ pub fn render_pdf(
             font_bytes,
             options,
             document.page.unwrap_or_default(),
+            cancel,
         );
     }
     let font = Font::new(font_bytes.to_vec().into(), 0).ok_or(RenderError::InvalidFont)?;
@@ -202,6 +232,7 @@ pub fn render_pdf(
     }
     let mut prepared = Vec::with_capacity(document.paragraphs.len() + document.rows.len());
     for paragraph in &document.paragraphs {
+        check_cancel(cancel)?;
         prepared.push(prepare(
             paragraph,
             false,
@@ -209,9 +240,11 @@ pub fn render_pdf(
             &mut font_context,
             &mut layout_context,
             options,
+            cancel,
         )?);
     }
     for (index, row) in document.rows.iter().enumerate() {
+        check_cancel(cancel)?;
         let text = format!("{:04}  |  {row}", index + 1);
         prepared.push(prepare(
             &text,
@@ -220,6 +253,7 @@ pub fn render_pdf(
             &mut font_context,
             &mut layout_context,
             options,
+            cancel,
         )?);
     }
     let layout_rows = prepared
@@ -241,8 +275,8 @@ pub fn render_pdf(
                 &mut font_context,
                 &mut layout_context,
                 options,
-                CONTENT_WIDTH,
-                CONTENT_HEIGHT,
+                (CONTENT_WIDTH, CONTENT_HEIGHT),
+                cancel,
             )
         })
         .transpose()?;
@@ -250,6 +284,7 @@ pub fn render_pdf(
 
     let mut output = KrillaDocument::new();
     for (page_index, page_data) in pages.iter().enumerate() {
+        check_cancel(cancel)?;
         let settings = PageSettings::from_wh(PAGE_WIDTH, PAGE_HEIGHT)
             .ok_or(RenderError::InvalidInput("invalid paper size"))?;
         let mut page = output.start_page_with(settings);
@@ -281,6 +316,7 @@ pub fn render_pdf(
         );
         let mut y = TEXT_TOP;
         for entry in &prepared[page_data.start_row..page_data.end_row] {
+            check_cancel(cancel)?;
             for line in &entry.lines {
                 if !line.is_empty() {
                     surface.draw_text(
@@ -301,6 +337,7 @@ pub fn render_pdf(
     }
     if let Some(prepared_table) = prepared_table.as_ref() {
         for (index, fragment) in prepared_table.pages.iter().enumerate() {
+            check_cancel(cancel)?;
             let settings = PageSettings::from_wh(PAGE_WIDTH, PAGE_HEIGHT)
                 .ok_or(RenderError::InvalidInput("invalid paper size"))?;
             let mut page = output.start_page_with(settings);
@@ -342,6 +379,7 @@ pub fn render_pdf(
             page.finish();
         }
     }
+    check_cancel(cancel)?;
     output
         .finish()
         .map_err(|error| RenderError::InvalidPdf(format!("{error:?}")))
@@ -354,6 +392,7 @@ fn prepare(
     fonts: &mut FontContext,
     context: &mut LayoutContext<()>,
     options: RenderOptions,
+    cancel: &AtomicBool,
 ) -> Result<PreparedEntry, RenderError> {
     if input.contains('\0') {
         return Err(RenderError::InvalidInput("text contains null byte"));
@@ -365,6 +404,7 @@ fn prepare(
         fonts,
         context,
         options.text_size,
+        cancel,
     )?;
     let height = lines.len() as f32 * options.line_height + if is_row { 4.0 } else { 9.0 };
     if height > CONTENT_HEIGHT {
@@ -387,7 +427,9 @@ pub(crate) fn measure_text_lines(
     fonts: &mut FontContext,
     context: &mut LayoutContext<()>,
     font_size: f32,
+    cancel: &AtomicBool,
 ) -> Result<Vec<String>, RenderError> {
+    check_cancel(cancel)?;
     if input.contains('\0') {
         return Err(RenderError::InvalidInput("text contains null byte"));
     }
@@ -421,12 +463,14 @@ pub(crate) fn measure_text_lines(
             })
             .collect::<Vec<_>>()
     };
+    check_cancel(cancel)?;
     Ok(lines)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicBool;
     #[test]
     fn rejects_invalid_inputs_without_panicking() {
         let f = &[1, 2, 3];
@@ -454,6 +498,21 @@ mod tests {
             ),
             Err(RenderError::InvalidInput(_))
         ));
+    }
+    #[test]
+    fn cancelled_before_render_returns_distinct_error_even_with_invalid_font() {
+        let cancelled = AtomicBool::new(true);
+        let doc = PdfDocument {
+            title: "Cancelable".into(),
+            ..Default::default()
+        };
+        let result = render_pdf_with_cancel(&doc, &[0, 1, 2], RenderOptions::default(), &cancelled);
+        assert!(matches!(result, Err(RenderError::Cancelled)));
+        assert!(
+            RenderError::Cancelled
+                .to_string()
+                .contains("VUFRA_CANCELLED")
+        );
     }
     #[test]
     fn rejects_excessive_row_counts() {

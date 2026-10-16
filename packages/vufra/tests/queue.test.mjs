@@ -57,10 +57,10 @@ test('FIFO and bounded slots: third waiting job rejected, others finish in order
   q.close();
 });
 
-test('AbortSignal and waiting deadline remove jobs without stopping active Rust render', async () => {
+test('waiting abort and waiting deadline leave unrelated active Rust render running', async () => {
   const q=new PdfRenderQueue({maxConcurrent:1,maxQueued:4});
   const controller=new AbortController();
-  const active=q.render(heavyDoc(),font,{signal:controller.signal});
+  const active=q.render(heavyDoc(),font);
   const waiting=q.render({title:'Aborted'},font,{signal:controller.signal});
   const timed=q.render({title:'Timed out'},font,{waitTimeoutMs:5});
   assert.equal(q.stats.queued,2);

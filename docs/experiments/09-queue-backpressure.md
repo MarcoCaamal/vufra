@@ -1,5 +1,7 @@
 # Unidad 08 — Backpressure y cola de renders PDF para NestJS
 
+> Este documento refleja el hito de Unidad 08. La [Unidad 09](10-cancellation-observability.md) añadió cancelación cooperativa del trabajo Rust iniciado y métricas de ejecución.
+
 **Fecha:** 2026-10-16. **Estado:** hito local experimental implementado.
 
 ## Entregado

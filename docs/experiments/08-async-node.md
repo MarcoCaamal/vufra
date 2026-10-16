@@ -1,5 +1,7 @@
 # Unidad 07 — API asíncrona para Node.js y NestJS
 
+> Histórico: la [Unidad 09](10-cancellation-observability.md) añadió cancelación cooperativa y medición nativa a la API asíncrona.
+
 **Estado:** implementación experimental ejecutable, 2026-10-16.
 
 ## Entregado

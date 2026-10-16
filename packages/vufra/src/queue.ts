@@ -1,4 +1,4 @@
-import { renderPdfAsync, type PdfDocument } from './index';
+import { renderPdfAsyncMeasured, PdfRenderCancelledError, type PdfDocument } from './index';
 
 /** Minimal AbortSignal contract, compatible with the built-in Node AbortController. */
 export interface PdfAbortSignal {
@@ -8,7 +8,19 @@ export interface PdfAbortSignal {
 }
 
 /** Limits apply to ONE queue instance in ONE Node.js process. */
+export type PdfJobOutcome = 'completed' | 'failed' | 'cancelled' | 'rejected';
+export interface PdfJobEvent {
+  readonly outcome: PdfJobOutcome;
+  readonly queueMs: number;
+  /** Native render duration on success, elapsed wall time on failed jobs. */
+  readonly renderMs?: number;
+  readonly outputBytes?: number;
+  readonly estimatedInputBytes: number;
+  readonly errorCode?: string;
+}
 export interface PdfRenderQueueOptions {
+  /** Optional event callback; throwing from this callback never breaks the queue. */
+  onJobEvent?: (event: PdfJobEvent) => void;
   /** Maximum number of native jobs started concurrently. Default: 2. */
   maxConcurrent?: number;
   /** Maximum number of jobs waiting to start. Default: 16 (0 disables waiting). */
@@ -44,6 +56,10 @@ export interface PdfRenderQueueStats {
   readonly completed: number;
   readonly failed: number;
   readonly rejected: number;
+  readonly cancelled: number;
+  readonly totalQueueMs: number;
+  readonly totalRenderMs: number;
+  readonly lastRenderMs: number | null;
   readonly closed: boolean;
 }
 
@@ -51,6 +67,7 @@ interface WaitingJob {
   document: PdfDocument;
   font: Uint8Array;
   estimatedBytes: number;
+  admittedAt: number;
   resolve: (result: Uint8Array) => void;
   reject: (error: unknown) => void;
   signal?: PdfAbortSignal;
@@ -77,7 +94,8 @@ function validLimit(value: number, name: string, allowZero = false): number {
  *
  * Only jobs admitted to the active slots reach the native libuv pool.
  * Waiting jobs are snapshots of inputs and constrained by count/estimated size.
- * No distributed coordination, cooperative native cancellation, or streaming.
+ * Cooperative native cancellation is supported via AbortSignal; no streaming
+ * or distributed coordination is provided.
  */
 export class PdfRenderQueue {
   private readonly maxConcurrent: number;
@@ -90,9 +108,15 @@ export class PdfRenderQueue {
   private completed = 0;
   private failed = 0;
   private rejected = 0;
+  private cancelled = 0;
+  private totalQueueMs = 0;
+  private totalRenderMs = 0;
+  private lastRenderMs: number | null = null;
+  private readonly onJobEvent?: (event: PdfJobEvent) => void;
   private closed = false;
 
   constructor(options: PdfRenderQueueOptions = {}) {
+    this.onJobEvent = options.onJobEvent;
     this.maxConcurrent = validLimit(options.maxConcurrent ?? 2, 'maxConcurrent');
     this.maxQueued = validLimit(options.maxQueued ?? 16, 'maxQueued', true);
     this.maxQueuedBytes = validLimit(options.maxQueuedBytes ?? 64 * MIB, 'maxQueuedBytes');
@@ -103,19 +127,28 @@ export class PdfRenderQueue {
     return {
       active: this.active, queued: this.waiting.length,
       queuedBytes: this.queuedBytes, completed: this.completed,
-      failed: this.failed, rejected: this.rejected, closed: this.closed,
+      failed: this.failed, rejected: this.rejected, cancelled: this.cancelled,
+      totalQueueMs: this.totalQueueMs, totalRenderMs: this.totalRenderMs,
+      lastRenderMs: this.lastRenderMs, closed: this.closed,
     };
   }
 
   /**
-   * Snapshots document and font at submission. Once started, abort/timeout
-   * cannot stop the native operation; its Promise settles with the actual result.
+   * Snapshots document and font at submission. AbortSignal cancels native work
+   * cooperatively even after starting; waitTimeoutMs applies to waiting only.
    */
   render(
     document: PdfDocument, font: Uint8Array, options: PdfEnqueueOptions = {},
   ): Promise<Uint8Array> {
     return new Promise<Uint8Array>((resolve, reject) => {
-      const deny = (error: unknown): void => { this.rejected++; reject(error); };
+      const deny = (error: unknown, estimatedInputBytes = 0): void => {
+        this.rejected++;
+        const errorCode = error instanceof PdfQueueError ? error.code : undefined;
+        if (errorCode === 'ABORTED') this.cancelled++;
+        this.emit({outcome: errorCode === 'ABORTED' ? 'cancelled' : 'rejected',
+          queueMs: 0, estimatedInputBytes, errorCode});
+        reject(error);
+      };
       if (this.closed) {
         deny(new PdfQueueError('CLOSED', 'Vufra PDF queue is closed'));
         return;
@@ -146,13 +179,13 @@ export class PdfRenderQueue {
         }
         const estimatedBytes = font.byteLength + serialized.length * 2;
         if (!Number.isSafeInteger(estimatedBytes) || estimatedBytes > this.maxJobBytes) {
-          deny(new PdfQueueError('JOB_TOO_LARGE', 'PDF input exceeds maxJobBytes'));
+          deny(new PdfQueueError('JOB_TOO_LARGE', 'PDF input exceeds maxJobBytes'), estimatedBytes);
           return;
         }
         if (this.active >= this.maxConcurrent || this.waiting.length > 0) {
           if (this.waiting.length >= this.maxQueued ||
               estimatedBytes > this.maxQueuedBytes - this.queuedBytes) {
-            deny(new PdfQueueError('QUEUE_FULL', 'Vufra PDF queue capacity exceeded'));
+            deny(new PdfQueueError('QUEUE_FULL', 'Vufra PDF queue capacity exceeded'), estimatedBytes);
             return;
           }
         }
@@ -161,7 +194,7 @@ export class PdfRenderQueue {
         const job: WaitingJob = {
           document: structuredClone(document),
           font: Uint8Array.from(font),
-          estimatedBytes, resolve, reject,
+          estimatedBytes, admittedAt: Date.now(), resolve, reject,
           signal: options.signal,
         };
         if (this.active < this.maxConcurrent && this.waiting.length === 0) {
@@ -219,6 +252,10 @@ export class PdfRenderQueue {
     this.queuedBytes -= job.estimatedBytes;
     this.releaseWaitingResources(job);
     this.rejected++;
+    if (error.code === 'ABORTED') this.cancelled++;
+    this.emit({outcome: error.code === 'ABORTED' ? 'cancelled' : 'rejected',
+      queueMs: Date.now() - job.admittedAt, estimatedInputBytes: job.estimatedBytes,
+      errorCode: error.code});
     job.reject(error);
   }
 
@@ -232,20 +269,38 @@ export class PdfRenderQueue {
     }
   }
 
+  private emit(event: PdfJobEvent): void {
+    // Monitoring must not be able to break the queue or leak an active slot.
+    try { this.onJobEvent?.(event); } catch { /* ignored intentionally */ }
+  }
+
   private start(job: WaitingJob): void {
     this.active++;
-    // renderPdfAsync validates and starts the libuv work. A rejected job still
-    // releases the slot so FIFO jobs never hang behind a failed render.
-    renderPdfAsync(job.document, job.font).then(
-      pdf => {
+    const queueMs = Date.now() - job.admittedAt;
+    this.totalQueueMs += queueMs;
+    const wallStartedAt = Date.now();
+    renderPdfAsyncMeasured(job.document, job.font, {signal:job.signal}).then(
+      result => {
         this.active--;
         this.completed++;
-        job.resolve(pdf);
+        this.totalRenderMs += result.renderMs;
+        this.lastRenderMs = result.renderMs;
+        this.emit({outcome:'completed', queueMs, renderMs: result.renderMs,
+          estimatedInputBytes:job.estimatedBytes, outputBytes:result.pdf.byteLength});
+        job.resolve(result.pdf);
         this.drain();
       },
       error => {
         this.active--;
-        this.failed++;
+        const isCancel = error instanceof PdfRenderCancelledError;
+        if (isCancel) this.cancelled++;
+        else this.failed++;
+        const renderMs = Math.max(0, Date.now() - wallStartedAt);
+        this.totalRenderMs += renderMs;
+        this.lastRenderMs = renderMs;
+        this.emit({outcome:isCancel?'cancelled':'failed',queueMs,renderMs,
+          estimatedInputBytes:job.estimatedBytes,
+          errorCode:isCancel?'ABORTED':undefined});
         job.reject(error);
         this.drain();
       },

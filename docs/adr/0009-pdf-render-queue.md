@@ -1,5 +1,7 @@
 # ADR-0009 — Control local de concurrencia para renders PDF
 
+> Histórico (Unidad 08): la política de AbortSignal **solo en espera** fue ampliada en [ADR-0010](0010-cancellation-observability.md). El timeout de espera continúa sin ser un timeout total del render.
+
 - **Fecha:** 2026-10-16
 - **Estado:** aceptada para prototipo experimental (Unidad 08).
 - **Licencia:** MIT OR Apache-2.0.

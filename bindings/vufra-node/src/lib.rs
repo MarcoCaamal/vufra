@@ -4,6 +4,13 @@ use napi::{
     bindgen_prelude::{AsyncTask, Buffer},
 };
 use napi_derive::napi;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Instant,
+};
 use vufra_pdf::{
     PageGeometry, PdfBlock, PdfColumn, PdfDocument, PdfTable, RenderOptions, TextStyle,
 };
@@ -164,26 +171,73 @@ pub fn render_pdf_native(
         .map_err(|error| napi::Error::from_reason(error.to_string()))
 }
 
+/// Cancellation flag remains accessible from the Node event loop while the worker runs.
+#[napi]
+pub struct PdfCancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
+impl Default for PdfCancellationToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+#[napi]
+impl PdfCancellationToken {
+    #[napi(constructor)]
+    pub fn new() -> Self {
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+        }
+    }
+    #[napi]
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Relaxed);
+    }
+    #[napi(getter)]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Relaxed)
+    }
+}
+
+#[napi(object)]
+pub struct NativePdfResult {
+    pub pdf: Buffer,
+    pub render_ms: f64,
+}
+
 /// Owned input, moved off the JS thread before CPU-heavy layout and rendering.
 pub struct PdfRenderTask {
     doc: PdfDocument,
     font_data: Vec<u8>,
+    cancelled: Arc<AtomicBool>,
 }
 impl Task for PdfRenderTask {
-    type Output = Vec<u8>;
-    type JsValue = Buffer;
+    type Output = (Vec<u8>, f64);
+    type JsValue = NativePdfResult;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        vufra_pdf::render_pdf(&self.doc, &self.font_data, RenderOptions::default())
-            .map_err(|error| napi::Error::from_reason(error.to_string()))
+        let started = Instant::now();
+        let bytes = vufra_pdf::render_pdf_with_cancel(
+            &self.doc,
+            &self.font_data,
+            RenderOptions::default(),
+            &self.cancelled,
+        )
+        .map_err(|error| napi::Error::from_reason(error.to_string()))?;
+        Ok((bytes, started.elapsed().as_secs_f64() * 1000.0))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        Ok(Buffer::from(output))
+        Ok(NativePdfResult {
+            pdf: Buffer::from(output.0),
+            render_ms: output.1,
+        })
     }
 }
 
 /// Queued using N-API/libuv async work. No Tokio runtime or JS event-loop CPU rendering.
+// Preserve the positional binding ABI: the eighth argument is the cancellation token.
+#[allow(clippy::too_many_arguments)]
 #[napi]
 pub fn render_pdf_async_native(
     title: String,
@@ -193,10 +247,12 @@ pub fn render_pdf_async_native(
     table: Option<NodeTable>,
     blocks: Option<Vec<NodeBlock>>,
     page: Option<NodePage>,
+    token: Option<&PdfCancellationToken>,
 ) -> napi::Result<AsyncTask<PdfRenderTask>> {
     let doc = parse_document(title, paragraphs, rows, table, blocks, page)?;
     Ok(AsyncTask::new(PdfRenderTask {
         doc,
         font_data: font_data.to_vec(),
+        cancelled: token.map_or_else(|| Arc::new(AtomicBool::new(false)), |t| t.cancelled.clone()),
     }))
 }

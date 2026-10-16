@@ -44,7 +44,7 @@ const pdf = await renderPdfAsync({
 
 The async method runs CPU-heavy rendering on a native libuv worker via napi-rs `AsyncTask`, keeping the event loop responsive. `renderPdf` remains synchronous, sharing the same validation and PDF engine. Both methods use the same document schema and embedded caller-supplied font.
 
-There is **no built-in concurrency limit, cancellation or streaming**. Jobs produce full PDFs in memory. For NestJS, use `await renderPdfAsync`, expose the response as `StreamableFile`, and apply app-level job limits. Copyable NestJS reference snippets: `examples/nestjs/pdf.service.ts` and `examples/nestjs/pdf.controller.ts`. These are not compiled/tested as a standalone NestJS application in this repository.
+Native cooperative cancellation is available using `AbortSignal` (Unit 09). There is **no built-in concurrency limit or streaming** in the direct API. Jobs produce full PDFs in memory. For NestJS, use `await renderPdfAsync`, expose the response as `StreamableFile`, and apply app-level job limits. Copyable NestJS reference snippets: `examples/nestjs/pdf.service.ts` and `examples/nestjs/pdf.controller.ts`. These are not compiled/tested as a standalone NestJS application in this repository.
 
 Run `node examples/async-usage.mjs /path/to/font.ttf artifacts/async-first.pdf` from repo root.
 
@@ -73,9 +73,29 @@ console.log(queue.stats);
 queue.close();
 ```
 
-Only waiting tasks can be removed by `AbortSignal` or `waitTimeoutMs`; **running native work cannot be cancelled** and consumes a slot until settled. `close()` rejects pending/new tasks and lets active tasks finish. Count/memory budgets are per queue, within one Node process. Memory budget is an estimate of waiting inputs, **not an RSS or PDF output limit**. Avoid creating one queue per request. For replicated NestJS instances, use external quotas as well.
+`AbortSignal` now cancels queued jobs and can **cooperatively stop active Rust renders** at the next checkpoint. `waitTimeoutMs` still applies only before a job starts. Native work is never force-killed; it consumes a slot until it exits. `close()` rejects pending/new tasks and lets active tasks finish. Count/memory budgets are per queue, within one Node process. Memory budget is an estimate of waiting inputs, **not an RSS or PDF output limit**. Avoid creating one queue per request. For replicated NestJS instances, use external quotas as well.
 
 Runnable example: `node examples/queue-usage.mjs /path/to/font.ttf`. NestJS singleton integration snippets under `examples/nestjs/` are not a compiled NestJS service.
+
+## Native cooperative cancellation and timing
+
+```typescript
+import { renderPdfAsync, renderPdfAsyncMeasured, PdfRenderQueue } from 'vufra';
+
+const abort = new AbortController();
+const pdf = await renderPdfAsync(document, font, {signal:abort.signal});
+const result = await renderPdfAsyncMeasured(document, font);
+console.log(result.renderMs); // Native Rust worker render duration in milliseconds
+
+const queue = new PdfRenderQueue({
+  maxConcurrent: 2,
+  onJobEvent: event => console.log(event.outcome, event.queueMs, event.renderMs),
+});
+```
+
+`AbortSignal` sets an atomic flag shared with Rust. A cancelled native worker rejects with `PdfRenderCancelledError` / `code='ABORTED'`, then releases its queue slot. Cancellation is cooperative and may be delayed during a third-party shaping/PDF operation; successful renders that complete before the signal takes effect still return PDF bytes. The scheduler collects local counters (`completed`, `failed`, `cancelled`, `rejected`), queue delay, measured Rust time on success, approximate wall time on failure, and output bytes. The callback is best-effort and exceptions within it do not interrupt rendering. Neither RSS nor CPU percentage is measured.
+
+Runnable: `node examples/cancellation-observe.mjs /path/to/font.ttf`.
 
 ## Multi-column tables
 
@@ -152,4 +172,4 @@ Runnable: `node examples/styled-document.mjs /path/to/font.ttf artifacts/styled-
 - Synchronous and asynchronous PDF generation; Rust renderer requires no filesystem
 - Multi-column tables with explicit widths, borders, striped rows and repeated headers
 
-**Limitations:** a bounded in-process queue is available, but native render cancellation, streaming, cross-process quotas, RSS/output limits, complex bidi, font fallback, images, merged cells, per-span rich-text styles and custom themes are not implemented. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.
+**Limitations:** a bounded in-process queue and cooperative native cancellation are available, but streaming, cross-process quotas, RSS/output limits, complex bidi, font fallback, images, merged cells, per-span rich-text styles and custom themes are not implemented. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.

@@ -1,5 +1,6 @@
 //! Multi-column table layout, pagination and rendering for the experimental SDK.
 //! Columns have explicit widths in PDF points. Oversized rows may span pages.
+use super::check_cancel;
 use super::{RenderError, RenderOptions, measure_text_lines};
 use krilla::{
     color::rgb,
@@ -9,6 +10,7 @@ use krilla::{
     text::{Font, TextDirection},
 };
 use parley::{FontContext, LayoutContext};
+use std::sync::atomic::AtomicBool;
 use vufra_layout::split::{SplitPage, paginate_split_all};
 
 const PADDING_X: f32 = 7.0;
@@ -50,9 +52,11 @@ pub(crate) fn prepare_table(
     fonts: &mut FontContext,
     context: &mut LayoutContext<()>,
     options: RenderOptions,
-    content_width: f32,
-    content_height: f32,
+    content_size: (f32, f32),
+    cancel: &AtomicBool,
 ) -> Result<PreparedTable, RenderError> {
+    check_cancel(cancel)?;
+    let (content_width, content_height) = content_size;
     if table.columns.is_empty() || table.columns.len() > MAX_COLUMNS {
         return Err(RenderError::InvalidInput("table requires 1 to 12 columns"));
     }
@@ -61,6 +65,7 @@ pub(crate) fn prepare_table(
     }
     let mut width_total = 0.0_f32;
     for column in &table.columns {
+        check_cancel(cancel)?;
         if !column.width.is_finite() || column.width < MIN_WIDTH || column.header.trim().is_empty()
         {
             return Err(RenderError::InvalidInput(
@@ -76,6 +81,7 @@ pub(crate) fn prepare_table(
     }
     let mut headers = Vec::with_capacity(table.columns.len());
     for column in &table.columns {
+        check_cancel(cancel)?;
         headers.push(measure_text_lines(
             &column.header,
             column.width - 2.0 * PADDING_X,
@@ -83,6 +89,7 @@ pub(crate) fn prepare_table(
             fonts,
             context,
             options.text_size,
+            cancel,
         )?);
     }
     let header_height = row_height(&headers, options.line_height).max(28.0);
@@ -94,6 +101,7 @@ pub(crate) fn prepare_table(
     let mut rows = Vec::with_capacity(table.rows.len());
     let mut total_bytes = 0_usize;
     for values in &table.rows {
+        check_cancel(cancel)?;
         if values.len() != table.columns.len() {
             return Err(RenderError::InvalidInput(
                 "table row cell count differs from columns",
@@ -114,6 +122,7 @@ pub(crate) fn prepare_table(
                 fonts,
                 context,
                 options.text_size,
+                cancel,
             )?);
         }
         let line_count = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);

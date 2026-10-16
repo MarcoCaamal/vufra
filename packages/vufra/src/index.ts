@@ -64,15 +64,41 @@ interface NativePage {
   width: number; height: number; marginTop: number;
   marginBottom: number; marginLeft: number; marginRight: number;
 }
+export interface PdfCancelSignal {
+  readonly aborted: boolean;
+  addEventListener(type: 'abort', callback: () => void, options?: {once?:boolean}): void;
+  removeEventListener(type: 'abort', callback: () => void): void;
+}
+export interface PdfAsyncOptions {
+  /** Cancels a running native job cooperatively at Rust checkpoints. */
+  signal?: PdfCancelSignal;
+}
+export interface PdfRenderMeasurement {
+  pdf: Uint8Array;
+  /** CPU render wall-time measured inside the libuv native worker, milliseconds. */
+  renderMs: number;
+}
+export class PdfRenderCancelledError extends Error {
+  readonly code = 'ABORTED' as const;
+  constructor() {
+    super('Vufra PDF rendering cancelled');
+    this.name = 'PdfRenderCancelledError';
+  }
+}
+interface NativeToken {
+  cancel(): void;
+  readonly isCancelled: boolean;
+}
 interface NativeBinding {
+  PdfCancellationToken: new () => NativeToken;
   renderPdfNative(
     title: string, paragraphs: string[], rows: string[], font: Uint8Array,
     table?: PdfTable, blocks?: NativeBlock[], page?: NativePage
   ): Uint8Array;
   renderPdfAsyncNative(
     title: string, paragraphs: string[], rows: string[], font: Uint8Array,
-    table?: PdfTable, blocks?: NativeBlock[], page?: NativePage
-  ): Promise<Uint8Array>;
+    table?: PdfTable, blocks?: NativeBlock[], page?: NativePage, token?: NativeToken
+  ): Promise<{ pdf: Uint8Array; renderMs: number }>;
 }
 declare const require: (path: string) => NativeBinding;
 
@@ -200,18 +226,43 @@ export function renderPdf(document: PdfDocument, font: Uint8Array): Uint8Array {
 }
 
 /**
- * Generate a PDF on a native libuv worker, returning a Promise of PDF bytes.
- * The document and font are copied/owned by the native job before it is queued.
- * Suitable for NestJS request handlers: `await renderPdfAsync(doc, font)`.
- *
- * No cancellation or streaming in this prototype. Large concurrent jobs use
- * the libuv worker pool and consume memory; apply app-level concurrency limits.
+ * Generate a PDF on a native libuv worker. Signal aborts both waiting-to-run
+ * native tasks and in-progress rendering at cooperative Rust checkpoints.
+ * No force-killing of a thread; one third-party shaping call cannot be preempted.
  */
+export async function renderPdfAsyncMeasured(
+  document: PdfDocument, font: Uint8Array, options: PdfAsyncOptions = {},
+): Promise<PdfRenderMeasurement> {
+  const args = normalizePdf(document, font);
+  const token = new native.PdfCancellationToken();
+  const signal = options.signal;
+  if (signal?.aborted) throw new PdfRenderCancelledError();
+  const cancel = () => token.cancel();
+  signal?.addEventListener('abort', cancel, { once: true });
+  try {
+    if (signal?.aborted) token.cancel();
+    const result = await native.renderPdfAsyncNative(...args, token);
+    if (!Number.isFinite(result.renderMs) || result.renderMs < 0) {
+      throw new Error('Invalid native render time');
+    }
+    return result;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('VUFRA_CANCELLED')) {
+      throw new PdfRenderCancelledError();
+    }
+    throw error;
+  } finally {
+    signal?.removeEventListener('abort', cancel);
+  }
+}
+
+/** Same PDF as renderPdf(), with native cooperative cancellation support. */
 export async function renderPdfAsync(
-  document: PdfDocument, font: Uint8Array,
+  document: PdfDocument, font: Uint8Array, options: PdfAsyncOptions = {},
 ): Promise<Uint8Array> {
-  return native.renderPdfAsyncNative(...normalizePdf(document, font));
+  const result = await renderPdfAsyncMeasured(document, font, options);
+  return result.pdf;
 }
 
 export { PdfRenderQueue, PdfQueueError } from './queue';
-export type { PdfAbortSignal, PdfEnqueueOptions, PdfQueueErrorCode, PdfRenderQueueOptions, PdfRenderQueueStats } from './queue';
+export type { PdfAbortSignal, PdfEnqueueOptions, PdfQueueErrorCode, PdfRenderQueueOptions, PdfRenderQueueStats, PdfJobEvent, PdfJobOutcome } from './queue';

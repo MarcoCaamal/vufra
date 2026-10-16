@@ -36,7 +36,7 @@ const bytes = await renderPdfAsync({
 }, font);
 ```
 
-`renderPdfAsync` ejecuta el render PDF en una tarea nativa de libuv y devuelve una `Promise<Uint8Array>`; en Node el valor es un `Buffer`. La validación inicial y copia de inputs sigue siendo síncrona y la memoria se mantiene hasta completar cada tarea. **No hay cancelación, streaming ni límite de concurrencia incorporado:** los servidores deben limitar jobs concurrentes. La API `renderPdf` sincrónica sigue funcionando.
+`renderPdfAsync` ejecuta el render PDF en una tarea nativa de libuv y devuelve una `Promise<Uint8Array>`; en Node el valor es un `Buffer`. La validación inicial y copia de inputs sigue siendo síncrona y la memoria se mantiene hasta completar cada tarea. La **Unidad 09 añadió cancelación cooperativa** mediante `AbortSignal`, sin terminar hilos bruscamente. No hay streaming ni límite global de concurrencia incorporado en la API sin cola: los servidores deben controlar los jobs. La API `renderPdf` sincrónica sigue funcionando.
 
 Ejemplos: `examples/async-usage.mjs` y `examples/nestjs/` (los últimos son snippets de integración, no una aplicación NestJS compilada).
 
@@ -58,7 +58,29 @@ console.log(queue.stats);
 queue.close(); // Solo rechaza los trabajos pendientes
 ```
 
-Los trabajos que no caben en la cola fallan con `PdfQueueError.code` (`QUEUE_FULL`, etc.). `AbortSignal` y `waitTimeoutMs` aplican **solo al tiempo de espera**: un render ya iniciado continúa hasta terminar. Los límites son locales por cola/proceso, no globales entre instancias/pods. El presupuesto de bytes es una estimación de entradas en cola, **no un límite de RAM total**. La API anterior sigue disponible.
+Los trabajos que no caben en la cola fallan con `PdfQueueError.code` (`QUEUE_FULL`, etc.). Desde la Unidad 09, `AbortSignal` **cancela cooperativamente también renders nativos iniciados**, cuando Rust alcanza el siguiente checkpoint; `waitTimeoutMs` sigue siendo exclusivamente un límite de espera. Los límites son locales por cola/proceso, no globales entre instancias/pods. El presupuesto de bytes estima entradas en cola, **no limita la RAM total**.
+
+### Nuevo: cancelación Rust y métricas (Unidad 09)
+
+```typescript
+import { renderPdfAsyncMeasured, PdfRenderQueue } from 'vufra';
+
+const controller = new AbortController();
+const result = await renderPdfAsyncMeasured(document, font, {
+  signal: controller.signal
+});
+console.log(result.renderMs, result.pdf.byteLength);
+
+// O bien observar los trabajos que pasan por la cola:
+const queue = new PdfRenderQueue({
+  maxConcurrent: 2,
+  onJobEvent: ({ outcome, queueMs, renderMs, outputBytes }) => {
+    console.log({ outcome, queueMs, renderMs, outputBytes });
+  }
+});
+```
+
+`renderPdfAsync(document, font, {signal})` mantiene su tipo `Promise<Uint8Array>`. Si Rust observa la cancelación antes de completar, la promesa rechaza `PdfRenderCancelledError` con `code='ABORTED'`. No existe cancelación instantánea dentro de llamadas indivisibles a Parley o Krilla, ni timeout total de CPU. Los contadores y duraciones de la cola son **locales al proceso**.
 
 También puedes pasar una tabla de varias columnas:
 
@@ -147,6 +169,7 @@ node examples/flow-usage.mjs "$FONT" artifacts/flow-first.pdf
 node examples/styled-document.mjs "$FONT" artifacts/styled-document.pdf
 node examples/async-usage.mjs "$FONT" artifacts/async-first.pdf
 node examples/queue-usage.mjs "$FONT"
+node examples/cancellation-observe.mjs "$FONT"
 pdfinfo artifacts/sdk-first.pdf
 ```
 
@@ -164,7 +187,8 @@ El archivo generado es `artifacts/sdk-first.pdf`; se ignora en Git. **La fuente 
 | 05 | Compositor ordenado de tablas y párrafos fragmentables | Prototipo funcional |
 | 06 | Nodos estilizados y geometría de página configurable | Prototipo funcional |
 | 07 | SDK async no bloqueante para Node/NestJS (N-API/libuv) | Prototipo funcional |
-| 08 | Scheduler FIFO acotado, backpressure y cancelación solo en espera | Prototipo funcional |
+| 08 | Scheduler FIFO acotado, backpressure y cancelación en espera | Prototipo funcional |
+| 09 | Cancelación cooperativa Rust y telemetría de renders | Prototipo funcional |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -215,6 +239,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 06 — AST estilizado y geometría](docs/experiments/07-styled-geometry.md)
 - [Unidad 07 — Generación asíncrona Node](docs/experiments/08-async-node.md)
 - [Unidad 08 — Cola y backpressure](docs/experiments/09-queue-backpressure.md)
+- [Unidad 09 — Cancelación y observabilidad](docs/experiments/10-cancellation-observability.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
@@ -224,6 +249,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [ADR-0007 Geometría y bloques semánticos](docs/adr/0007-styled-page.md)
 - [ADR-0008 Trabajo nativo asíncrono N-API](docs/adr/0008-node-async-work.md)
 - [ADR-0009 Cola de PDF local](docs/adr/0009-pdf-render-queue.md)
+- [ADR-0010 Cancelación Rust y métricas](docs/adr/0010-cancellation-observability.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia
