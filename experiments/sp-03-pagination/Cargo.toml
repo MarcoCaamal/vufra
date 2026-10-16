@@ -1,0 +1,11 @@
+[package]
+name = "sp-03-pagination"
+version = "0.0.1"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+[dependencies]
+vufra-core.workspace = true
+vufra-layout.workspace = true
+krilla.workspace = true

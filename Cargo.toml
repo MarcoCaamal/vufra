@@ -1,0 +1,13 @@
+[workspace]
+resolver = "3"
+members = ["crates/vufra-core", "crates/vufra-layout", "experiments/sp-01-pdf-writer", "experiments/sp-01-krilla", "experiments/sp-02-parley", "experiments/sp-03-pagination"]
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.92"
+[workspace.dependencies]
+pdf-writer = "0.15.0"
+krilla = "0.8.2"
+parley = "0.12.0"
+vufra-core = { path = "crates/vufra-core" }
+vufra-layout = { path = "crates/vufra-layout" }
