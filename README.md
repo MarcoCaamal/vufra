@@ -41,7 +41,31 @@ const pdf = renderPdf({
 }, font);
 ```
 
-Los anchos están expresados en puntos PDF y no pueden sumar más de 497 puntos en el área A4 actual. La tabla comienza en páginas nuevas y el encabezado se repite por página.
+Los anchos están expresados en puntos PDF y no pueden sumar más de 497 puntos en el área A4 actual. **Esta API antigua de `table` comienza en una página nueva**; en el nuevo modo `blocks` las tablas pueden compartir página con los párrafos y se repite el encabezado cuando continúan.
+
+### Nuevo: compositor unificado (`blocks`)
+
+Los bloques se renderizan en el orden indicado, utilizando el espacio restante de la página. Los párrafos largos pueden continuar en páginas siguientes sin perder texto.
+
+```typescript
+const bytes = renderPdf({
+  title: 'Informe unificado',
+  blocks: [
+    { type: 'paragraph', text: 'Introducción al reporte.' },
+    { type: 'table', table: {
+      columns: [
+        { header: 'Código', width: 110 },
+        { header: 'Concepto', width: 270 },
+        { header: 'Monto', width: 117 }
+      ],
+      rows: [['A-001', 'Concepto registrado', '$100.00']]
+    }},
+    { type: 'paragraph', text: 'Conclusiones después de la tabla.' }
+  ]
+}, font);
+```
+
+El modo `blocks` es alternativo: **no se combina** con los campos antiguos `paragraphs`, `rows` o `table`. Estos últimos siguen funcionando con el comportamiento anterior.
 
 ### Iniciar en el workspace
 
@@ -61,6 +85,7 @@ FONT=$(fc-match 'Noto Sans' -f '%{file}\n' | head -1)
 node examples/sdk-usage.mjs "$FONT" artifacts/sdk-first.pdf
 node examples/table-usage.mjs "$FONT" artifacts/table-first.pdf
 node examples/long-row-usage.mjs "$FONT" artifacts/long-row.pdf
+node examples/flow-usage.mjs "$FONT" artifacts/flow-first.pdf
 pdfinfo artifacts/sdk-first.pdf
 ```
 
@@ -75,6 +100,7 @@ El archivo generado es `artifacts/sdk-first.pdf`; se ignora en Git. **La fuente 
 | 02 | API Rust reusable, texto medido con Parley, SDK TypeScript + N-API | Prototipo funcional |
 | 03 | Tablas multicolumna con medidas, bordes, encabezados repetidos y paginación | Prototipo funcional |
 | 04 | Continuación de una fila de tabla a través de varias páginas | Prototipo funcional |
+| 05 | Compositor ordenado de tablas y párrafos fragmentables | Prototipo funcional |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -111,7 +137,7 @@ cd packages/vufra && npm test
 
 La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 registros ordenados sin pérdida/duplicación, PDFs multipágina y errores de entrada controlados.
 
-**No soporta aún:** contenido RTL/shaping complejo, fallback de fuentes, imágenes, celdas combinadas, estilos arbitrarios o formatos de página configurables. **Las filas multicolumna sí pueden continuar entre páginas; los párrafos y las filas sencillas heredadas siguen siendo indivisibles.** Una palabra que no cabe en una columna genera un error explícito. El SDK se ha probado únicamente en Linux x86_64.
+**No soporta aún:** texto RTL/shaping complejo, fallback de fuentes, imágenes, celdas combinadas, estilos arbitrarios ni tamaños de página configurables. **En el modo `blocks`, los párrafos y las filas de tablas multicolumna continúan entre páginas; en el modo heredado, párrafos y filas simples siguen indivisibles.** Palabras inquebrantables más anchas que una columna generan error. Solo se ha probado Linux x86_64.
 
 ## Documentación
 
@@ -121,11 +147,13 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Resultados y guía Unidad 02](docs/experiments/03-sdk-milestone.md)
 - [Unidad 03 — Tablas multicolumna](docs/experiments/04-tables-milestone.md)
 - [Unidad 04 — Filas fragmentables](docs/experiments/05-row-fragmentation.md)
+- [Unidad 05 — Compositor unificado](docs/experiments/06-unified-flow.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
 - [ADR-0004 Tablas multicolumna](docs/adr/0004-table-layout.md)
 - [ADR-0005 Fragmentación por líneas](docs/adr/0005-split-row-pagination.md)
+- [ADR-0006 Flujo de contenido ordenado](docs/adr/0006-unified-flow.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

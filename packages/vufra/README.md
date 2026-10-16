@@ -53,6 +53,30 @@ Column widths use PDF points, add up to **at most 497** on the fixed A4 layout, 
 
 For a complete runnable example, use `node examples/table-usage.mjs path/to/font.ttf artifacts/table-first.pdf` from the monorepo root.
 
+## Unified ordered flow
+
+Use `blocks` to place paragraphs and tables in authored order, without adding blank pages between them. A long paragraph resumes on the next page; a table can start in the remaining space after text.
+
+```ts
+const pdf = renderPdf({
+  title: 'Unified report',
+  blocks: [
+    {type: 'paragraph', text: 'Introduction to our report'},
+    {type: 'table', table: {
+      columns: [
+        {header: 'ID', width: 110},
+        {header: 'Description', width: 270},
+        {header: 'Price', width: 117}
+      ],
+      rows: [['A-001', 'First record', '$100.00']]
+    }},
+    {type: 'paragraph', text: 'Conclusions after the table'}
+  ]
+}, font);
+```
+
+**Compatibility:** do not combine `blocks` with legacy `paragraphs`, `rows` or `table`. The legacy mode remains unchanged. Example: `node examples/flow-usage.mjs path/to/font.ttf artifacts/flow-first.pdf`.
+
 ## Current support
 
 - UTF-8 Spanish/Latin text with caller-supplied TTF/OTF font
@@ -62,4 +86,4 @@ For a complete runnable example, use `node examples/table-usage.mjs path/to/font
 - Returns PDF bytes, without requiring a filesystem from the Rust engine
 - Multi-column tables with explicit widths, borders, striped rows and repeated headers
 
-**Limitations:** no complex bidi, font fallback, images, merged cells, arbitrary page size or configurable themes. Long rows of multicolumn tables do split between pages, but paragraphs and legacy rows do not; unbreakable words wider than the cell still fail. Each table starts on a fresh page after paragraphs/legacy rows. No prebuilt platform packages yet. Only checked on Linux x86_64.
+**Limitations:** no complex bidi, font fallback, images, merged cells, arbitrary page size or configurable themes. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.

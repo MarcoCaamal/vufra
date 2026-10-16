@@ -1,6 +1,6 @@
 # Vufra — Arquitectura conceptual (objetivo de diseño)
 
-> Unidad 01 validó los escritores y BreakToken. Unidad 02 implementó una **primera versión parcial** del pipeline usando `vufra-pdf`, Parley, Krilla y el SDK Node/TypeScript. El AST jerárquico y el layout general de cajas abajo siguen **propuestos**, no están terminados. Véanse los [resultados de Unidad 02](../experiments/03-sdk-milestone.md).
+> Unidades 01–05 validaron escritores, tipografía, fragmentación y un primer planificador ordenado `vufra-layout::flow` con PDF/SDK. **No existe todavía un AST completo ni un layout general de cajas**: el compositor actual soporta bloques de párrafos y tablas. Véase la [Unidad 05](../experiments/06-unified-flow.md).
 
 ## Problema que resolvemos
 

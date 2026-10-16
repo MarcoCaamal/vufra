@@ -14,8 +14,16 @@ use parley::{
     fontique::{Blob, Collection, CollectionOptions, SourceCache},
 };
 use std::{borrow::Cow, error::Error, fmt, sync::Arc};
+mod flow_render;
 mod table;
 pub use table::{PdfColumn, PdfTable};
+
+/// An ordered document block. Tables and paragraphs may share pages.
+#[derive(Debug, Clone)]
+pub enum PdfBlock {
+    Paragraph(String),
+    Table(PdfTable),
+}
 use table::{draw_table_fragment, prepare_table};
 use vufra_core::TableRow;
 use vufra_layout::{PaginationError, paginate_all};
@@ -31,8 +39,8 @@ const MAX_ROWS: usize = 10_000;
 const MAX_PARAGRAPHS: usize = 1000;
 const MAX_TOTAL_TEXT_BYTES: usize = 4 * 1024 * 1024;
 
-/// An ordered list of paragraphs followed by independent table rows.
-/// Rows may wrap inside their own row; rows taller than one page are rejected.
+/// Document input: legacy paragraphs/rows/table OR ordered `blocks` mode.
+/// The new flow mode can split long paragraphs and multi-column table rows.
 #[derive(Debug, Clone, Default)]
 pub struct PdfDocument {
     pub title: String,
@@ -40,6 +48,8 @@ pub struct PdfDocument {
     pub rows: Vec<String>,
     /// A genuine multi-column table, rendered on its own page(s) after paragraphs/rows.
     pub table: Option<PdfTable>,
+    /// Ordered content mode. Cannot be combined with legacy paragraphs/rows/table.
+    pub blocks: Option<Vec<PdfBlock>>,
 }
 
 /// Render settings. Defaults are chosen for an A4 document.
@@ -131,6 +141,15 @@ pub fn render_pdf(
     options: RenderOptions,
 ) -> Result<Vec<u8>, RenderError> {
     validate(document, font_bytes, options)?;
+    if let Some(blocks) = &document.blocks {
+        if !document.paragraphs.is_empty() || !document.rows.is_empty() || document.table.is_some()
+        {
+            return Err(RenderError::InvalidInput(
+                "blocks cannot be combined with legacy paragraphs/rows/table",
+            ));
+        }
+        return flow_render::render_flow(&document.title, blocks, font_bytes, options);
+    }
     let font = Font::new(font_bytes.to_vec().into(), 0).ok_or(RenderError::InvalidFont)?;
     // No host/system font substitution in measurements. Only the embedded input
     // font participates in layout; unsupported scripts are a documented limitation.
@@ -290,7 +309,14 @@ pub fn render_pdf(
                 false,
                 TextDirection::Auto,
             );
-            draw_table_fragment(&mut surface, prepared_table, fragment, &font, options);
+            draw_table_fragment(
+                &mut surface,
+                prepared_table,
+                fragment,
+                &font,
+                options,
+                TEXT_TOP,
+            );
             surface.finish();
             page.finish();
         }
@@ -415,6 +441,7 @@ mod tests {
             rows: vec!["x".into(); 10001],
             paragraphs: vec![],
             table: None,
+            blocks: None,
         };
         assert!(matches!(
             render_pdf(&doc, &[1], RenderOptions::default()),

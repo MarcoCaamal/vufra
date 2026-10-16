@@ -1,8 +1,6 @@
 //! Multi-column table layout, pagination and rendering for the experimental SDK.
 //! Columns have explicit widths in PDF points. Oversized rows may span pages.
-use super::{
-    CONTENT_HEIGHT, CONTENT_WIDTH, LEFT, RenderError, RenderOptions, TEXT_TOP, measure_text_lines,
-};
+use super::{CONTENT_HEIGHT, CONTENT_WIDTH, LEFT, RenderError, RenderOptions, measure_text_lines};
 use krilla::{
     color::rgb,
     geom::{PathBuilder, Point, Rect},
@@ -178,9 +176,10 @@ pub(crate) fn draw_table_fragment(
     fragment: &SplitPage,
     font: &Font,
     options: RenderOptions,
+    top: f32,
 ) {
     let mut x = LEFT;
-    let mut y = TEXT_TOP;
+    let mut y = top;
     for (column, header_lines) in table.columns.iter().zip(&table.headers) {
         cell_box(
             surface,
