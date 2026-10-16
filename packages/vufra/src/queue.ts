@@ -171,35 +171,32 @@ export class PdfRenderQueue {
             throw new RangeError('waitTimeoutMs exceeds maximum timer delay');
           }
         }
-        // A conservative UTF-16 payload estimate plus font bytes. This is not a
-        // bound on Rust rendering allocations/output, only retained queue inputs.
-        // JSON.stringify(Buffer) expands raw bytes into huge number arrays.
-        // Exclude image payloads from JSON and account for their bytes separately.
-        const imageBlocks = document.blocks?.filter(
-          (b): b is Extract<NonNullable<PdfDocument['blocks']>[number],{type:'image'}> =>
-            b?.type === 'image'
-        ) ?? [];
-        const imagesBytes = imageBlocks.reduce((sum,block) => {
-          const image = 'image' in block ? block.image : block;
-          return sum + (image?.data instanceof Uint8Array ? image.data.byteLength : 0);
-        },0);
-        const imageMetadata = imageBlocks.length ? {...document, blocks:document.blocks?.map(b => {
-          if (b?.type !== 'image') return b;
-          const image = 'image' in b ? b.image : b;
-          return {type:'image',image:{...image,data:undefined}};
-        })} : document;
-        const faces = document.fontFaces ? Object.entries(document.fontFaces) : [];
-        const faceBytes = faces.reduce((sum,[,bytes]) =>
-          sum + (bytes instanceof Uint8Array ? bytes.byteLength : 0),0);
-        // The extra font payload is accounted by byteLength, not by JSON's
-        // expansion of each byte to decimal characters.
-        const metadata = faces.length ? {...imageMetadata,
-          fontFaces:Object.fromEntries(faces.map(([name])=>[name,null]))} : imageMetadata;
-        const serialized = JSON.stringify(metadata);
-        if (typeof serialized !== 'string') {
+        // Account for binary payloads at ANY nesting level, including images
+        // within Fluent rows and extra fonts. Do not inflate Buffers to massive
+        // decimal JSON arrays. This is an input-size estimate, not an RSS cap.
+        let binaryBytes=0;
+        const ancestors=new WeakSet<object>();
+        const withoutBytes=(value:unknown, depth=0):unknown=>{
+          if (value instanceof Uint8Array) {
+            binaryBytes += value.byteLength;
+            return {binaryByteLength:value.byteLength};
+          }
+          if (value===null || typeof value!=='object')return value;
+          if (depth>64 || ancestors.has(value)) {
+            throw new TypeError('Vufra document must be serializable without circular/deep references');
+          }
+          ancestors.add(value);
+          try {
+            if(Array.isArray(value))return value.map(v=>withoutBytes(v,depth+1));
+            return Object.fromEntries(Object.entries(value).map(
+              ([key,v])=>[key,withoutBytes(v,depth+1)]));
+          } finally {ancestors.delete(value);}
+        };
+        const serialized=JSON.stringify(withoutBytes(document));
+        if(typeof serialized!=='string'){
           throw new TypeError('Vufra document must be serializable');
         }
-        const estimatedBytes = font.byteLength + serialized.length * 2 + imagesBytes + faceBytes;
+        const estimatedBytes=font.byteLength+serialized.length*2+binaryBytes;
         if (!Number.isSafeInteger(estimatedBytes) || estimatedBytes > this.maxJobBytes) {
           deny(new PdfQueueError('JOB_TOO_LARGE', 'PDF input exceeds maxJobBytes'), estimatedBytes);
           return;

@@ -1,3 +1,6 @@
+export {vufra, createVufra, Vufra, DocumentBuilder} from './fluent';
+export type {VufraStyle,VufraTheme,VufraConfig,DocumentOptions,HeadingOptions,TableColumn,TableOptions,RowOptions,ColumnOptions,GridOptions,ImageOptions} from './fluent';
+
 /**
  * Vufra v0.1 — experimental native Rust PDF SDK for Node.js.
  *
@@ -42,6 +45,20 @@ export interface PdfImage {
   /** contain preserves entire image; cover fills the box and clips overflow. */
   fit?: 'contain' | 'cover';
 }
+export type PdfRowItem =
+  | { type: 'text'; text: string; style?: Partial<PdfTextStyle> }
+  | { type: 'image'; data: Uint8Array; width: number; height: number; fit?: 'contain' | 'cover' }
+  | { type: 'rule' | 'rectangle'; width: number; height: number; color?: string }
+  | { type: 'spacer'; height: number };
+export interface PdfRowColumn {
+  width: number;
+  align?: 'left' | 'right';
+  items: PdfRowItem[];
+}
+export interface PdfRow {
+  gap?: number;
+  columns: PdfRowColumn[];
+}
 export interface PdfRichRun {
   /** Text is drawn using a real embedded font file, not artificial bold/italic. */
   text: string;
@@ -59,13 +76,15 @@ export type PdfBlock =
   | { type: 'paragraph'; text: string }
   | { type: 'heading'; level: 1 | 2 | 3; text: string; keepWithNext?: boolean }
   | { type: 'styled-paragraph'; text: string; style: Partial<PdfTextStyle> }
-  | { type: 'rich-paragraph'; runs: PdfRichRun[]; style?: Partial<PdfTextStyle> }
+  | { type: 'rich-paragraph'; runs: PdfRichRun[]; style?: Partial<PdfTextStyle>; keepWithNext?: boolean }
   | { type: 'spacer'; height: number }
   | { type: 'list'; ordered?: boolean; items: string[] }
   | { type: 'rule' | 'rectangle'; width: number; height: number; color?: string }
   | ({ type: 'image' } & PdfImage)
   | { type: 'image'; image: PdfImage } // compatibility alias for nested inputs
-  | { type: 'table'; table: PdfTable };
+  | { type: 'table'; table: PdfTable }
+  | { type: 'row'; row: PdfRow }
+  | { type: 'page-break' };
 
 export interface PdfDocument {
   /** Shown in the running header. Required, nonempty. */
@@ -91,6 +110,11 @@ type NativeBlock = {
   keepWithNext?: boolean; items?: string[]; ordered?: boolean;
   graphic?: {kind:string;width:number;height:number;color:string};
   image?: { data: Uint8Array; width: number; height: number; fit: 'contain' | 'cover' };
+  row?: {gap:number;columns:Array<{width:number;rightAlign:boolean;items:Array<{
+    kind:string;text?:string;style?:PdfTextStyle;height?:number;
+    image?: {data:Uint8Array;width:number;height:number;fit:'contain'|'cover'};
+    graphic?: {kind:string;width:number;height:number;color:string}
+  }>}>};
 };
 interface NativePage {
   width: number; height: number; marginTop: number;
@@ -285,7 +309,7 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
             throw new TypeError('rich text fallbackFonts must list up to six known font faces');
           }
         }
-        return {kind:'rich-paragraph',runs:block.runs.map(r=>({
+        return {kind:'rich-paragraph',keepWithNext:block.keepWithNext??false,runs:block.runs.map(r=>({
           text:r.text,font:r.font ?? 'regular',
           fontSize:r.fontSize, color:r.color, fallbackFonts:r.fallbackFonts
         })),style:normalizeStyle(block.style ?? {})};
@@ -338,6 +362,66 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
         }
         return {kind:'image', image:{data:image.data, width:image.width,
           height:image.height, fit:image.fit ?? 'contain'}};
+      }
+      if (block?.type === 'page-break') return {kind:'page-break'};
+      if (block?.type === 'row') {
+        const row=block.row;
+        const printableWidth=page ? page.width-page.marginLeft-page.marginRight : 497;
+        const printableHeight=page ? page.height-page.marginTop-page.marginBottom : 650;
+        if (!row || !Array.isArray(row.columns) ||
+          row.columns.length<1 || row.columns.length>6 ||
+          !Number.isFinite(row.gap ?? 0) || (row.gap ?? 0)<0 || (row.gap ?? 0)>80) {
+          throw new TypeError('row requires 1..6 columns and gap 0..80 points');
+        }
+        let totalWidth=(row.columns.length-1)*(row.gap??0);
+        const columns=row.columns.map(col=>{
+          if (!col || !Number.isFinite(col.width) || col.width<60 ||
+              !Array.isArray(col.items) || col.items.length>50 ||
+              (col.align!==undefined && !['left','right'].includes(col.align))) {
+            throw new TypeError('row columns require width >= 60, valid align and <=50 items');
+          }
+          totalWidth+=col.width;
+          const items=col.items.map(item=>{
+            if(item?.type==='text' && typeof item.text==='string'){
+              return {kind:'text',text:item.text,style:normalizeStyle(
+                item.style ?? {spaceBefore:4,spaceAfter:3})};
+            }
+            if(item?.type==='spacer' && Number.isFinite(item.height) && item.height>0 &&
+                item.height<=printableHeight) return {kind:'spacer',height:item.height};
+            if(item?.type==='image'){
+              if(!(item.data instanceof Uint8Array) || item.data.length===0 ||
+                  item.data.length>8*1024*1024 || !Number.isFinite(item.width) ||
+                  !Number.isFinite(item.height) || item.width<=0 || item.height<=0 ||
+                  item.width>col.width || item.height>printableHeight ||
+                  !['contain','cover',undefined].includes(item.fit)) {
+                throw new TypeError('invalid row image format, data or dimensions');
+              }
+              imageCount++;imageBytes+=item.data.byteLength;
+              if(imageCount>64 || imageBytes>32*1024*1024) {
+                throw new TypeError('too many images or image bytes in document');
+              }
+              return {kind:'image',image:{data:item.data,width:item.width,
+                height:item.height,fit:item.fit??'contain'}};
+            }
+            if(item?.type==='rule' || item?.type==='rectangle'){
+              const color=item.color??'#333333';
+              if(!Number.isFinite(item.width)||!Number.isFinite(item.height)||
+                item.width<=0||item.height<=0||item.width>col.width||
+                item.height>printableHeight||(item.type==='rule'&&item.height>8)||
+                !/^#[0-9a-fA-F]{6}$/.test(color)) {
+                throw new TypeError('invalid row graphic dimensions or color');
+              }
+              return {kind:'graphic',graphic:{kind:item.type,width:item.width,
+                height:item.height,color}};
+            }
+            throw new TypeError('unsupported or invalid row column item');
+          });
+          return {width:col.width,rightAlign:col.align==='right',items};
+        });
+        if(totalWidth>printableWidth+0.02){
+          throw new TypeError('row columns exceed printable width');
+        }
+        return {kind:'row',row:{gap:row.gap??0,columns}};
       }
       if (block?.type === 'table') {
         validateTable(block.table, page ? page.width - page.marginLeft - page.marginRight : 497);

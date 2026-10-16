@@ -34,6 +34,7 @@ enum PreparedBlock {
     Spacer,
     Image(PreparedImage),
     Graphic,
+    Row(super::row::PreparedRow),
     Rich {
         lines: Vec<RichLine>,
         line_height: f32,
@@ -98,7 +99,31 @@ fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), Re
                         .ok_or(RenderError::InvalidInput("text too large"))?;
                 }
             }
-            PdfBlock::Graphic(_) => {}
+            PdfBlock::Row(row) => {
+                row.validate_structure(2000.0, 2000.0)?;
+                for col in &row.columns {
+                    for item in &col.items {
+                        match item {
+                            super::row::PdfRowItem::Text { text, .. } => {
+                                total = total
+                                    .checked_add(text.len())
+                                    .ok_or(RenderError::InvalidInput("text too large"))?;
+                            }
+                            super::row::PdfRowItem::Image(image) => {
+                                image_count += 1;
+                                image_bytes = image_bytes
+                                    .checked_add(image.data.len())
+                                    .ok_or(RenderError::InvalidInput("too much image data"))?;
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if image_count > MAX_IMAGE_BLOCKS || image_bytes > MAX_TOTAL_IMAGE_BYTES {
+                    return Err(RenderError::InvalidInput("too many images or image bytes"));
+                }
+            }
+            PdfBlock::Graphic(_) | PdfBlock::PageBreak => {}
             PdfBlock::Image(image) => {
                 image_count += 1;
                 image_bytes = image_bytes
@@ -195,7 +220,11 @@ pub(super) fn render_flow(
     for block in blocks {
         check_cancel(cancel)?;
         match block {
-            PdfBlock::RichParagraph { runs, style } => {
+            PdfBlock::PageBreak => {
+                measurements.push(FlowBlock::PageBreak);
+                prepared.push(PreparedBlock::Spacer);
+            }
+            PdfBlock::RichParagraph { runs, style, .. } => {
                 style.validate(geometry.content_height())?;
                 let lines = prepare_rich(
                     runs,
@@ -291,6 +320,26 @@ pub(super) fn render_flow(
                 });
                 prepared.push(PreparedBlock::List { lines, style });
             }
+            PdfBlock::Row(row) => {
+                let prepared_row = row.prepare(
+                    geometry.content_width(),
+                    geometry.content_height(),
+                    &family,
+                    &mut fonts,
+                    &mut context,
+                    cancel,
+                )?;
+                total_image_pixels = total_image_pixels.saturating_add(prepared_row.image_pixels);
+                if total_image_pixels > MAX_TOTAL_IMAGE_PIXELS {
+                    return Err(RenderError::InvalidInput(
+                        "total image pixel budget exceeded",
+                    ));
+                }
+                measurements.push(FlowBlock::Graphic {
+                    height: prepared_row.height,
+                });
+                prepared.push(PreparedBlock::Row(prepared_row));
+            }
             PdfBlock::Graphic(graphic) => {
                 graphic.validate(geometry.content_width(), geometry.content_height())?;
                 measurements.push(FlowBlock::Graphic {
@@ -346,6 +395,9 @@ pub(super) fn render_flow(
                 PdfBlock::Heading {
                     keep_with_next: true,
                     ..
+                } | PdfBlock::RichParagraph {
+                    keep_with_next: true,
+                    ..
                 }
             )
         })
@@ -389,8 +441,12 @@ pub(super) fn render_flow(
             check_cancel(cancel)?;
             match fragment {
                 FlowFragment::Graphic { block, height } => {
-                    if let PdfBlock::Graphic(graphic) = &blocks[*block] {
-                        graphic.draw(&mut surface, left, y)?;
+                    match (&prepared[*block], &blocks[*block]) {
+                        (PreparedBlock::Row(prepared_row), PdfBlock::Row(row)) => {
+                            prepared_row.draw(row, &mut surface, &font, left, y, cancel)?;
+                        }
+                        (_, PdfBlock::Graphic(graphic)) => graphic.draw(&mut surface, left, y)?,
+                        _ => {}
                     }
                     y += height;
                 }

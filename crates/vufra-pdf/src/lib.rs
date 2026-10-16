@@ -34,8 +34,10 @@ mod flow_render;
 mod graphic;
 mod image;
 mod rich_text;
+mod row;
 pub use graphic::{GraphicKind, PdfGraphic};
 pub use rich_text::{PdfFontFace, PdfTextRun};
+pub use row::{PdfRow, PdfRowColumn, PdfRowItem};
 mod style;
 pub use image::{ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, PdfImage};
 mod table;
@@ -65,9 +67,12 @@ pub enum PdfBlock {
         ordered: bool,
     },
     Graphic(PdfGraphic),
+    Row(PdfRow),
+    PageBreak,
     RichParagraph {
         runs: Vec<PdfTextRun>,
         style: TextStyle,
+        keep_with_next: bool,
     },
 }
 use table::{draw_table_fragment, prepare_table};

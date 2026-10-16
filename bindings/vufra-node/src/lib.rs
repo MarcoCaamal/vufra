@@ -13,8 +13,8 @@ use std::{
 };
 use vufra_pdf::{
     GraphicKind, ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, PageGeometry,
-    PdfBlock, PdfColumn, PdfDocument, PdfFontFace, PdfGraphic, PdfImage, PdfTable, PdfTextRun,
-    RenderOptions, TextStyle,
+    PdfBlock, PdfColumn, PdfDocument, PdfFontFace, PdfGraphic, PdfImage, PdfRow, PdfRowColumn,
+    PdfRowItem, PdfTable, PdfTextRun, RenderOptions, TextStyle,
 };
 
 #[napi(object)]
@@ -40,6 +40,7 @@ pub struct NodeBlock {
     pub ordered: Option<bool>,
     pub keep_with_next: Option<bool>,
     pub graphic: Option<NodeGraphic>,
+    pub row: Option<NodeRow>,
     pub level: Option<u32>,
     pub style: Option<NodeTextStyle>,
     pub height: Option<f64>,
@@ -57,6 +58,26 @@ pub struct NodeRichRun {
 pub struct NodeFontFace {
     pub name: String,
     pub data: Buffer,
+}
+#[napi(object)]
+pub struct NodeRowItem {
+    pub kind: String,
+    pub text: Option<String>,
+    pub style: Option<NodeTextStyle>,
+    pub height: Option<f64>,
+    pub image: Option<NodeImage>,
+    pub graphic: Option<NodeGraphic>,
+}
+#[napi(object)]
+pub struct NodeRowColumn {
+    pub width: f64,
+    pub right_align: bool,
+    pub items: Vec<NodeRowItem>,
+}
+#[napi(object)]
+pub struct NodeRow {
+    pub gap: f64,
+    pub columns: Vec<NodeRowColumn>,
 }
 #[napi(object)]
 pub struct NodeGraphic {
@@ -132,6 +153,52 @@ fn to_graphic(g: NodeGraphic) -> napi::Result<PdfGraphic> {
         width: g.width as f32,
         height: g.height as f32,
         rgb,
+    })
+}
+fn to_row(input: NodeRow) -> napi::Result<PdfRow> {
+    let columns = input
+        .columns
+        .into_iter()
+        .map(|column| {
+            let items = column
+                .items
+                .into_iter()
+                .map(|item| match item.kind.as_str() {
+                    "text" => Ok(PdfRowItem::Text {
+                        text: item
+                            .text
+                            .ok_or_else(|| napi::Error::from_reason("row text is required"))?,
+                        style: item
+                            .style
+                            .ok_or_else(|| napi::Error::from_reason("row text style is required"))?
+                            .into(),
+                    }),
+                    "image" => Ok(PdfRowItem::Image(to_image(
+                        item.image
+                            .ok_or_else(|| napi::Error::from_reason("row image is required"))?,
+                    )?)),
+                    "graphic" => Ok(PdfRowItem::Graphic(to_graphic(
+                        item.graphic
+                            .ok_or_else(|| napi::Error::from_reason("row graphic is required"))?,
+                    )?)),
+                    "spacer" => {
+                        Ok(PdfRowItem::Spacer(item.height.ok_or_else(|| {
+                            napi::Error::from_reason("row spacer height is required")
+                        })? as f32))
+                    }
+                    _ => Err(napi::Error::from_reason("unsupported item in row column")),
+                })
+                .collect::<napi::Result<Vec<_>>>()?;
+            Ok(PdfRowColumn {
+                width: column.width as f32,
+                right_align: column.right_align,
+                items,
+            })
+        })
+        .collect::<napi::Result<Vec<_>>>()?;
+    Ok(PdfRow {
+        gap: input.gap as f32,
+        columns,
     })
 }
 fn to_image(input: NodeImage) -> napi::Result<PdfImage> {
@@ -238,6 +305,12 @@ fn parse_document(
                                 item.image.expect("image checked"),
                             )?))
                         }
+                        "page-break" if item.row.is_none() && item.text.is_none() => {
+                            Ok(PdfBlock::PageBreak)
+                        }
+                        "row" if item.row.is_some() && item.table.is_none() => {
+                            Ok(PdfBlock::Row(to_row(item.row.expect("row checked"))?))
+                        }
                         "list"
                             if item.items.is_some()
                                 && item.table.is_none()
@@ -305,6 +378,7 @@ fn parse_document(
                                     })
                                     .collect::<napi::Result<Vec<_>>>()?,
                                 style: item.style.expect("style checked").into(),
+                                keep_with_next: item.keep_with_next.unwrap_or(false),
                             })
                         }
                         "paragraph" if item.text.is_some() && item.table.is_none() => {

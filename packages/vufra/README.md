@@ -15,20 +15,47 @@ npm run build
 npm test
 ```
 
-## Usage
+## Fluent API — recommended for new documents (Unit 14)
 
 ```ts
-import { renderPdf } from 'vufra';
-import { readFileSync, writeFileSync } from 'node:fs';
+import {createVufra} from 'vufra';
+import {readFileSync,writeFileSync} from 'node:fs';
 
-const font = readFileSync('/path/to/NotoSans-Regular.ttf');
-const pdf = renderPdf({
-  title: 'Reporte de octubre',
-  paragraphs: ['¡Hola, Cancún! PDF nativo desde Rust y TypeScript.'],
-  rows: Array.from({ length: 1000 }, (_, i) => 'Registro ' + (i + 1))
-}, font);
+const engine=createVufra({font:readFileSync('regular.ttf'),
+  fonts:{bold:readFileSync('bold.ttf')},
+  theme:{colors:{primary:'#245fa8'},h1:{color:'primary',bold:true,fontSize:24}}
+});
 
-writeFileSync('report.pdf', pdf);
+const pdf=await engine.document({title:'Invoice',page:'Letter'})
+  .row({gap:16},row=>{
+    row.column({width:'40%'},col=>{
+      col.heading('Seller').paragraph('Company S.A.');
+    });
+    row.column({width:'60%',align:'right'},col=>{
+      col.heading('Invoice').paragraph('INV-2026-001');
+    });
+  })
+  .table(items,{columns:[
+    {key:'description',title:'Description',width:'*'},
+    {key:'price',title:'Price',width:100}
+  ]})
+  .render();
+
+writeFileSync('invoice.pdf',pdf);
+```
+
+Also supported: `heading`, `paragraph`, `richText`, `image`, `list`, `divider`, `rectangle`, `spacer`, `section`, `grid`, `pageBreak`, `renderSync`, `enqueue(queue)` and `toDocument()`.
+
+**Important limits:** rows/grids are real horizontal layouts but **atomic across pages**; they cannot split vertically. Long structured data belongs in `table`, which repeats headers and paginates. Column scope text currently uses the regular font (with size/line-height options). Builder callbacks run synchronously; prepare I/O before calling them. No `box` styling, custom header/footer, `chart`, or existing-PDF `fromPdf/overlay` yet. Header/footer use the native fixed design; custom vertical margins must respect its minimums. All fonts are provided by the caller.
+
+## Low-level AST API (still supported)
+
+```ts
+import {renderPdf} from 'vufra';
+const pdf=renderPdf({title:'Report',blocks:[
+  {type:'heading',level:1,text:'Report'},
+  {type:'paragraph',text:'From the original AST API'}
+]},font);
 ```
 
 ## Async PDF generation for backend servers

@@ -4,21 +4,44 @@ Motor PDF **open source** escrito en Rust. Incluye un **SDK experimental para No
 
 > **Estado actual: prototipo funcional (2026-10-16).** El API y el empaquetado todavía no son estables ni adecuados para producción. Nada está publicado en npm o crates.io.
 
-## ¡Ya puedes generar documentos con TypeScript!
+## ¡La nueva API Fluent de Vufra! (Unidad 14)
 
 ```typescript
-import { renderPdf } from 'vufra';
+import { createVufra } from 'vufra';
 import { readFileSync, writeFileSync } from 'node:fs';
 
-const font = readFileSync('/ruta/a/NotoSans-Regular.ttf');
-const bytes = renderPdf({
-  title: 'Reporte de ventas',
-  paragraphs: ['¡Hola, Cancún! Documento generado desde Rust y Node.js.'],
-  rows: Array.from({ length: 1000 }, (_, i) => 'Registro ' + (i + 1))
-}, font);
+const vufra = createVufra({
+  font: readFileSync('regular.ttf')
+});
 
-writeFileSync('reporte.pdf', bytes);
+const pdf = await vufra
+  .document({ title: 'Reporte de ventas', page: 'A4' })
+  .heading('Reporte de ventas')
+  .paragraph('Resultados de octubre de 2026')
+  .table(ventas)
+  .render();
+
+writeFileSync('reporte.pdf', pdf);
 ```
+
+La API usa **builders encadenados y callbacks para layouts avanzados**, sin obligarte a describir el AST manualmente. No hay búsqueda de fuentes del sistema: proporciona un TTF/OTF. El método `render()` ejecuta Rust de forma asíncrona.
+
+```typescript
+const invoice = vufra.document({title:'Factura',page:'Letter'})
+  .row({gap:16},row=>{
+    row.column({width:'40%'},col=>col.paragraph('Mi empresa'));
+    row.column({width:'60%',align:'right'},col=>col.paragraph('FAC-2026-001'));
+  })
+  .table(productos,{columns:[
+    {key:'nombre',title:'Producto',width:'*'},
+    {key:'importe',title:'Importe',width:130}
+  ]})
+  .render();
+```
+
+Las filas se dibujan en **columnas reales** medidas por Parley; las tablas extensas siguen repitiendo su encabezado y paginándose en Rust. Los callbacks de composición son síncronos. Además tienes `.section()`, `.grid()`, `.richText()`, `.image()`, `.list()`, `.divider()` y `.pageBreak()`. `toDocument()` permite inspeccionar el AST; `renderSync()` y `enqueue(queue)` reutilizan el mismo motor.
+
+**Alcance actual:** las filas y grids son indivisibles al cambiar de página y devuelven error si exceden el alto imprimible; las tablas sí se fragmentan. La API todavía no ofrece `.box()` con padding/fondos, `.footer()` personalizable, `.chart()` ni `.fromPdf()` para completar PDFs existentes. El motor sigue reservando su encabezado y pie predeterminados (márgenes verticales mínimos 110/50 pt). El API de bajo nivel `renderPdf(document,font)` se mantiene compatible.
 
 La API Rust subyacente vive en `crates/vufra-pdf`: `render_pdf(&PdfDocument, &[u8], RenderOptions)`.
 
@@ -267,6 +290,10 @@ node examples/inline-typography.mjs \
   "$(fc-match 'Noto Sans:style=Italic' -f '%{file}')" \
   "$(fc-match 'Noto Serif' -f '%{file}')" \
   "$(fc-match 'Noto Sans Symbols 2' -f '%{file}')" artifacts/inline-typography.pdf
+node examples/fluent-invoice.mjs \
+  "$(fc-match 'Noto Sans' -f '%{file}')" \
+  "$(fc-match 'Noto Sans:style=Bold' -f '%{file}')" artifacts/fluent-invoice.pdf
+node examples/fluent-report.mjs "$FONT" artifacts/fluent-report.pdf
 pdfinfo artifacts/sdk-first.pdf
 ```
 
@@ -290,6 +317,7 @@ El archivo generado es `artifacts/sdk-first.pdf`; se ignora en Git. **La fuente 
 | 11 | Listas, figuras vectoriales y continuidad título/contenido | Prototipo funcional |
 | 12 | Font faces incrustadas y párrafos enriquecidos por fragmento | Prototipo funcional |
 | 13 | Color y tamaño por run, coalescencia para ligaduras y fallback opt-in | Prototipo funcional |
+| 14 | Fluent API, callbacks de layout, columnas horizontales reales y pageBreak | Prototipo funcional |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -345,6 +373,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 11 — Listas y gráficos](docs/experiments/12-lists-graphics-milestone.md)
 - [Unidad 12 — Tipografía multifuente](docs/experiments/13-typography-milestone.md)
 - [Unidad 13 — Estilos inline y fallback](docs/experiments/14-inline-style-milestone.md)
+- [Unidad 14 — Fluent API y filas](docs/experiments/15-fluent-api-milestone.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
@@ -359,6 +388,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [ADR-0012 Listas y continuidad semántica](docs/adr/0012-lists-graphics-keep-next.md)
 - [ADR-0013 Fuentes y texto enriquecido](docs/adr/0013-explicit-font-faces-and-rich-text.md)
 - [ADR-0014 Estilos inline y fallback explícito](docs/adr/0014-inline-styles-and-explicit-fallback.md)
+- [ADR-0015 Builders Fluent y filas](docs/adr/0015-fluent-builders-and-atomic-rows.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

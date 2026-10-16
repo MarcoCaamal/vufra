@@ -9,6 +9,7 @@ const EPS: f32 = 0.001;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlowBlock {
+    PageBreak,
     Graphic {
         height: f32,
     },
@@ -107,6 +108,7 @@ pub fn paginate_flow_with_keep(
             if let Some(next) = blocks.get(block + 1) {
                 let own_height = *lines as f32 * line_height + padding_before + spacing_after;
                 let next_height = match next {
+                    FlowBlock::PageBreak => page_height,
                     FlowBlock::Image { height }
                     | FlowBlock::Graphic { height }
                     | FlowBlock::Spacer { height } => *height,
@@ -139,6 +141,14 @@ pub fn paginate_flow_with_keep(
             }
         }
         match item {
+            FlowBlock::PageBreak => {
+                if pages.last().is_some_and(|p| !p.fragments.is_empty()) {
+                    pages.push(FlowPage {
+                        fragments: Vec::new(),
+                        used_height: 0.0,
+                    });
+                }
+            }
             FlowBlock::Graphic { height } => {
                 if !height.is_finite() || *height <= 0.0 || *height > page_height {
                     return Err(PaginationError::InvalidHeight);
@@ -345,6 +355,9 @@ pub fn paginate_flow_with_keep(
             }
         }
     }
+    if pages.len() > 1 && pages.last().is_some_and(|p| p.fragments.is_empty()) {
+        pages.pop();
+    }
     Ok(pages)
 }
 
@@ -547,6 +560,37 @@ mod tests {
             }
         ));
         assert!(paginate_flow(&[FlowBlock::Graphic { height: 110.0 }], 100.0).is_err());
+    }
+    #[test]
+    fn explicit_break_starts_next_page_without_trailing_blank() {
+        let pages = paginate_flow(
+            &[
+                FlowBlock::Paragraph {
+                    lines: 1,
+                    line_height: 12.0,
+                    padding_before: 5.0,
+                    spacing_after: 5.0,
+                },
+                FlowBlock::PageBreak,
+                FlowBlock::PageBreak,
+                FlowBlock::Paragraph {
+                    lines: 1,
+                    line_height: 12.0,
+                    padding_before: 5.0,
+                    spacing_after: 5.0,
+                },
+                FlowBlock::PageBreak,
+            ],
+            100.0,
+        )
+        .unwrap();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].fragments.len(), 1);
+        assert_eq!(pages[1].fragments.len(), 1);
+        assert!(matches!(
+            pages[1].fragments[0],
+            FlowFragment::Paragraph { block: 3, .. }
+        ));
     }
     #[test]
     fn spacer_moves_to_next_page_and_does_not_draw() {
