@@ -77,13 +77,33 @@ const pdf = renderPdf({
 
 **Compatibility:** do not combine `blocks` with legacy `paragraphs`, `rows` or `table`. The legacy mode remains unchanged. Example: `node examples/flow-usage.mjs path/to/font.ttf artifacts/flow-first.pdf`.
 
+## Semantic headings, styling and page geometry
+
+```ts
+const styled = renderPdf({
+  title: 'Report',
+  page: {format:'letter', margins: {top:135,bottom:72,left:56,right:56}},
+  blocks: [
+    {type:'heading',level:1,text:'Executive summary'},
+    {type:'styled-paragraph',text:'Customized text',
+     style:{fontSize:12,lineHeight:19,spaceBefore:12,spaceAfter:12}},
+    {type:'spacer',height:25},
+    {type:'heading',level:2,text:'Conclusion'}
+  ]
+}, font);
+```
+
+`page` is flow-only. Presets: `a4` (default) and `letter`. Custom `width` and `height` in points must both be present; optional margins are `top,bottom,left,right` in points. Supported headings are levels 1–3; per-paragraph style covers font size, line height and vertical spacing. A table's total column width is limited by the printable width of the selected page.
+
+Runnable: `node examples/styled-document.mjs /path/to/font.ttf artifacts/styled-document.pdf`.
+
 ## Current support
 
 - UTF-8 Spanish/Latin text with caller-supplied TTF/OTF font
 - Automatic paragraph/row line-breaking driven by Parley
-- A4 pages, running header/footer and row pagination from Rust
+- A4, Letter and custom-size pages (in ordered blocks mode), with configurable margins
 - Error handling for invalid input (including too-tall paragraphs)
 - Returns PDF bytes, without requiring a filesystem from the Rust engine
 - Multi-column tables with explicit widths, borders, striped rows and repeated headers
 
-**Limitations:** no complex bidi, font fallback, images, merged cells, arbitrary page size or configurable themes. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.
+**Limitations:** no complex bidi, font fallback, images, merged cells, per-span rich-text styles or custom table themes. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.

@@ -15,7 +15,9 @@ use parley::{
 };
 use std::{borrow::Cow, error::Error, fmt, sync::Arc};
 mod flow_render;
+mod style;
 mod table;
+pub use style::{PageGeometry, TextStyle};
 pub use table::{PdfColumn, PdfTable};
 
 /// An ordered document block. Tables and paragraphs may share pages.
@@ -23,6 +25,9 @@ pub use table::{PdfColumn, PdfTable};
 pub enum PdfBlock {
     Paragraph(String),
     Table(PdfTable),
+    Heading { text: String, level: u8 },
+    StyledParagraph { text: String, style: TextStyle },
+    Spacer { height: f32 },
 }
 use table::{draw_table_fragment, prepare_table};
 use vufra_core::TableRow;
@@ -50,6 +55,8 @@ pub struct PdfDocument {
     pub table: Option<PdfTable>,
     /// Ordered content mode. Cannot be combined with legacy paragraphs/rows/table.
     pub blocks: Option<Vec<PdfBlock>>,
+    /// Page geometry applies to the ordered `blocks` mode only.
+    pub page: Option<PageGeometry>,
 }
 
 /// Render settings. Defaults are chosen for an A4 document.
@@ -141,6 +148,11 @@ pub fn render_pdf(
     options: RenderOptions,
 ) -> Result<Vec<u8>, RenderError> {
     validate(document, font_bytes, options)?;
+    if document.blocks.is_none() && document.page.is_some() {
+        return Err(RenderError::InvalidInput(
+            "page geometry requires blocks mode",
+        ));
+    }
     if let Some(blocks) = &document.blocks {
         if !document.paragraphs.is_empty() || !document.rows.is_empty() || document.table.is_some()
         {
@@ -148,7 +160,13 @@ pub fn render_pdf(
                 "blocks cannot be combined with legacy paragraphs/rows/table",
             ));
         }
-        return flow_render::render_flow(&document.title, blocks, font_bytes, options);
+        return flow_render::render_flow(
+            &document.title,
+            blocks,
+            font_bytes,
+            options,
+            document.page.unwrap_or_default(),
+        );
     }
     let font = Font::new(font_bytes.to_vec().into(), 0).ok_or(RenderError::InvalidFont)?;
     // No host/system font substitution in measurements. Only the embedded input
@@ -223,6 +241,8 @@ pub fn render_pdf(
                 &mut font_context,
                 &mut layout_context,
                 options,
+                CONTENT_WIDTH,
+                CONTENT_HEIGHT,
             )
         })
         .transpose()?;
@@ -316,6 +336,7 @@ pub fn render_pdf(
                 &font,
                 options,
                 TEXT_TOP,
+                LEFT,
             );
             surface.finish();
             page.finish();
@@ -442,6 +463,7 @@ mod tests {
             paragraphs: vec![],
             table: None,
             blocks: None,
+            page: None,
         };
         assert!(matches!(
             render_pdf(&doc, &[1], RenderOptions::default()),

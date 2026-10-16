@@ -9,6 +9,9 @@ const EPS: f32 = 0.001;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlowBlock {
+    Spacer {
+        height: f32,
+    },
     Paragraph {
         lines: usize,
         line_height: f32,
@@ -25,6 +28,10 @@ pub enum FlowBlock {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlowFragment {
+    Spacer {
+        block: usize,
+        height: f32,
+    },
     Paragraph {
         block: usize,
         start_line: usize,
@@ -60,6 +67,24 @@ pub fn paginate_flow(
     }];
     for (block, item) in blocks.iter().enumerate() {
         match item {
+            FlowBlock::Spacer { height } => {
+                if !height.is_finite() || *height <= 0.0 || *height > page_height {
+                    return Err(PaginationError::InvalidHeight);
+                }
+                let current = pages.last_mut().expect("initial page exists");
+                if current.used_height + height > page_height + EPS {
+                    pages.push(FlowPage {
+                        fragments: Vec::new(),
+                        used_height: 0.0,
+                    });
+                }
+                let current = pages.last_mut().expect("initial page exists");
+                current.fragments.push(FlowFragment::Spacer {
+                    block,
+                    height: *height,
+                });
+                current.used_height += height;
+            }
             FlowBlock::Paragraph {
                 lines,
                 line_height,
@@ -306,6 +331,24 @@ mod tests {
         let p = paginate_flow(&[table(&[])], 90.0).unwrap();
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].fragments.len(), 1);
+    }
+    #[test]
+    fn spacer_moves_to_next_page_and_does_not_draw() {
+        let pages = paginate_flow(
+            &[para(4), FlowBlock::Spacer { height: 45.0 }, para(1)],
+            80.0,
+        )
+        .unwrap();
+        assert_eq!(pages.len(), 2);
+        assert!(matches!(
+            pages[1].fragments[0],
+            FlowFragment::Spacer {
+                block: 1,
+                height: 45.0
+            }
+        ));
+        assert!(pages.iter().all(|p| p.used_height <= 80.0));
+        assert!(paginate_flow(&[FlowBlock::Spacer { height: f32::NAN }], 80.0).is_err());
     }
     #[test]
     fn rejects_unrenderable_geometry() {

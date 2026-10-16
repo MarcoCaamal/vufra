@@ -19,9 +19,26 @@ export interface PdfTable {
   rows: string[][];
 }
 
-/** An ordered paragraph or table. Subsequent blocks reuse remaining page space. */
+/** Points are 1/72 inch. Values are explicit for predictable document layout. */
+export interface PdfTextStyle {
+  fontSize: number;
+  lineHeight: number;
+  spaceBefore: number;
+  spaceAfter: number;
+}
+export interface PdfPageOptions {
+  /** A4 default, US Letter, or custom width+height in points. */
+  format?: 'a4' | 'letter';
+  width?: number;
+  height?: number;
+  margins?: Partial<{ top: number; bottom: number; left: number; right: number }>;
+}
+/** An ordered, typed block in Vufra's evolving document AST. */
 export type PdfBlock =
   | { type: 'paragraph'; text: string }
+  | { type: 'heading'; level: 1 | 2 | 3; text: string }
+  | { type: 'styled-paragraph'; text: string; style: Partial<PdfTextStyle> }
+  | { type: 'spacer'; height: number }
   | { type: 'table'; table: PdfTable };
 
 export interface PdfDocument {
@@ -35,13 +52,22 @@ export interface PdfDocument {
   table?: PdfTable;
   /** Ordered flow mode; do not combine with legacy paragraphs, rows or table. */
   blocks?: PdfBlock[];
+  /** Flow-only page geometry: A4, Letter, custom dimensions and margins. */
+  page?: PdfPageOptions;
 }
 
-type NativeBlock = { kind: string; text?: string; table?: PdfTable };
+type NativeBlock = {
+  kind: string; text?: string; table?: PdfTable;
+  level?: number; style?: PdfTextStyle; height?: number;
+};
+interface NativePage {
+  width: number; height: number; marginTop: number;
+  marginBottom: number; marginLeft: number; marginRight: number;
+}
 interface NativeBinding {
   renderPdfNative(
     title: string, paragraphs: string[], rows: string[], font: Uint8Array,
-    table?: PdfTable, blocks?: NativeBlock[]
+    table?: PdfTable, blocks?: NativeBlock[], page?: NativePage
   ): Uint8Array;
 }
 declare const require: (path: string) => NativeBinding;
@@ -49,20 +75,61 @@ declare const require: (path: string) => NativeBinding;
 // Built locally from bindings/vufra-node; published platform binaries are a future task.
 const native: NativeBinding = require('../native/vufra.node');
 
-function validateTable(table: PdfTable): void {
+function validateTable(table: PdfTable, contentWidth = 497): void {
   if (!table || !Array.isArray(table.columns) || table.columns.length < 1 || table.columns.length > 12 ||
       !Array.isArray(table.rows)) {
     throw new TypeError('document.table requires columns (1-12) and rows arrays');
   }
   if (!table.columns.every(c => c && typeof c.header === 'string' && !!c.header.trim() &&
       typeof c.width === 'number' && Number.isFinite(c.width) && c.width >= 36) ||
-      table.columns.reduce((sum, c) => sum + c.width, 0) > 497) {
-    throw new TypeError('document.table columns require valid headers and widths (total <= 497pt)');
+      table.columns.reduce((sum, c) => sum + c.width, 0) > contentWidth + 0.01) {
+    throw new TypeError('document.table columns require valid headers and widths within page content width');
   }
   if (!table.rows.every(row => Array.isArray(row) && row.length === table.columns.length &&
       row.every(cell => typeof cell === 'string'))) {
     throw new TypeError('document.table rows must contain one string per column');
   }
+}
+
+const defaultTextStyle: PdfTextStyle = {
+  fontSize: 11, lineHeight: 16, spaceBefore: 17, spaceAfter: 9,
+};
+
+function normalizePage(page: PdfPageOptions): NativePage {
+  if (!page || (page.format !== undefined && !['a4', 'letter'].includes(page.format))) {
+    throw new TypeError('page.format must be a4 or letter');
+  }
+  const preset = page.format === 'letter' ? {width:612,height:792} : {width:595,height:842};
+  if ((page.width === undefined) !== (page.height === undefined)) {
+    throw new TypeError('custom page requires both width and height');
+  }
+  const margins = page.margins ?? {};
+  const result = {
+    width:page.width ?? preset.width, height:page.height ?? preset.height,
+    marginTop:margins.top ?? 120, marginBottom:margins.bottom ?? 72,
+    marginLeft:margins.left ?? 49, marginRight:margins.right ?? 49,
+  };
+  if (Object.values(result).some(v=>!Number.isFinite(v)) ||
+      result.width < 250 || result.height < 250 || result.width > 2000 || result.height > 2000 ||
+      result.marginTop < 110 || result.marginBottom < 50 ||
+      result.marginLeft < 20 || result.marginRight < 20 ||
+      result.width - result.marginLeft - result.marginRight < 100 ||
+      result.height - result.marginTop - result.marginBottom < 100) {
+    throw new TypeError('invalid page geometry or margins');
+  }
+  return result;
+}
+
+function normalizeStyle(style: Partial<PdfTextStyle>): PdfTextStyle {
+  if (!style || typeof style !== 'object') throw new TypeError('invalid paragraph style');
+  const resolved = { ...defaultTextStyle, ...style };
+  if (!Object.values(resolved).every(v=>typeof v === 'number' && Number.isFinite(v)) ||
+      resolved.fontSize < 6 || resolved.fontSize > 36 ||
+      resolved.lineHeight < resolved.fontSize || resolved.lineHeight > 60 ||
+      resolved.spaceBefore < 0 || resolved.spaceAfter < 0) {
+    throw new TypeError('invalid paragraph style');
+  }
+  return resolved;
 }
 
 export function renderPdf(document: PdfDocument, font: Uint8Array): Uint8Array {
@@ -82,6 +149,10 @@ export function renderPdf(document: PdfDocument, font: Uint8Array): Uint8Array {
   }
   const table = document.table;
   if (table !== undefined) validateTable(table);
+  const page = document.page === undefined ? undefined : normalizePage(document.page);
+  if (page !== undefined && document.blocks === undefined) {
+    throw new TypeError('page geometry requires blocks mode');
+  }
   let blocks: NativeBlock[] | undefined;
   if (document.blocks !== undefined) {
     if (!Array.isArray(document.blocks)) throw new TypeError('document.blocks must be an array');
@@ -92,12 +163,23 @@ export function renderPdf(document: PdfDocument, font: Uint8Array): Uint8Array {
       if (block?.type === 'paragraph' && typeof block.text === 'string') {
         return { kind: 'paragraph', text: block.text };
       }
+      if (block?.type === 'heading' && typeof block.text === 'string' &&
+          [1, 2, 3].includes(block.level)) {
+        return {kind: 'heading', text:block.text, level:block.level};
+      }
+      if (block?.type === 'styled-paragraph' && typeof block.text === 'string') {
+        return {kind: 'styled-paragraph', text:block.text, style:normalizeStyle(block.style)};
+      }
+      if (block?.type === 'spacer' && typeof block.height === 'number' &&
+          Number.isFinite(block.height) && block.height > 0) {
+        return {kind: 'spacer', height:block.height};
+      }
       if (block?.type === 'table') {
-        validateTable(block.table);
+        validateTable(block.table, page ? page.width - page.marginLeft - page.marginRight : 497);
         return { kind: 'table', table: block.table };
       }
       throw new TypeError('flow block must be a paragraph or a table');
     });
   }
-  return native.renderPdfNative(document.title, paragraphs, rows, font, table, blocks);
+  return native.renderPdfNative(document.title, paragraphs, rows, font, table, blocks, page);
 }

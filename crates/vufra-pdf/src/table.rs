@@ -1,6 +1,6 @@
 //! Multi-column table layout, pagination and rendering for the experimental SDK.
 //! Columns have explicit widths in PDF points. Oversized rows may span pages.
-use super::{CONTENT_HEIGHT, CONTENT_WIDTH, LEFT, RenderError, RenderOptions, measure_text_lines};
+use super::{RenderError, RenderOptions, measure_text_lines};
 use krilla::{
     color::rgb,
     geom::{PathBuilder, Point, Rect},
@@ -50,6 +50,8 @@ pub(crate) fn prepare_table(
     fonts: &mut FontContext,
     context: &mut LayoutContext<()>,
     options: RenderOptions,
+    content_width: f32,
+    content_height: f32,
 ) -> Result<PreparedTable, RenderError> {
     if table.columns.is_empty() || table.columns.len() > MAX_COLUMNS {
         return Err(RenderError::InvalidInput("table requires 1 to 12 columns"));
@@ -66,7 +68,7 @@ pub(crate) fn prepare_table(
             ));
         }
         width_total += column.width;
-        if !width_total.is_finite() || width_total > CONTENT_WIDTH + 0.01 {
+        if !width_total.is_finite() || width_total > content_width + 0.01 {
             return Err(RenderError::InvalidInput(
                 "table columns exceed printable width",
             ));
@@ -84,7 +86,7 @@ pub(crate) fn prepare_table(
         )?);
     }
     let header_height = row_height(&headers, options.line_height).max(28.0);
-    if header_height >= CONTENT_HEIGHT {
+    if header_height >= content_height {
         return Err(RenderError::InvalidInput(
             "table header exceeds printable page",
         ));
@@ -120,7 +122,7 @@ pub(crate) fn prepare_table(
     let line_counts = rows.iter().map(|r| r.line_count).collect::<Vec<_>>();
     let pages = paginate_split_all(
         &line_counts,
-        CONTENT_HEIGHT,
+        content_height,
         header_height,
         options.line_height,
         PADDING_Y,
@@ -177,8 +179,9 @@ pub(crate) fn draw_table_fragment(
     font: &Font,
     options: RenderOptions,
     top: f32,
+    left: f32,
 ) {
-    let mut x = LEFT;
+    let mut x = left;
     let mut y = top;
     for (column, header_lines) in table.columns.iter().zip(&table.headers) {
         cell_box(
@@ -215,7 +218,7 @@ pub(crate) fn draw_table_fragment(
         let height = (slice.end_line - slice.start_line) as f32 * options.line_height
             + top_padding
             + bottom_padding;
-        x = LEFT;
+        x = left;
         for (column, lines) in table.columns.iter().zip(&row.cells) {
             cell_box(
                 surface,

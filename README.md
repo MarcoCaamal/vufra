@@ -67,6 +67,26 @@ const bytes = renderPdf({
 
 El modo `blocks` es alternativo: **no se combina** con los campos antiguos `paragraphs`, `rows` o `table`. Estos últimos siguen funcionando con el comportamiento anterior.
 
+### Nuevo: nodos semánticos, estilos y geometría de página (Unidad 06)
+
+```typescript
+const styled = renderPdf({
+  title: 'Informe ejecutivo',
+  page: { format: 'letter', margins: { top: 135, bottom: 72, left: 56, right: 56 } },
+  blocks: [
+    { type: 'heading', level: 1, text: 'Resumen ejecutivo' },
+    { type: 'styled-paragraph', text: 'Contenido personalizado', style: {
+      fontSize: 12, lineHeight: 19, spaceBefore: 10, spaceAfter: 14
+    }},
+    { type: 'spacer', height: 24 },
+    { type: 'heading', level: 2, text: 'Conclusiones' },
+    { type: 'paragraph', text: 'Texto con el estilo predeterminado.' }
+  ]
+}, font);
+```
+
+`page` admite `a4`, `letter` o `width`/`height` expresados en puntos PDF, más márgenes opcionales. Solo se utiliza junto con `blocks`; la API heredada conserva su geometría. Los títulos `heading` ofrecen niveles del 1 al 3.
+
 ### Iniciar en el workspace
 
 Requisitos: Rust **1.92**, Node.js **20+**, npm, compilador de Rust/C disponible, fuente TTF/OTF propia y Poppler para pruebas PDF.
@@ -86,6 +106,7 @@ node examples/sdk-usage.mjs "$FONT" artifacts/sdk-first.pdf
 node examples/table-usage.mjs "$FONT" artifacts/table-first.pdf
 node examples/long-row-usage.mjs "$FONT" artifacts/long-row.pdf
 node examples/flow-usage.mjs "$FONT" artifacts/flow-first.pdf
+node examples/styled-document.mjs "$FONT" artifacts/styled-document.pdf
 pdfinfo artifacts/sdk-first.pdf
 ```
 
@@ -101,6 +122,7 @@ El archivo generado es `artifacts/sdk-first.pdf`; se ignora en Git. **La fuente 
 | 03 | Tablas multicolumna con medidas, bordes, encabezados repetidos y paginación | Prototipo funcional |
 | 04 | Continuación de una fila de tabla a través de varias páginas | Prototipo funcional |
 | 05 | Compositor ordenado de tablas y párrafos fragmentables | Prototipo funcional |
+| 06 | Nodos estilizados y geometría de página configurable | Prototipo funcional |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -137,7 +159,7 @@ cd packages/vufra && npm test
 
 La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 registros ordenados sin pérdida/duplicación, PDFs multipágina y errores de entrada controlados.
 
-**No soporta aún:** texto RTL/shaping complejo, fallback de fuentes, imágenes, celdas combinadas, estilos arbitrarios ni tamaños de página configurables. **En el modo `blocks`, los párrafos y las filas de tablas multicolumna continúan entre páginas; en el modo heredado, párrafos y filas simples siguen indivisibles.** Palabras inquebrantables más anchas que una columna generan error. Solo se ha probado Linux x86_64.
+**No soporta aún:** texto RTL/shaping complejo, fallback de fuentes, imágenes, celdas combinadas, estilos de texto enriquecido por fragmento ni páginas de tamaño diferente dentro del mismo documento. **En el modo `blocks`, los párrafos y las filas de tablas multicolumna continúan entre páginas; en el modo heredado, párrafos y filas simples siguen indivisibles.** Palabras inquebrantables más anchas que una columna generan error. Solo se ha probado Linux x86_64.
 
 ## Documentación
 
@@ -148,12 +170,14 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 03 — Tablas multicolumna](docs/experiments/04-tables-milestone.md)
 - [Unidad 04 — Filas fragmentables](docs/experiments/05-row-fragmentation.md)
 - [Unidad 05 — Compositor unificado](docs/experiments/06-unified-flow.md)
+- [Unidad 06 — AST estilizado y geometría](docs/experiments/07-styled-geometry.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
 - [ADR-0004 Tablas multicolumna](docs/adr/0004-table-layout.md)
 - [ADR-0005 Fragmentación por líneas](docs/adr/0005-split-row-pagination.md)
 - [ADR-0006 Flujo de contenido ordenado](docs/adr/0006-unified-flow.md)
+- [ADR-0007 Geometría y bloques semánticos](docs/adr/0007-styled-page.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

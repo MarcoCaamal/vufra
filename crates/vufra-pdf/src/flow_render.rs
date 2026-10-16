@@ -1,9 +1,7 @@
-//! Render ordered content blocks using the backend-independent flow planner.
-//! This is still an experimental, fixed-size A4 layout.
+//! Rendering of ordered, styled blocks with configurable page geometry.
 use super::{
-    CONTENT_HEIGHT, CONTENT_WIDTH, LEFT, MAX_FONT_BYTES, MAX_TOTAL_TEXT_BYTES, PAGE_HEIGHT,
-    PAGE_WIDTH, PdfBlock, RenderError, RenderOptions, TEXT_TOP, draw_table_fragment,
-    measure_text_lines, prepare_table,
+    MAX_FONT_BYTES, MAX_TOTAL_TEXT_BYTES, PageGeometry, PdfBlock, RenderError, RenderOptions,
+    TextStyle, draw_table_fragment, measure_text_lines, prepare_table,
 };
 use krilla::{
     Document as KrillaDocument,
@@ -19,11 +17,14 @@ use std::{borrow::Cow, sync::Arc};
 use vufra_layout::flow::{FlowBlock, FlowFragment, paginate_flow};
 
 enum PreparedBlock {
-    Paragraph(Vec<String>),
+    Text {
+        lines: Vec<String>,
+        style: TextStyle,
+    },
     Table(super::table::PreparedTable),
+    Spacer,
 }
 
-/// Preflight input before allocating a document.
 fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), RenderError> {
     if title.trim().is_empty() || title.contains('\0') {
         return Err(RenderError::InvalidInput(
@@ -37,16 +38,23 @@ fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), Re
         return Err(RenderError::InvalidInput("too many content blocks"));
     }
     let mut total = title.len();
-    let mut table_rows = 0usize;
+    let mut rows = 0usize;
     for block in blocks {
         match block {
-            PdfBlock::Paragraph(text) => {
+            PdfBlock::Paragraph(s)
+            | PdfBlock::Heading { text: s, .. }
+            | PdfBlock::StyledParagraph { text: s, .. } => {
                 total = total
-                    .checked_add(text.len())
+                    .checked_add(s.len())
                     .ok_or(RenderError::InvalidInput("text too large"))?;
             }
+            PdfBlock::Spacer { height } => {
+                if !height.is_finite() || *height <= 0.0 {
+                    return Err(RenderError::InvalidInput("invalid spacer height"));
+                }
+            }
             PdfBlock::Table(table) => {
-                table_rows = table_rows
+                rows = rows
                     .checked_add(table.rows.len())
                     .ok_or(RenderError::InvalidInput("too many rows"))?;
                 for column in &table.columns {
@@ -63,7 +71,7 @@ fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), Re
                 }
             }
         }
-        if total > MAX_TOTAL_TEXT_BYTES || table_rows > 10_000 {
+        if total > MAX_TOTAL_TEXT_BYTES || rows > 10_000 {
             return Err(RenderError::InvalidInput("too many rows or too much text"));
         }
     }
@@ -75,7 +83,9 @@ pub(super) fn render_flow(
     blocks: &[PdfBlock],
     font_bytes: &[u8],
     options: RenderOptions,
+    geometry: PageGeometry,
 ) -> Result<Vec<u8>, RenderError> {
+    geometry.validate()?;
     validate_flow(title, blocks, font_bytes)?;
     let font = Font::new(font_bytes.to_vec().into(), 0).ok_or(RenderError::InvalidFont)?;
     let mut fonts = FontContext {
@@ -95,7 +105,6 @@ pub(super) fn render_flow(
         .ok_or(RenderError::InvalidFont)?
         .to_string();
     let mut context: LayoutContext<()> = LayoutContext::new();
-
     let mut title_builder = context.ranged_builder(&mut fonts, title, 1.0, false);
     title_builder.push_default(StyleProperty::FontSize(18.0));
     title_builder.push_default(StyleProperty::FontFamily(FontFamily::Single(
@@ -103,7 +112,7 @@ pub(super) fn render_flow(
     )));
     let mut title_layout: Layout<()> = title_builder.build(title);
     title_layout.break_all_lines(None);
-    if title_layout.width() > CONTENT_WIDTH {
+    if title_layout.width() > geometry.content_width() {
         return Err(RenderError::InvalidInput("title exceeds printable width"));
     }
 
@@ -111,25 +120,50 @@ pub(super) fn render_flow(
     let mut measurements = Vec::with_capacity(blocks.len());
     for block in blocks {
         match block {
-            PdfBlock::Paragraph(text) => {
+            PdfBlock::Paragraph(text)
+            | PdfBlock::Heading { text, .. }
+            | PdfBlock::StyledParagraph { text, .. } => {
+                let style = match block {
+                    PdfBlock::Heading { level, .. } => TextStyle::heading(*level)?,
+                    PdfBlock::StyledParagraph { style, .. } => *style,
+                    _ => TextStyle {
+                        font_size: options.text_size,
+                        line_height: options.line_height,
+                        space_before: options.text_size + 6.0,
+                        space_after: 9.0,
+                    },
+                };
+                style.validate(geometry.content_height())?;
                 let lines = measure_text_lines(
                     text,
-                    CONTENT_WIDTH,
+                    geometry.content_width(),
                     &family,
                     &mut fonts,
                     &mut context,
-                    options.text_size,
+                    style.font_size,
                 )?;
                 measurements.push(FlowBlock::Paragraph {
                     lines: lines.len(),
-                    line_height: options.line_height,
-                    padding_before: options.text_size + 6.0,
-                    spacing_after: 9.0,
+                    line_height: style.line_height,
+                    padding_before: style.space_before,
+                    spacing_after: style.space_after,
                 });
-                prepared.push(PreparedBlock::Paragraph(lines));
+                prepared.push(PreparedBlock::Text { lines, style });
+            }
+            PdfBlock::Spacer { height } => {
+                measurements.push(FlowBlock::Spacer { height: *height });
+                prepared.push(PreparedBlock::Spacer);
             }
             PdfBlock::Table(table) => {
-                let layout = prepare_table(table, &family, &mut fonts, &mut context, options)?;
+                let layout = prepare_table(
+                    table,
+                    &family,
+                    &mut fonts,
+                    &mut context,
+                    options,
+                    geometry.content_width(),
+                    geometry.content_height(),
+                )?;
                 measurements.push(FlowBlock::Table {
                     line_counts: layout.rows.iter().map(|r| r.line_count).collect(),
                     header_height: layout.header_height,
@@ -140,15 +174,17 @@ pub(super) fn render_flow(
             }
         }
     }
-    let pages = paginate_flow(&measurements, CONTENT_HEIGHT).map_err(RenderError::InvalidLayout)?;
+    let pages = paginate_flow(&measurements, geometry.content_height())
+        .map_err(RenderError::InvalidLayout)?;
     let mut output = KrillaDocument::new();
     for (index, plan) in pages.iter().enumerate() {
-        let settings = PageSettings::from_wh(PAGE_WIDTH, PAGE_HEIGHT)
+        let settings = PageSettings::from_wh(geometry.width, geometry.height)
             .ok_or(RenderError::InvalidInput("invalid paper size"))?;
         let mut page = output.start_page_with(settings);
         let mut surface = page.surface();
+        let left = geometry.margin_left;
         surface.draw_text(
-            Point::from_xy(LEFT, 51.0),
+            Point::from_xy(left, geometry.margin_top - 69.0),
             font.clone(),
             18.0,
             title,
@@ -156,7 +192,7 @@ pub(super) fn render_flow(
             TextDirection::Auto,
         );
         surface.draw_text(
-            Point::from_xy(LEFT, 87.0),
+            Point::from_xy(left, geometry.margin_top - 33.0),
             font.clone(),
             10.0,
             "Vufra • Documento generado desde Rust",
@@ -164,17 +200,17 @@ pub(super) fn render_flow(
             TextDirection::Auto,
         );
         surface.draw_text(
-            Point::from_xy(LEFT, 812.0),
+            Point::from_xy(left, geometry.height - geometry.margin_bottom * 0.4),
             font.clone(),
             10.0,
             &format!("Página {} / {}", index + 1, pages.len()),
             false,
             TextDirection::Auto,
         );
-
-        let mut y = TEXT_TOP;
+        let mut y = geometry.margin_top;
         for fragment in &plan.fragments {
             match fragment {
+                FlowFragment::Spacer { height, .. } => y += height,
                 FlowFragment::Paragraph {
                     block,
                     start_line,
@@ -182,16 +218,16 @@ pub(super) fn render_flow(
                     height,
                     padding_before,
                 } => {
-                    if let PreparedBlock::Paragraph(lines) = &prepared[*block] {
+                    if let PreparedBlock::Text { lines, style } = &prepared[*block] {
                         for (local, line) in lines[*start_line..*end_line].iter().enumerate() {
                             if !line.is_empty() {
                                 surface.draw_text(
                                     Point::from_xy(
-                                        LEFT,
-                                        y + padding_before + local as f32 * options.line_height,
+                                        left,
+                                        y + padding_before + local as f32 * style.line_height,
                                     ),
                                     font.clone(),
-                                    options.text_size,
+                                    style.font_size,
                                     line,
                                     false,
                                     TextDirection::Auto,
@@ -203,7 +239,7 @@ pub(super) fn render_flow(
                 }
                 FlowFragment::Table { block, page } => {
                     if let PreparedBlock::Table(table) = &prepared[*block] {
-                        draw_table_fragment(&mut surface, table, page, &font, options, y);
+                        draw_table_fragment(&mut surface, table, page, &font, options, y, left);
                     }
                     y += page.used_height;
                 }
