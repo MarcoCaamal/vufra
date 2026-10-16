@@ -41,9 +41,32 @@ const invoice = vufra.document({title:'Factura',page:'Letter'})
 
 Las filas se dibujan en **columnas reales** medidas por Parley; las tablas extensas siguen repitiendo su encabezado y paginándose en Rust. Los callbacks de composición son síncronos. Además tienes `.section()`, `.grid()`, `.richText()`, `.image()`, `.list()`, `.divider()` y `.pageBreak()`. `toDocument()` permite inspeccionar el AST; `renderSync()` y `enqueue(queue)` reutilizan el mismo motor.
 
-**Alcance actual:** las filas y grids son indivisibles al cambiar de página y devuelven error si exceden el alto imprimible; las tablas sí se fragmentan. La API todavía no ofrece `.box()` con padding/fondos, `.footer()` personalizable, `.chart()` ni `.fromPdf()` para completar PDFs existentes. El motor sigue reservando su encabezado y pie predeterminados (márgenes verticales mínimos 110/50 pt). El API de bajo nivel `renderPdf(document,font)` se mantiene compatible.
+**Alcance actual:** las filas y grids siguen siendo indivisibles; las tablas y el contenido de texto de `.box()` pueden continuar entre páginas. La API todavía no ofrece `.footer()` personalizable, `.chart()` ni `.fromPdf()` para completar PDFs existentes. El motor sigue reservando su encabezado y pie predeterminados (márgenes verticales mínimos 110/50 pt). El API de bajo nivel `renderPdf(document,font)` se mantiene compatible.
 
 La API Rust subyacente vive en `crates/vufra-pdf`: `render_pdf(&PdfDocument, &[u8], RenderOptions)`.
+
+### Nuevo: contenedores visuales fragmentables (Unidad 15)
+
+```typescript
+const pdf = await vufra.document({title:'Resumen'})
+  .heading('Reporte empresarial')
+  .box({
+    padding:16,
+    background:'#EFF5FC',
+    border:{width:2,color:'#244A89'}
+  },box=>{
+    box.heading('Indicadores',{level:2,color:'#244A89'});
+    box.paragraph('Ingresos: $125,000');
+    box.divider({color:'#244A89'});
+    box.paragraph('Notas de operación.');
+  })
+  .table(detalle)
+  .render();
+```
+
+`box()` utiliza un compositor Rust nativo. Los textos se envuelven al ancho interior (descontando padding) y las cajas largas pueden fragmentarse entre páginas con fondo y bordes continuos. También acepta imágenes PNG/JPEG, rectángulos, espacios y listas sencillas. Se puede elegir ancho y alineación `left/center/right`.
+
+**Limitaciones:** tablas y `row/grid` no se anidan todavía en la API `box()`. Las fuentes especiales y negritas reales siguen disponibles mediante `richText()` fuera de cajas; dentro de `box()` el texto usa la fuente regular (pero admite tamaño, interlineado y color). Las imágenes dentro de la caja son indivisibles. Los callbacks son síncronos.
 
 ### Generación asíncrona para Node.js y NestJS (Unidad 07)
 
@@ -294,6 +317,9 @@ node examples/fluent-invoice.mjs \
   "$(fc-match 'Noto Sans' -f '%{file}')" \
   "$(fc-match 'Noto Sans:style=Bold' -f '%{file}')" artifacts/fluent-invoice.pdf
 node examples/fluent-report.mjs "$FONT" artifacts/fluent-report.pdf
+node examples/fluent-panels.mjs \
+  "$(fc-match 'Noto Sans' -f '%{file}')" \
+  "$(fc-match 'Noto Sans:style=Bold' -f '%{file}')" artifacts/fluent-panels.pdf
 pdfinfo artifacts/sdk-first.pdf
 ```
 
@@ -318,6 +344,7 @@ El archivo generado es `artifacts/sdk-first.pdf`; se ignora en Git. **La fuente 
 | 12 | Font faces incrustadas y párrafos enriquecidos por fragmento | Prototipo funcional |
 | 13 | Color y tamaño por run, coalescencia para ligaduras y fallback opt-in | Prototipo funcional |
 | 14 | Fluent API, callbacks de layout, columnas horizontales reales y pageBreak | Prototipo funcional |
+| 15 | `box()` con padding, fondo, bordes y fragmentación entre páginas | Prototipo funcional |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -374,6 +401,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 12 — Tipografía multifuente](docs/experiments/13-typography-milestone.md)
 - [Unidad 13 — Estilos inline y fallback](docs/experiments/14-inline-style-milestone.md)
 - [Unidad 14 — Fluent API y filas](docs/experiments/15-fluent-api-milestone.md)
+- [Unidad 15 — Cajas decoradas fragmentables](docs/experiments/16-decorated-boxes-milestone.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
@@ -389,6 +417,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [ADR-0013 Fuentes y texto enriquecido](docs/adr/0013-explicit-font-faces-and-rich-text.md)
 - [ADR-0014 Estilos inline y fallback explícito](docs/adr/0014-inline-styles-and-explicit-fallback.md)
 - [ADR-0015 Builders Fluent y filas](docs/adr/0015-fluent-builders-and-atomic-rows.md)
+- [ADR-0016 Cajas fragmentables](docs/adr/0016-decorated-boxes-page-fragments.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

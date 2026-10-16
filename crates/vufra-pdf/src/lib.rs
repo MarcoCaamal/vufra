@@ -30,11 +30,13 @@ pub(crate) fn check_cancel(cancel: &AtomicBool) -> Result<(), RenderError> {
         Ok(())
     }
 }
+mod box_layout;
 mod flow_render;
 mod graphic;
 mod image;
 mod rich_text;
 mod row;
+pub use box_layout::{BoxAlign, PdfBox, PdfBoxItem};
 pub use graphic::{GraphicKind, PdfGraphic};
 pub use rich_text::{PdfFontFace, PdfTextRun};
 pub use row::{PdfRow, PdfRowColumn, PdfRowItem};
@@ -68,6 +70,7 @@ pub enum PdfBlock {
     },
     Graphic(PdfGraphic),
     Row(PdfRow),
+    Box(PdfBox),
     PageBreak,
     RichParagraph {
         runs: Vec<PdfTextRun>,

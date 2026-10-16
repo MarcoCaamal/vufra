@@ -12,9 +12,9 @@ use std::{
     time::Instant,
 };
 use vufra_pdf::{
-    GraphicKind, ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, PageGeometry,
-    PdfBlock, PdfColumn, PdfDocument, PdfFontFace, PdfGraphic, PdfImage, PdfRow, PdfRowColumn,
-    PdfRowItem, PdfTable, PdfTextRun, RenderOptions, TextStyle,
+    BoxAlign, GraphicKind, ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES,
+    PageGeometry, PdfBlock, PdfBox, PdfBoxItem, PdfColumn, PdfDocument, PdfFontFace, PdfGraphic,
+    PdfImage, PdfRow, PdfRowColumn, PdfRowItem, PdfTable, PdfTextRun, RenderOptions, TextStyle,
 };
 
 #[napi(object)]
@@ -41,6 +41,7 @@ pub struct NodeBlock {
     pub keep_with_next: Option<bool>,
     pub graphic: Option<NodeGraphic>,
     pub row: Option<NodeRow>,
+    pub box_data: Option<NodeBox>,
     pub level: Option<u32>,
     pub style: Option<NodeTextStyle>,
     pub height: Option<f64>,
@@ -78,6 +79,27 @@ pub struct NodeRowColumn {
 pub struct NodeRow {
     pub gap: f64,
     pub columns: Vec<NodeRowColumn>,
+}
+#[napi(object)]
+pub struct NodeBoxItem {
+    pub kind: String,
+    pub text: Option<String>,
+    pub style: Option<NodeTextStyle>,
+    pub color: Option<String>,
+    pub height: Option<f64>,
+    pub image: Option<NodeImage>,
+    pub graphic: Option<NodeGraphic>,
+    pub row: Option<NodeRow>,
+}
+#[napi(object)]
+pub struct NodeBox {
+    pub width: Option<f64>,
+    pub align: String,
+    pub padding: f64,
+    pub border_width: f64,
+    pub border_color: Option<String>,
+    pub background: Option<String>,
+    pub items: Vec<NodeBoxItem>,
 }
 #[napi(object)]
 pub struct NodeGraphic {
@@ -153,6 +175,80 @@ fn to_graphic(g: NodeGraphic) -> napi::Result<PdfGraphic> {
         width: g.width as f32,
         height: g.height as f32,
         rgb,
+    })
+}
+fn optional_rgb(input: Option<String>) -> napi::Result<Option<[u8; 3]>> {
+    input
+        .map(|c| {
+            if c.len() != 7
+                || !c.starts_with('#')
+                || !c.as_bytes()[1..].iter().all(u8::is_ascii_hexdigit)
+            {
+                return Err(napi::Error::from_reason("box colors must be #RRGGBB"));
+            }
+            let mut rgb = [0u8; 3];
+            for (i, v) in rgb.iter_mut().enumerate() {
+                *v = u8::from_str_radix(&c[(1 + i * 2)..(3 + i * 2)], 16)
+                    .map_err(|_| napi::Error::from_reason("invalid box RGB color"))?;
+            }
+            Ok(rgb)
+        })
+        .transpose()
+}
+fn to_box(input: NodeBox) -> napi::Result<PdfBox> {
+    let align = match input.align.as_str() {
+        "left" => BoxAlign::Left,
+        "center" => BoxAlign::Center,
+        "right" => BoxAlign::Right,
+        _ => {
+            return Err(napi::Error::from_reason(
+                "box align must be left,center,right",
+            ));
+        }
+    };
+    let items = input
+        .items
+        .into_iter()
+        .map(|item| match item.kind.as_str() {
+            "text" => Ok(PdfBoxItem::Text {
+                text: item
+                    .text
+                    .ok_or_else(|| napi::Error::from_reason("box text required"))?,
+                style: item
+                    .style
+                    .ok_or_else(|| napi::Error::from_reason("box text style required"))?
+                    .into(),
+                color: optional_rgb(item.color)?,
+            }),
+            "image" => Ok(PdfBoxItem::Image(to_image(
+                item.image
+                    .ok_or_else(|| napi::Error::from_reason("box image required"))?,
+            )?)),
+            "graphic" => Ok(PdfBoxItem::Graphic(to_graphic(
+                item.graphic
+                    .ok_or_else(|| napi::Error::from_reason("box graphic required"))?,
+            )?)),
+            "spacer" => Ok(PdfBoxItem::Spacer(
+                item.height
+                    .ok_or_else(|| napi::Error::from_reason("box spacer required"))?
+                    as f32,
+            )),
+            "row" => {
+                Ok(PdfBoxItem::Row(to_row(item.row.ok_or_else(|| {
+                    napi::Error::from_reason("box row required")
+                })?)?))
+            }
+            _ => Err(napi::Error::from_reason("unsupported box item")),
+        })
+        .collect::<napi::Result<Vec<_>>>()?;
+    Ok(PdfBox {
+        width: input.width.map(|w| w as f32),
+        align,
+        padding: input.padding as f32,
+        border_width: input.border_width as f32,
+        border_color: optional_rgb(input.border_color)?,
+        background: optional_rgb(input.background)?,
+        items,
     })
 }
 fn to_row(input: NodeRow) -> napi::Result<PdfRow> {
@@ -237,6 +333,33 @@ fn to_table(input: NodeTable) -> PdfTable {
     }
 }
 
+fn preflight_image(image: &NodeImage, count: &mut usize, total: &mut usize) -> napi::Result<()> {
+    if image.data.is_empty() || image.data.len() > MAX_IMAGE_BYTES {
+        return Err(napi::Error::from_reason(
+            "image bytes exceed the 8 MiB limit",
+        ));
+    }
+    *count += 1;
+    *total = total
+        .checked_add(image.data.len())
+        .ok_or_else(|| napi::Error::from_reason("too many image bytes"))?;
+    if *count > MAX_IMAGE_BLOCKS || *total > MAX_TOTAL_IMAGE_BYTES {
+        return Err(napi::Error::from_reason(
+            "too many images or too much image data",
+        ));
+    }
+    Ok(())
+}
+fn preflight_row_images(row: &NodeRow, count: &mut usize, total: &mut usize) -> napi::Result<()> {
+    for column in &row.columns {
+        for item in &column.items {
+            if let Some(image) = &item.image {
+                preflight_image(image, count, total)?;
+            }
+        }
+    }
+    Ok(())
+}
 fn parse_document(
     title: String,
     paragraphs: Vec<String>,
@@ -246,21 +369,29 @@ fn parse_document(
     page: Option<NodePage>,
     font_faces: Option<Vec<NodeFontFace>>,
 ) -> napi::Result<PdfDocument> {
-    // Reject oversized images before copying JS buffers into Rust jobs.
+    // Verify image budgets recursively before copying native input buffers.
+    // Covers regular images, rows, and decorated boxes (including row items
+    // within a boxed content block).
     if let Some(items) = &blocks {
-        let images: Vec<_> = items
-            .iter()
-            .filter_map(|item| item.image.as_ref())
-            .collect();
-        if images.len() > MAX_IMAGE_BLOCKS
-            || images
-                .iter()
-                .try_fold(0usize, |sum, img| sum.checked_add(img.data.len()))
-                .is_none_or(|len| len > MAX_TOTAL_IMAGE_BYTES)
-        {
-            return Err(napi::Error::from_reason(
-                "too many images or too much image data",
-            ));
+        let mut count = 0usize;
+        let mut bytes = 0usize;
+        for block in items {
+            if let Some(image) = &block.image {
+                preflight_image(image, &mut count, &mut bytes)?;
+            }
+            if let Some(row) = &block.row {
+                preflight_row_images(row, &mut count, &mut bytes)?;
+            }
+            if let Some(boxed) = &block.box_data {
+                for item in &boxed.items {
+                    if let Some(image) = &item.image {
+                        preflight_image(image, &mut count, &mut bytes)?;
+                    }
+                    if let Some(row) = &item.row {
+                        preflight_row_images(row, &mut count, &mut bytes)?;
+                    }
+                }
+            }
         }
     }
     if font_faces.as_ref().is_some_and(|faces| {
@@ -307,6 +438,9 @@ fn parse_document(
                         }
                         "page-break" if item.row.is_none() && item.text.is_none() => {
                             Ok(PdfBlock::PageBreak)
+                        }
+                        "box" if item.box_data.is_some() && item.table.is_none() => {
+                            Ok(PdfBlock::Box(to_box(item.box_data.expect("box checked"))?))
                         }
                         "row" if item.row.is_some() && item.table.is_none() => {
                             Ok(PdfBlock::Row(to_row(item.row.expect("row checked"))?))

@@ -35,6 +35,7 @@ enum PreparedBlock {
     Image(PreparedImage),
     Graphic,
     Row(super::row::PreparedRow),
+    Box(super::box_layout::PreparedBox),
     Rich {
         lines: Vec<RichLine>,
         line_height: f32,
@@ -97,6 +98,52 @@ fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), Re
                     total = total
                         .checked_add(item.len())
                         .ok_or(RenderError::InvalidInput("text too large"))?;
+                }
+            }
+            PdfBlock::Box(boxed) => {
+                if boxed.items.len() > 500 {
+                    return Err(RenderError::InvalidInput("too many box items"));
+                }
+                for item in &boxed.items {
+                    match item {
+                        super::PdfBoxItem::Text { text, .. } => {
+                            total = total
+                                .checked_add(text.len())
+                                .ok_or(RenderError::InvalidInput("text too large"))?;
+                        }
+                        super::PdfBoxItem::Image(img) => {
+                            image_count += 1;
+                            image_bytes = image_bytes
+                                .checked_add(img.data.len())
+                                .ok_or(RenderError::InvalidInput("too much image data"))?;
+                        }
+                        super::PdfBoxItem::Row(row) => {
+                            for column in &row.columns {
+                                for nested in &column.items {
+                                    match nested {
+                                        super::row::PdfRowItem::Text { text, .. } => {
+                                            total = total.checked_add(text.len()).ok_or(
+                                                RenderError::InvalidInput("text too large"),
+                                            )?;
+                                        }
+                                        super::row::PdfRowItem::Image(img) => {
+                                            image_count += 1;
+                                            image_bytes = image_bytes
+                                                .checked_add(img.data.len())
+                                                .ok_or(RenderError::InvalidInput(
+                                                "too much image data",
+                                            ))?;
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if image_count > MAX_IMAGE_BLOCKS || image_bytes > MAX_TOTAL_IMAGE_BYTES {
+                    return Err(RenderError::InvalidInput("too many images or image bytes"));
                 }
             }
             PdfBlock::Row(row) => {
@@ -220,6 +267,27 @@ pub(super) fn render_flow(
     for block in blocks {
         check_cancel(cancel)?;
         match block {
+            PdfBlock::Box(boxed) => {
+                let prepared_box = boxed.prepare(
+                    geometry.content_width(),
+                    geometry.content_height(),
+                    &family,
+                    &mut fonts,
+                    &mut context,
+                    cancel,
+                )?;
+                total_image_pixels = total_image_pixels.saturating_add(prepared_box.image_pixels);
+                if total_image_pixels > MAX_TOTAL_IMAGE_PIXELS {
+                    return Err(RenderError::InvalidInput(
+                        "total image pixel budget exceeded",
+                    ));
+                }
+                measurements.push(FlowBlock::Box {
+                    item_heights: prepared_box.item_heights.clone(),
+                    padding: boxed.padding,
+                });
+                prepared.push(PreparedBlock::Box(prepared_box));
+            }
             PdfBlock::PageBreak => {
                 measurements.push(FlowBlock::PageBreak);
                 prepared.push(PreparedBlock::Spacer);
@@ -440,6 +508,35 @@ pub(super) fn render_flow(
         for fragment in &plan.fragments {
             check_cancel(cancel)?;
             match fragment {
+                FlowFragment::Box {
+                    block,
+                    start_item,
+                    end_item,
+                    first,
+                    last,
+                    height,
+                } => {
+                    if let (PreparedBlock::Box(prepared_box), PdfBlock::Box(source)) =
+                        (&prepared[*block], &blocks[*block])
+                    {
+                        prepared_box.draw(
+                            source,
+                            &mut surface,
+                            &font,
+                            super::box_layout::BoxFragmentPosition {
+                                left,
+                                top: y,
+                                start: *start_item,
+                                end: *end_item,
+                                first: *first,
+                                last: *last,
+                                height: *height,
+                            },
+                            cancel,
+                        )?;
+                    }
+                    y += height;
+                }
                 FlowFragment::Graphic { block, height } => {
                     match (&prepared[*block], &blocks[*block]) {
                         (PreparedBlock::Row(prepared_row), PdfBlock::Row(row)) => {

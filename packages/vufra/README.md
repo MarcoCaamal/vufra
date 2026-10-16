@@ -44,9 +44,30 @@ const pdf=await engine.document({title:'Invoice',page:'Letter'})
 writeFileSync('invoice.pdf',pdf);
 ```
 
-Also supported: `heading`, `paragraph`, `richText`, `image`, `list`, `divider`, `rectangle`, `spacer`, `section`, `grid`, `pageBreak`, `renderSync`, `enqueue(queue)` and `toDocument()`.
+Also supported: `heading`, `paragraph`, `richText`, `box`, `image`, `list`, `divider`, `rectangle`, `spacer`, `section`, `grid`, `pageBreak`, `renderSync`, `enqueue(queue)` and `toDocument()`.
 
-**Important limits:** rows/grids are real horizontal layouts but **atomic across pages**; they cannot split vertically. Long structured data belongs in `table`, which repeats headers and paginates. Column scope text currently uses the regular font (with size/line-height options). Builder callbacks run synchronously; prepare I/O before calling them. No `box` styling, custom header/footer, `chart`, or existing-PDF `fromPdf/overlay` yet. Header/footer use the native fixed design; custom vertical margins must respect its minimums. All fonts are provided by the caller.
+**Important limits:** rows/grids are real horizontal layouts but **atomic across pages**; they cannot split vertically. Long structured data belongs in `table`, which repeats headers and paginates. Column scope text currently uses the regular font (with size/line-height options). Builder callbacks run synchronously; prepare I/O before calling them. Decorated `box()` is available and its paragraphs split across pages, but nested tables/grids and nonregular fonts within box are not available yet. No custom header/footer, `chart`, or existing-PDF `fromPdf/overlay` yet. Header/footer use the native fixed design; custom vertical margins must respect its minimums. All fonts are provided by the caller.
+
+## Decorated boxes with real multipage continuation (Unit 15)
+
+```ts
+const pdf = await engine.document({title:'Business report'})
+  .box({
+    padding:16,
+    background:'#EFF5FC',
+    border:{width:2,color:'#244A89'},
+    width:320,
+    align:'right'
+  },b=>{
+    b.heading('Summary',{level:2,color:'#244A89'});
+    b.paragraph('Measured text and long notes can continue on another page.');
+    b.divider({height:1,color:'#244A89'});
+    b.paragraph('This is drawn by the Rust PDF engine.');
+  })
+  .render();
+```
+
+Box children currently support paragraph/heading/list/image/spacer/divider/rectangle, with regular font plus configurable size, color and line height. The engine measures text using the **inside width** (subtracting the padding) and splits long boxes at text-line boundaries. Each fragment gets its own background and side borders; only the first has a top border, and only the last has a bottom border. Short boxes that fit on a fresh page are kept together. Images are atomic. No special font faces, tables/rows, rounded corners, shadows or nested boxes inside decorated boxes yet. See `examples/fluent-panels.mjs`.
 
 ## Low-level AST API (still supported)
 

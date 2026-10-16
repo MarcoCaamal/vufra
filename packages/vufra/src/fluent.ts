@@ -6,7 +6,7 @@
  * renderer. No implicit font lookup or hidden browser.
  */
 import { renderPdf, renderPdfAsync, type PdfAsyncOptions, type PdfBlock,
-  type PdfDocument, type PdfPageOptions, type PdfRow, type PdfRowColumn,
+  type PdfDocument, type PdfPageOptions, type PdfBox, type PdfBoxItem, type PdfRow, type PdfRowColumn,
   type PdfRowItem, type PdfRichRun, type PdfTable, type PdfTextStyle
 } from './index';
 import { PdfRenderQueue, type PdfEnqueueOptions } from './queue';
@@ -60,6 +60,13 @@ export interface ColumnOptions { width?: number | `${number}%` | '*'; align?: 'l
 export interface GridOptions { columns: number; gap?: number }
 export interface ImageOptions { width:number; height:number; fit?: 'contain'|'cover' }
 export interface DividerOptions {height?:number;color?:string;width?:number}
+export interface BoxOptions {
+  width?:number;
+  align?:'left'|'center'|'right';
+  padding?:number;
+  background?:string;
+  border?:{width?:number;color?:string};
+}
 
 function fail(message:string): never { throw new TypeError('Vufra: '+message); }
 function plainObject(value:unknown): value is Record<string,unknown> {
@@ -294,6 +301,62 @@ class GridScope {
   close():void{this.active=false;}
 }
 
+/** One visually decorated, page-fragmentable vertical flow. */
+class BoxScope {
+  private active=true;
+  readonly items:PdfBoxItem[]=[];
+  constructor(private readonly ctx:BuilderContext,private readonly innerWidth:number){}
+  close():void{this.active=false;}
+  private add(item:PdfBoxItem):this{
+    if(!this.active)fail('box callback scope is closed');
+    this.items.push(item);return this;
+  }
+  paragraph(text:string,style:VufraStyle={}):this{
+    ensureText(text);
+    const styled=mergeStyle(this.ctx.theme,undefined,style);
+    if(styled.bold|| (styled.font!==undefined && styled.font!=='regular')){
+      fail('box text currently supports the regular font only; real bold within boxes requires a future typography unit');
+    }
+    return this.add({type:'text',text,style:{
+      fontSize:styled.fontSize??11,
+      lineHeight:styled.lineHeight??Math.max(16,(styled.fontSize??11)*1.4),
+      spaceBefore:styled.spaceBefore??5,spaceAfter:styled.spaceAfter??5
+    },color:colorHex(styled.color,this.ctx.theme)});
+  }
+  heading(text:string,options:HeadingOptions={}):this{
+    const level=options.level??2;
+    if(![1,2,3].includes(level))fail('box heading level must be 1..3');
+    const size=[0,21,17,14][level];
+    const themed=this.ctx.theme?.[`h${level}` as 'h1'|'h2'|'h3'];
+    return this.paragraph(text,{
+      fontSize:size,lineHeight:size*1.4,spaceBefore:7,spaceAfter:5,
+      ...themed,...options
+    });
+  }
+  image(data:Uint8Array,options:ImageOptions):this{
+    if(!(data instanceof Uint8Array))fail('box image needs PNG/JPEG bytes');
+    return this.add({type:'image',data,...options});
+  }
+  spacer(height:number):this{return this.add({type:'spacer',height});}
+  divider(options:DividerOptions={}):this{
+    return this.add({type:'rule',height:options.height??1,
+      width:options.width??this.innerWidth,
+      color:colorHex(options.color,this.ctx.theme)});
+  }
+  rectangle(options:{width:number;height:number;color?:string}):this{
+    return this.add({type:'rectangle',...options,
+      color:colorHex(options.color,this.ctx.theme)});
+  }
+  list(items:string[],options:{ordered?:boolean}={}):this{
+    if(!Array.isArray(items)||!items.length||items.length>1000)
+      fail('box list needs 1..1000 items');
+    for(const [i,text] of items.entries()){
+      ensureText(text);
+      this.paragraph((options.ordered?String(i+1)+'. ':'• ')+text);
+    }
+    return this;
+  }
+}
 class ContentScope {
   private active=true;
   readonly blocks:PdfBlock[]=[];
@@ -336,6 +399,26 @@ class ContentScope {
   }
   rectangle(options:{width:number;height:number;color?:string}):this{
     return this.append({type:'rectangle',...options,color:colorHex(options.color,this.ctx.theme)});
+  }
+  box(options:BoxOptions,callback:(box:BoxScope)=>void):this;
+  box(callback:(box:BoxScope)=>void):this;
+  box(optionsOrCb:BoxOptions|((box:BoxScope)=>void),
+    callback?:(box:BoxScope)=>void):this{
+    const opts=typeof optionsOrCb==='function'?{}:optionsOrCb;
+    const cb=typeof optionsOrCb==='function'?optionsOrCb:callback;
+    if(typeof cb!=='function')fail('box requires a synchronous callback');
+    const padding=opts.padding??12;
+    const innerWidth=(opts.width??contentWidth(this.ctx))-2*padding;
+    if(!Number.isFinite(innerWidth)||innerWidth<60)fail('box content width must be at least 60pt');
+    const scope=new BoxScope(this.ctx,innerWidth);
+    try{requireSyncResult(cb(scope));}
+    finally{scope.close();}
+    const boxed:PdfBox={
+      ...opts,background:colorHex(opts.background,this.ctx.theme),
+      border:opts.border?{...opts.border,color:colorHex(opts.border.color,this.ctx.theme)}:undefined,
+      items:scope.items
+    };
+    return this.append({type:'box',box:boxed});
   }
   table<T extends object>(data:readonly T[]|PdfTable,options?:TableOptions<T>):this {
     return this.append({type:'table',table:asTable(data,options,contentWidth(this.ctx))});
@@ -418,6 +501,12 @@ export class DocumentBuilder {
   divider(opts:DividerOptions={}):DocumentBuilder{return this.append(s=>{s.divider(opts);});}
   rectangle(opts:{width:number;height:number;color?:string}):DocumentBuilder{
     return this.append(s=>{s.rectangle(opts);});
+  }
+  box(options:BoxOptions,callback:(b:BoxScope)=>void):DocumentBuilder;
+  box(callback:(b:BoxScope)=>void):DocumentBuilder;
+  box(optionsOrCb:BoxOptions|((b:BoxScope)=>void),cb?:(b:BoxScope)=>void):DocumentBuilder {
+    return this.append(s=>{if(typeof optionsOrCb==='function')s.box(optionsOrCb);
+      else s.box(optionsOrCb,cb!);});
   }
   table<T extends object>(data:readonly T[]|PdfTable,opts?:TableOptions<T>):DocumentBuilder{
     return this.append(s=>{s.table(data,opts);});

@@ -1,5 +1,5 @@
 export {vufra, createVufra, Vufra, DocumentBuilder} from './fluent';
-export type {VufraStyle,VufraTheme,VufraConfig,DocumentOptions,HeadingOptions,TableColumn,TableOptions,RowOptions,ColumnOptions,GridOptions,ImageOptions} from './fluent';
+export type {VufraStyle,VufraTheme,VufraConfig,DocumentOptions,HeadingOptions,TableColumn,TableOptions,RowOptions,ColumnOptions,GridOptions,ImageOptions,BoxOptions} from './fluent';
 
 /**
  * Vufra v0.1 — experimental native Rust PDF SDK for Node.js.
@@ -59,6 +59,19 @@ export interface PdfRow {
   gap?: number;
   columns: PdfRowColumn[];
 }
+export type PdfBoxItem =
+  | {type:'text';text:string;style?:Partial<PdfTextStyle>;color?:string}
+  | {type:'image';data:Uint8Array;width:number;height:number;fit?:'contain'|'cover'}
+  | {type:'rule'|'rectangle';width:number;height:number;color?:string}
+  | {type:'spacer';height:number};
+export interface PdfBox {
+  width?:number;
+  align?:'left'|'center'|'right';
+  padding?:number;
+  background?:string;
+  border?:{width?:number;color?:string};
+  items:PdfBoxItem[];
+}
 export interface PdfRichRun {
   /** Text is drawn using a real embedded font file, not artificial bold/italic. */
   text: string;
@@ -84,6 +97,7 @@ export type PdfBlock =
   | { type: 'image'; image: PdfImage } // compatibility alias for nested inputs
   | { type: 'table'; table: PdfTable }
   | { type: 'row'; row: PdfRow }
+  | { type: 'box'; box: PdfBox }
   | { type: 'page-break' };
 
 export interface PdfDocument {
@@ -110,6 +124,12 @@ type NativeBlock = {
   keepWithNext?: boolean; items?: string[]; ordered?: boolean;
   graphic?: {kind:string;width:number;height:number;color:string};
   image?: { data: Uint8Array; width: number; height: number; fit: 'contain' | 'cover' };
+  boxData?: {width?:number;align:string;padding:number;borderWidth:number;
+    borderColor?:string;background?:string;items:Array<{
+      kind:string;text?:string;style?:PdfTextStyle;color?:string;height?:number;
+      image?:{data:Uint8Array;width:number;height:number;fit:'contain'|'cover'};
+      graphic?:{kind:string;width:number;height:number;color:string}
+    }>};
   row?: {gap:number;columns:Array<{width:number;rightAlign:boolean;items:Array<{
     kind:string;text?:string;style?:PdfTextStyle;height?:number;
     image?: {data:Uint8Array;width:number;height:number;fit:'contain'|'cover'};
@@ -362,6 +382,74 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
         }
         return {kind:'image', image:{data:image.data, width:image.width,
           height:image.height, fit:image.fit ?? 'contain'}};
+      }
+      if (block?.type === 'box') {
+        const boxed=block.box;
+        const innerWidth=(boxed?.width ?? (page ? page.width-page.marginLeft-page.marginRight : 497))
+          -2*(boxed?.padding??12);
+        const printableWidth=page ? page.width-page.marginLeft-page.marginRight : 497;
+        const printableHeight=page ? page.height-page.marginTop-page.marginBottom : 650;
+        const padding=boxed?.padding??12;
+        const borderWidth=boxed?.border?.width??0;
+        if (!boxed || !Array.isArray(boxed.items) || boxed.items.length<1 ||
+            boxed.items.length>500 ||
+            !Number.isFinite(padding) || padding<0 || padding>60 ||
+            !Number.isFinite(borderWidth) || borderWidth<0 || borderWidth>6 ||
+            borderWidth>padding ||
+            !Number.isFinite(boxed.width??printableWidth) ||
+            (boxed.width??printableWidth)<100 ||
+            (boxed.width??printableWidth)>printableWidth ||
+            innerWidth<60 ||
+            (boxed.align!==undefined&&!['left','center','right'].includes(boxed.align))) {
+          throw new TypeError('invalid box geometry, padding, border, alignment or item count');
+        }
+        const rgb=(value:string|undefined):string|undefined=>{
+          if(value!==undefined && !/^#[0-9a-fA-F]{6}$/.test(value))
+            throw new TypeError('box colors must be #RRGGBB');
+          return value;
+        };
+        const items=boxed.items.map(item=>{
+          if(item?.type==='text' && typeof item.text==='string'){
+            return {kind:'text',text:item.text,style:normalizeStyle(
+              item.style??{spaceBefore:4,spaceAfter:3}),color:rgb(item.color)};
+          }
+          if(item?.type==='spacer' && Number.isFinite(item.height) &&
+            item.height>0 && item.height+padding*2<=printableHeight) {
+            return {kind:'spacer',height:item.height};
+          }
+          if(item?.type==='image') {
+            if (!(item.data instanceof Uint8Array)||item.data.byteLength<1 ||
+                item.data.byteLength>8*1024*1024 ||
+                !Number.isFinite(item.width)||!Number.isFinite(item.height) ||
+                item.width<=0||item.height<=0||
+                item.width>innerWidth||item.height+padding*2>printableHeight ||
+                !['contain','cover',undefined].includes(item.fit)) {
+              throw new TypeError('invalid box image or image exceeds content size');
+            }
+            imageCount++;imageBytes+=item.data.byteLength;
+            if(imageCount>64||imageBytes>32*1024*1024){
+              throw new TypeError('too many images or image bytes in document');
+            }
+            return {kind:'image',image:{data:item.data,width:item.width,
+              height:item.height,fit:item.fit??'contain'}};
+          }
+          if(item?.type==='rule'||item?.type==='rectangle'){
+            if(!Number.isFinite(item.width)||!Number.isFinite(item.height)||
+              item.width<=0||item.height<=0||item.width>innerWidth||
+              item.height+padding*2>printableHeight||
+              (item.type==='rule'&&item.height>8)) {
+              throw new TypeError('invalid box graphic dimensions');
+            }
+            return {kind:'graphic',graphic:{kind:item.type,width:item.width,
+              height:item.height,color:rgb(item.color)??'#333333'}};
+          }
+          throw new TypeError('unsupported or invalid box item');
+        });
+        return {kind:'box',boxData:{
+          width:boxed.width,align:boxed.align??'left',padding,
+          borderWidth,borderColor:rgb(boxed.border?.color),
+          background:rgb(boxed.background),items
+        }};
       }
       if (block?.type === 'page-break') return {kind:'page-break'};
       if (block?.type === 'row') {
