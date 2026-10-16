@@ -60,6 +60,7 @@ cd ../..
 FONT=$(fc-match 'Noto Sans' -f '%{file}\n' | head -1)
 node examples/sdk-usage.mjs "$FONT" artifacts/sdk-first.pdf
 node examples/table-usage.mjs "$FONT" artifacts/table-first.pdf
+node examples/long-row-usage.mjs "$FONT" artifacts/long-row.pdf
 pdfinfo artifacts/sdk-first.pdf
 ```
 
@@ -73,6 +74,7 @@ El archivo generado es `artifacts/sdk-first.pdf`; se ignora en Git. **La fuente 
 | 01 | Prototipos `pdf-writer`, `krilla`, Parley y tablas 1,000 filas | Completada |
 | 02 | API Rust reusable, texto medido con Parley, SDK TypeScript + N-API | Prototipo funcional |
 | 03 | Tablas multicolumna con medidas, bordes, encabezados repetidos y paginación | Prototipo funcional |
+| 04 | Continuación de una fila de tabla a través de varias páginas | Prototipo funcional |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -109,7 +111,7 @@ cd packages/vufra && npm test
 
 La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 registros ordenados sin pérdida/duplicación, PDFs multipágina y errores de entrada controlados.
 
-**No soporta aún:** contenido RTL/shaping complejo, fallback de fuentes, imágenes, celdas combinadas, estilos arbitrarios, división de una fila entre páginas o formatos de página configurables. Cada fila/párrafo es indivisible al paginar; demasiadas líneas generan un error explícito. El SDK actual se ha probado únicamente en Linux x86_64.
+**No soporta aún:** contenido RTL/shaping complejo, fallback de fuentes, imágenes, celdas combinadas, estilos arbitrarios o formatos de página configurables. **Las filas multicolumna sí pueden continuar entre páginas; los párrafos y las filas sencillas heredadas siguen siendo indivisibles.** Una palabra que no cabe en una columna genera un error explícito. El SDK se ha probado únicamente en Linux x86_64.
 
 ## Documentación
 
@@ -118,10 +120,12 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Resultados de Unidad 01](docs/experiments/02-results.md)
 - [Resultados y guía Unidad 02](docs/experiments/03-sdk-milestone.md)
 - [Unidad 03 — Tablas multicolumna](docs/experiments/04-tables-milestone.md)
+- [Unidad 04 — Filas fragmentables](docs/experiments/05-row-fragmentation.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
 - [ADR-0004 Tablas multicolumna](docs/adr/0004-table-layout.md)
+- [ADR-0005 Fragmentación por líneas](docs/adr/0005-split-row-pagination.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

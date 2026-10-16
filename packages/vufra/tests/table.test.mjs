@@ -76,11 +76,43 @@ test('bad table structures and too-wide columns rejected', () => {
   assert.throws(() => make({columns:[{header:'H',width:100}],rows:[['a\0b']]}), /null/);
 });
 
-test('row taller than a page fails cleanly (no infinite pagination loop)', () => {
-  assert.throws(() => renderPdf({
-    title: 'Oversized row',
-    table: {columns,rows:[[
-      'SKU-001', 'muchísimo texto '.repeat(1700), '$ 100'
-    ]]}
-  }, font), /exceeds one printable page/);
+test('a very long row continues across many pages with no duplicated tokens', () => {
+  const entries = Array.from({ length: 850 }, (_, index) =>
+    'FRAG' + String(index + 1).padStart(4, '0'));
+  const result = pdfDetails(renderPdf({
+    title: 'Continuación de celdas',
+    table: { columns, rows: [
+      ['SKU-BEGIN', 'Producto inicial', '$ 12'],
+      ['SKU-LARGE', entries.join(' '), '$ 100'],
+      ['SKU-END', 'Producto final', '$ 13']
+    ] }
+  }, font));
+  assert.ok(result.pages >= 5, result.pages);
+  assert.deepEqual(
+    [...result.text.matchAll(/FRAG(\d{4})/g)].map(match => Number(match[1])),
+    Array.from({ length: 850 }, (_, index) => index + 1),
+    'all tokens of long cell must survive in order without duplication'
+  );
+  assert.equal((result.text.match(/SKU-LARGE/g) || []).length, 1);
+  assert.equal((result.text.match(/SKU-END/g) || []).length, 1);
+  assert.equal((result.text.match(/Código SKU/g) || []).length, result.pages);
+});
+
+test('different length cells share line offset across page breaks', () => {
+  const short = Array.from({length: 160}, (_, i) => 'SHORT' + String(i).padStart(4, '0'));
+  const long = Array.from({length: 500}, (_, i) => 'LONG' + String(i).padStart(4, '0'));
+  const result = pdfDetails(renderPdf({
+    title: 'Column continuation',
+    table: {columns, rows: [
+      [short.join(' '), long.join(' '), 'FINAL']
+    ]}
+  }, font));
+  assert.ok(result.pages >= 3);
+  for (const [prefix, n] of [['SHORT', 160], ['LONG', 500]]) {
+    assert.deepEqual(
+      [...result.text.matchAll(new RegExp(prefix + '(\\d{4})', 'g'))].map(m => Number(m[1])),
+      Array.from({length: n}, (_, i) => i)
+    );
+  }
+  assert.equal((result.text.match(/FINAL/g) || []).length, 1);
 });

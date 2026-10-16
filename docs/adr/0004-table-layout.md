@@ -1,6 +1,6 @@
 # ADR-0004: tablas multicolumna con filas indivisibles (experimental)
 
-**Fecha:** 2026-10-16. **Estado:** aceptada para prototipo; revisión requerida antes de v1.
+**Fecha:** 2026-10-16. **Estado:** parcialmente reemplazada por [ADR-0005](0005-split-row-pagination.md) en lo relativo a filas indivisibles. El diseño de columnas, medición y modelo sigue vigente.
 
 ## Decisión
 

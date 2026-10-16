@@ -1,5 +1,5 @@
 //! Multi-column table layout, pagination and rendering for the experimental SDK.
-//! Columns have explicit widths in PDF points. Rows are indivisible.
+//! Columns have explicit widths in PDF points. Oversized rows may span pages.
 use super::{
     CONTENT_HEIGHT, CONTENT_WIDTH, LEFT, RenderError, RenderOptions, TEXT_TOP, measure_text_lines,
 };
@@ -11,8 +11,7 @@ use krilla::{
     text::{Font, TextDirection},
 };
 use parley::{FontContext, LayoutContext};
-use vufra_core::TableRow;
-use vufra_layout::{PageFragment, paginate_all};
+use vufra_layout::split::{SplitPage, paginate_split_all};
 
 const PADDING_X: f32 = 7.0;
 const PADDING_Y: f32 = 6.0;
@@ -38,13 +37,13 @@ pub(crate) struct PreparedTable {
     pub headers: Vec<Vec<String>>,
     pub rows: Vec<PreparedTableRow>,
     pub header_height: f32,
-    pub pages: Vec<PageFragment>,
+    pub pages: Vec<SplitPage>,
 }
 
 #[derive(Debug)]
 pub(crate) struct PreparedTableRow {
     pub cells: Vec<Vec<String>>,
-    pub height: f32,
+    pub line_count: usize,
 }
 
 pub(crate) fn prepare_table(
@@ -117,20 +116,18 @@ pub(crate) fn prepare_table(
                 options.text_size,
             )?);
         }
-        let height = row_height(&cells, options.line_height).max(26.0);
-        if height > CONTENT_HEIGHT - header_height {
-            return Err(RenderError::InvalidInput(
-                "table row exceeds one printable page",
-            ));
-        }
-        rows.push(PreparedTableRow { cells, height });
+        let line_count = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
+        rows.push(PreparedTableRow { cells, line_count });
     }
-    let for_pagination = rows
-        .iter()
-        .map(|item| TableRow::new("table row", item.height))
-        .collect::<Vec<_>>();
-    let pages = paginate_all(&for_pagination, CONTENT_HEIGHT, header_height)
-        .map_err(RenderError::InvalidLayout)?;
+    let line_counts = rows.iter().map(|r| r.line_count).collect::<Vec<_>>();
+    let pages = paginate_split_all(
+        &line_counts,
+        CONTENT_HEIGHT,
+        header_height,
+        options.line_height,
+        PADDING_Y,
+    )
+    .map_err(RenderError::InvalidLayout)?;
     Ok(PreparedTable {
         columns: table.columns.clone(),
         headers,
@@ -178,7 +175,7 @@ fn cell_box(surface: &mut Surface<'_>, x: f32, y: f32, w: f32, h: f32, header: b
 pub(crate) fn draw_table_fragment(
     surface: &mut Surface<'_>,
     table: &PreparedTable,
-    fragment: &PageFragment,
+    fragment: &SplitPage,
     font: &Font,
     options: RenderOptions,
 ) {
@@ -212,8 +209,13 @@ pub(crate) fn draw_table_fragment(
         x += column.width;
     }
     y += table.header_height;
-    for row_index in fragment.start_row..fragment.end_row {
-        let row = &table.rows[row_index];
+    for slice in &fragment.slices {
+        let row = &table.rows[slice.row];
+        let top_padding = if slice.first { PADDING_Y } else { 0.0 };
+        let bottom_padding = if slice.last { PADDING_Y } else { 0.0 };
+        let height = (slice.end_line - slice.start_line) as f32 * options.line_height
+            + top_padding
+            + bottom_padding;
         x = LEFT;
         for (column, lines) in table.columns.iter().zip(&row.cells) {
             cell_box(
@@ -221,16 +223,19 @@ pub(crate) fn draw_table_fragment(
                 x,
                 y,
                 column.width,
-                row.height,
+                height,
                 false,
-                row_index % 2 == 1,
+                slice.row % 2 == 1,
             );
-            for (index, line) in lines.iter().enumerate() {
-                if !line.is_empty() {
+            for line_index in slice.start_line..slice.end_line {
+                if let Some(line) = lines.get(line_index)
+                    && !line.is_empty()
+                {
+                    let local_line = line_index - slice.start_line;
                     surface.draw_text(
                         Point::from_xy(
                             x + PADDING_X,
-                            y + PADDING_Y + options.line_height * (index + 1) as f32 - 3.0,
+                            y + top_padding + options.line_height * (local_line + 1) as f32 - 3.0,
                         ),
                         font.clone(),
                         options.text_size,
@@ -242,7 +247,7 @@ pub(crate) fn draw_table_fragment(
             }
             x += column.width;
         }
-        y += row.height;
+        y += height;
     }
 }
 

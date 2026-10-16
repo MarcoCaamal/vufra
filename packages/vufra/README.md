@@ -49,7 +49,7 @@ const catalog = renderPdf({
 }, font);
 ```
 
-Column widths use PDF points, add up to **at most 497** on the fixed A4 layout, and have a minimum of 36 points each. The table starts on a new page; headers repeat whenever it continues onto another page. Rows are not split across page boundaries.
+Column widths use PDF points, add up to **at most 497** on the fixed A4 layout, and have a minimum of 36 points each. The table starts on a new page; headers repeat whenever it continues onto another page. **Rows longer than a single page can continue on subsequent pages without duplicating their text.**
 
 For a complete runnable example, use `node examples/table-usage.mjs path/to/font.ttf artifacts/table-first.pdf` from the monorepo root.
 
@@ -62,4 +62,4 @@ For a complete runnable example, use `node examples/table-usage.mjs path/to/font
 - Returns PDF bytes, without requiring a filesystem from the Rust engine
 - Multi-column tables with explicit widths, borders, striped rows and repeated headers
 
-**Limitations:** no complex bidi, font fallback, images, merged cells, arbitrary page size, configurable themes or splitting a single row across pages. Each table starts on a fresh page after paragraphs/legacy rows. No prebuilt platform packages yet. Only checked on Linux x86_64.
+**Limitations:** no complex bidi, font fallback, images, merged cells, arbitrary page size or configurable themes. Long rows of multicolumn tables do split between pages, but paragraphs and legacy rows do not; unbreakable words wider than the cell still fail. Each table starts on a fresh page after paragraphs/legacy rows. No prebuilt platform packages yet. Only checked on Linux x86_64.

@@ -1,6 +1,8 @@
 # Unidad 03 — Tablas multicolumna (2026-10-16)
 
-**Hito:** API Rust y TypeScript genera una tabla real de 1–12 columnas con anchura por columna en puntos PDF, celdas con ajuste de texto, encabezado repetido y paginación por filas.
+**Hito histórico de Unidad 03:** API Rust y TypeScript genera una tabla real de 1–12 columnas con anchura por columna en puntos PDF, celdas con ajuste de texto, encabezado repetido y paginación por filas.
+
+> Las limitaciones de filas indivisibles registradas aquí son históricas: la [Unidad 04](05-row-fragmentation.md) implementó la continuación de filas entre páginas.
 
 ## Implementación
 
