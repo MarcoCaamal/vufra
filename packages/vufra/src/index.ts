@@ -33,12 +33,23 @@ export interface PdfPageOptions {
   height?: number;
   margins?: Partial<{ top: number; bottom: number; left: number; right: number }>;
 }
+/** Raw PNG/JPEG bytes; the image will be embedded in the PDF. */
+export interface PdfImage {
+  data: Uint8Array;
+  /** Reserved on-page bounding box (PDF points). */
+  width: number;
+  height: number;
+  /** contain preserves entire image; cover fills the box and clips overflow. */
+  fit?: 'contain' | 'cover';
+}
 /** An ordered, typed block in Vufra's evolving document AST. */
 export type PdfBlock =
   | { type: 'paragraph'; text: string }
   | { type: 'heading'; level: 1 | 2 | 3; text: string }
   | { type: 'styled-paragraph'; text: string; style: Partial<PdfTextStyle> }
   | { type: 'spacer'; height: number }
+  | ({ type: 'image' } & PdfImage)
+  | { type: 'image'; image: PdfImage } // compatibility alias for nested inputs
   | { type: 'table'; table: PdfTable };
 
 export interface PdfDocument {
@@ -59,6 +70,7 @@ export interface PdfDocument {
 type NativeBlock = {
   kind: string; text?: string; table?: PdfTable;
   level?: number; style?: PdfTextStyle; height?: number;
+  image?: { data: Uint8Array; width: number; height: number; fit: 'contain' | 'cover' };
 };
 interface NativePage {
   width: number; height: number; marginTop: number;
@@ -195,6 +207,7 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
     if (paragraphs.length > 0 || rows.length > 0 || table !== undefined) {
       throw new TypeError('document.blocks cannot be combined with legacy paragraphs/rows/table');
     }
+    let imageCount=0, imageBytes=0;
     blocks = document.blocks.map((block): NativeBlock => {
       if (block?.type === 'paragraph' && typeof block.text === 'string') {
         return { kind: 'paragraph', text: block.text };
@@ -210,11 +223,33 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
           Number.isFinite(block.height) && block.height > 0) {
         return {kind: 'spacer', height:block.height};
       }
+      if (block?.type === 'image') {
+        const image = 'image' in block ? block.image : block;
+        if (!image || !(image.data instanceof Uint8Array) || image.data.byteLength < 1 ||
+            image.data.byteLength > 8 * 1024 * 1024) {
+          throw new TypeError('image.data must be a PNG/JPEG Uint8Array of 1..8 MiB');
+        }
+        if (![image.width,image.height].every(v=>typeof v==='number' && Number.isFinite(v) && v>0) ||
+            image.width > (page ? page.width-page.marginLeft-page.marginRight : 497) ||
+            image.height > (page ? page.height-page.marginTop-page.marginBottom : 650)) {
+          throw new TypeError('image dimensions must fit within the printable page area');
+        }
+        if (image.fit !== undefined && image.fit !== 'contain' && image.fit !== 'cover') {
+          throw new TypeError('image.fit must be contain or cover');
+        }
+        imageCount++;
+        imageBytes += image.data.byteLength;
+        if (imageCount > 64 || imageBytes > 32 * 1024 * 1024) {
+          throw new TypeError('too many images or image bytes in document');
+        }
+        return {kind:'image', image:{data:image.data, width:image.width,
+          height:image.height, fit:image.fit ?? 'contain'}};
+      }
       if (block?.type === 'table') {
         validateTable(block.table, page ? page.width - page.marginLeft - page.marginRight : 497);
         return { kind: 'table', table: block.table };
       }
-      throw new TypeError('flow block must be a paragraph or a table');
+      throw new TypeError('flow block must be a paragraph, heading, spacer, image or table');
     });
   }
   return [document.title, paragraphs, rows, font, table, blocks, page];

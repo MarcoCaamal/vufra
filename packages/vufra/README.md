@@ -163,6 +163,29 @@ const styled = renderPdf({
 
 Runnable: `node examples/styled-document.mjs /path/to/font.ttf artifacts/styled-document.pdf`.
 
+## PNG/JPEG image blocks
+
+```typescript
+import { readFileSync } from 'node:fs';
+import { renderPdfAsync } from 'vufra';
+
+const pdf = await renderPdfAsync({
+  title: 'Photo report',
+  blocks: [
+    { type: 'heading', level: 1, text: 'Report with logo' },
+    { type: 'image', data: readFileSync('logo.png'),
+      width: 180, height: 80, fit: 'contain' /* or 'cover' */ },
+    { type: 'paragraph', text: 'More selectable text here' }
+  ]
+}, font);
+```
+
+Images are embedded as raw bytes, not file paths. `contain` retains the entire aspect ratio, centered inside the specified box; `cover` crops centered content to fill that box. PNG transparency is supported. JPEG is embedded without unnecessary raster re-encoding. Image boxes are **atomic pagination blocks**: an image that doesn't fit moves to the next page rather than splitting.
+
+Input limits: 8 MiB per image, 32 MiB total encoded images, 64 images, 12 megapixels per image, 24 megapixels total. These checks mitigate costly images but **are not strict process-memory ceilings**. The queue estimates byte size using raw binary length, not JSON arrays, before copying inputs. Images are not supported in the legacy `paragraphs/rows/table` mode, only `blocks`. Absolute positioning and `keep-with-next` (e.g. heading tied to an image) are pending.
+
+Demo: `node examples/images-usage.mjs /path/to/font.ttf artifacts/images-report.pdf`.
+
 ## Current support
 
 - UTF-8 Spanish/Latin text with caller-supplied TTF/OTF font
@@ -171,5 +194,6 @@ Runnable: `node examples/styled-document.mjs /path/to/font.ttf artifacts/styled-
 - Error handling for invalid input (including too-tall paragraphs)
 - Synchronous and asynchronous PDF generation; Rust renderer requires no filesystem
 - Multi-column tables with explicit widths, borders, striped rows and repeated headers
+- PNG/JPEG embedded images with transparent PNG, contain/cover cropping and page-aware flow
 
-**Limitations:** a bounded in-process queue and cooperative native cancellation are available, but streaming, cross-process quotas, RSS/output limits, complex bidi, font fallback, images, merged cells, per-span rich-text styles and custom themes are not implemented. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.
+**Limitations:** a bounded in-process queue and cooperative native cancellation are available, but streaming, cross-process quotas, RSS/output limits, complex bidi, font fallback, vector images/SVG, merged cells, per-span rich-text styles and custom themes are not implemented. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.

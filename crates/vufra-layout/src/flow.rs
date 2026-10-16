@@ -9,6 +9,9 @@ const EPS: f32 = 0.001;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlowBlock {
+    Image {
+        height: f32,
+    },
     Spacer {
         height: f32,
     },
@@ -28,6 +31,10 @@ pub enum FlowBlock {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlowFragment {
+    Image {
+        block: usize,
+        height: f32,
+    },
     Spacer {
         block: usize,
         height: f32,
@@ -67,6 +74,24 @@ pub fn paginate_flow(
     }];
     for (block, item) in blocks.iter().enumerate() {
         match item {
+            FlowBlock::Image { height } => {
+                if !height.is_finite() || *height <= 0.0 || *height > page_height {
+                    return Err(PaginationError::InvalidHeight);
+                }
+                let current = pages.last_mut().expect("initial page exists");
+                if current.used_height + height > page_height + EPS {
+                    pages.push(FlowPage {
+                        fragments: Vec::new(),
+                        used_height: 0.0,
+                    });
+                }
+                let current = pages.last_mut().expect("initial page exists");
+                current.fragments.push(FlowFragment::Image {
+                    block,
+                    height: *height,
+                });
+                current.used_height += height;
+            }
             FlowBlock::Spacer { height } => {
                 if !height.is_finite() || *height <= 0.0 || *height > page_height {
                     return Err(PaginationError::InvalidHeight);
@@ -331,6 +356,34 @@ mod tests {
         let p = paginate_flow(&[table(&[])], 90.0).unwrap();
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].fragments.len(), 1);
+    }
+    #[test]
+    fn image_box_is_atomic_and_moves_to_next_page() {
+        let pages = paginate_flow(
+            &[
+                FlowBlock::Image { height: 60.0 },
+                FlowBlock::Image { height: 50.0 },
+                FlowBlock::Paragraph {
+                    lines: 1,
+                    line_height: 10.0,
+                    padding_before: 3.0,
+                    spacing_after: 4.0,
+                },
+            ],
+            100.0,
+        )
+        .unwrap();
+        assert_eq!(pages.len(), 2);
+        assert!(matches!(
+            pages[0].fragments[0],
+            FlowFragment::Image { block: 0, .. }
+        ));
+        assert!(matches!(
+            pages[1].fragments[0],
+            FlowFragment::Image { block: 1, .. }
+        ));
+        assert_eq!(pages[1].fragments.len(), 2);
+        assert!(paginate_flow(&[FlowBlock::Image { height: 110.0 }], 100.0).is_err());
     }
     #[test]
     fn spacer_moves_to_next_page_and_does_not_draw() {

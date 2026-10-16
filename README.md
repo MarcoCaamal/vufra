@@ -147,6 +147,29 @@ const styled = renderPdf({
 
 `page` admite `a4`, `letter` o `width`/`height` expresados en puntos PDF, más márgenes opcionales. Solo se utiliza junto con `blocks`; la API heredada conserva su geometría. Los títulos `heading` ofrecen niveles del 1 al 3.
 
+### Nuevo: imágenes PNG/JPEG en documentos (Unidad 10)
+
+Las imágenes ahora pueden mezclarse con títulos, párrafos y tablas dentro de `blocks`.
+
+```typescript
+import { readFileSync } from 'node:fs';
+import { renderPdfAsync } from 'vufra';
+
+const pdf = await renderPdfAsync({
+  title: 'Informe ilustrado',
+  blocks: [
+    { type: 'heading', level: 1, text: 'Certificado' },
+    { type: 'image', data: readFileSync('logo.png'),
+      width: 180, height: 80, fit: 'contain' },
+    { type: 'paragraph', text: 'Documento con imagen incrustada.' }
+  ]
+}, font);
+```
+
+`fit: 'contain'` respeta la proporción y deja espacio libre; `fit: 'cover'` llena el recuadro con recorte centrado. El bloque se mueve completo a la siguiente página si no cabe, conservando los márgenes. Se admiten PNG (incluyendo transparencia) y JPEG; la imagen se recibe como bytes, sin leer rutas desde Rust.
+
+Límites experimentales de entrada: **8 MiB por imagen, 32 MiB de imágenes en total, 64 bloques, 12 megapíxeles por imagen y 24 megapíxeles acumulados**. No garantizan una cota estricta de RSS. No soportamos imágenes divididas entre páginas, posicionamiento absoluto ni anclar encabezados a su imagen (pueden quedar separados por salto de página).
+
 ### Iniciar en el workspace
 
 Requisitos: Rust **1.92**, Node.js **20+**, npm, compilador de Rust/C disponible, fuente TTF/OTF propia y Poppler para pruebas PDF.
@@ -170,6 +193,7 @@ node examples/styled-document.mjs "$FONT" artifacts/styled-document.pdf
 node examples/async-usage.mjs "$FONT" artifacts/async-first.pdf
 node examples/queue-usage.mjs "$FONT"
 node examples/cancellation-observe.mjs "$FONT"
+node examples/images-usage.mjs "$FONT" artifacts/images-report.pdf
 pdfinfo artifacts/sdk-first.pdf
 ```
 
@@ -189,6 +213,7 @@ El archivo generado es `artifacts/sdk-first.pdf`; se ignora en Git. **La fuente 
 | 07 | SDK async no bloqueante para Node/NestJS (N-API/libuv) | Prototipo funcional |
 | 08 | Scheduler FIFO acotado, backpressure y cancelación en espera | Prototipo funcional |
 | 09 | Cancelación cooperativa Rust y telemetría de renders | Prototipo funcional |
+| 10 | Imágenes PNG/JPEG, contain/cover, recorte y flujo de bloques | Prototipo funcional |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -240,6 +265,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 07 — Generación asíncrona Node](docs/experiments/08-async-node.md)
 - [Unidad 08 — Cola y backpressure](docs/experiments/09-queue-backpressure.md)
 - [Unidad 09 — Cancelación y observabilidad](docs/experiments/10-cancellation-observability.md)
+- [Unidad 10 — Imágenes en el compositor](docs/experiments/11-images-milestone.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
@@ -250,6 +276,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [ADR-0008 Trabajo nativo asíncrono N-API](docs/adr/0008-node-async-work.md)
 - [ADR-0009 Cola de PDF local](docs/adr/0009-pdf-render-queue.md)
 - [ADR-0010 Cancelación Rust y métricas](docs/adr/0010-cancellation-observability.md)
+- [ADR-0011 Imágenes raster en bloques](docs/adr/0011-raster-image-blocks.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

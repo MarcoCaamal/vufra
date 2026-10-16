@@ -2,7 +2,9 @@
 use super::check_cancel;
 use super::{
     MAX_FONT_BYTES, MAX_TOTAL_TEXT_BYTES, PageGeometry, PdfBlock, RenderError, RenderOptions,
-    TextStyle, draw_table_fragment, measure_text_lines, prepare_table,
+    TextStyle, draw_table_fragment,
+    image::{MAX_IMAGE_BLOCKS, MAX_TOTAL_IMAGE_BYTES, MAX_TOTAL_IMAGE_PIXELS, PreparedImage},
+    measure_text_lines, prepare_table,
 };
 use krilla::{
     Document as KrillaDocument,
@@ -27,6 +29,7 @@ enum PreparedBlock {
     },
     Table(super::table::PreparedTable),
     Spacer,
+    Image(PreparedImage),
 }
 
 fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), RenderError> {
@@ -43,6 +46,8 @@ fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), Re
     }
     let mut total = title.len();
     let mut rows = 0usize;
+    let mut image_bytes = 0usize;
+    let mut image_count = 0usize;
     for block in blocks {
         match block {
             PdfBlock::Paragraph(s)
@@ -51,6 +56,15 @@ fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), Re
                 total = total
                     .checked_add(s.len())
                     .ok_or(RenderError::InvalidInput("text too large"))?;
+            }
+            PdfBlock::Image(image) => {
+                image_count += 1;
+                image_bytes = image_bytes
+                    .checked_add(image.data.len())
+                    .ok_or(RenderError::InvalidInput("too much image data"))?;
+                if image_count > MAX_IMAGE_BLOCKS || image_bytes > MAX_TOTAL_IMAGE_BYTES {
+                    return Err(RenderError::InvalidInput("too many images or image bytes"));
+                }
             }
             PdfBlock::Spacer { height } => {
                 if !height.is_finite() || *height <= 0.0 {
@@ -124,6 +138,7 @@ pub(super) fn render_flow(
 
     let mut prepared = Vec::with_capacity(blocks.len());
     let mut measurements = Vec::with_capacity(blocks.len());
+    let mut total_image_pixels = 0u64;
     for block in blocks {
         check_cancel(cancel)?;
         match block {
@@ -157,6 +172,22 @@ pub(super) fn render_flow(
                     spacing_after: style.space_after,
                 });
                 prepared.push(PreparedBlock::Text { lines, style });
+            }
+            PdfBlock::Image(image) => {
+                image.validate_box(geometry.content_width(), geometry.content_height())?;
+                let prepared_image = image.prepare()?;
+                total_image_pixels =
+                    total_image_pixels.saturating_add(prepared_image.pixel_count());
+                if total_image_pixels > MAX_TOTAL_IMAGE_PIXELS {
+                    return Err(RenderError::InvalidInput(
+                        "total image pixel budget exceeded",
+                    ));
+                }
+                check_cancel(cancel)?;
+                measurements.push(FlowBlock::Image {
+                    height: image.height,
+                });
+                prepared.push(PreparedBlock::Image(prepared_image));
             }
             PdfBlock::Spacer { height } => {
                 measurements.push(FlowBlock::Spacer { height: *height });
@@ -220,6 +251,14 @@ pub(super) fn render_flow(
         for fragment in &plan.fragments {
             check_cancel(cancel)?;
             match fragment {
+                FlowFragment::Image { block, height } => {
+                    if let (PreparedBlock::Image(prepared_image), PdfBlock::Image(image)) =
+                        (&prepared[*block], &blocks[*block])
+                    {
+                        prepared_image.draw(&mut surface, image, left, y)?;
+                    }
+                    y += height;
+                }
                 FlowFragment::Spacer { height, .. } => y += height,
                 FlowFragment::Paragraph {
                     block,

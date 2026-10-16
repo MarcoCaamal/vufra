@@ -173,11 +173,26 @@ export class PdfRenderQueue {
         }
         // A conservative UTF-16 payload estimate plus font bytes. This is not a
         // bound on Rust rendering allocations/output, only retained queue inputs.
-        const serialized = JSON.stringify(document);
+        // JSON.stringify(Buffer) expands raw bytes into huge number arrays.
+        // Exclude image payloads from JSON and account for their bytes separately.
+        const imageBlocks = document.blocks?.filter(
+          (b): b is Extract<NonNullable<PdfDocument['blocks']>[number],{type:'image'}> =>
+            b?.type === 'image'
+        ) ?? [];
+        const imagesBytes = imageBlocks.reduce((sum,block) => {
+          const image = 'image' in block ? block.image : block;
+          return sum + (image?.data instanceof Uint8Array ? image.data.byteLength : 0);
+        },0);
+        const metadata = imageBlocks.length ? {...document, blocks:document.blocks?.map(b => {
+          if (b?.type !== 'image') return b;
+          const image = 'image' in b ? b.image : b;
+          return {type:'image',image:{...image,data:undefined}};
+        })} : document;
+        const serialized = JSON.stringify(metadata);
         if (typeof serialized !== 'string') {
           throw new TypeError('Vufra document must be serializable');
         }
-        const estimatedBytes = font.byteLength + serialized.length * 2;
+        const estimatedBytes = font.byteLength + serialized.length * 2 + imagesBytes;
         if (!Number.isSafeInteger(estimatedBytes) || estimatedBytes > this.maxJobBytes) {
           deny(new PdfQueueError('JOB_TOO_LARGE', 'PDF input exceeds maxJobBytes'), estimatedBytes);
           return;

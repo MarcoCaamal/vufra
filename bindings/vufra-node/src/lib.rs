@@ -12,7 +12,8 @@ use std::{
     time::Instant,
 };
 use vufra_pdf::{
-    PageGeometry, PdfBlock, PdfColumn, PdfDocument, PdfTable, RenderOptions, TextStyle,
+    ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, PageGeometry, PdfBlock,
+    PdfColumn, PdfDocument, PdfImage, PdfTable, RenderOptions, TextStyle,
 };
 
 #[napi(object)]
@@ -32,11 +33,19 @@ pub struct NodeBlock {
     pub kind: String,
     pub text: Option<String>,
     pub table: Option<NodeTable>,
+    pub image: Option<NodeImage>,
     pub level: Option<u32>,
     pub style: Option<NodeTextStyle>,
     pub height: Option<f64>,
 }
 
+#[napi(object)]
+pub struct NodeImage {
+    pub data: Buffer,
+    pub width: f64,
+    pub height: f64,
+    pub fit: String,
+}
 #[napi(object)]
 pub struct NodeTextStyle {
     pub font_size: f64,
@@ -77,6 +86,28 @@ impl From<NodeTextStyle> for TextStyle {
     }
 }
 
+fn to_image(input: NodeImage) -> napi::Result<PdfImage> {
+    if input.data.is_empty() || input.data.len() > MAX_IMAGE_BYTES {
+        return Err(napi::Error::from_reason(
+            "image bytes exceed the 8 MiB limit",
+        ));
+    }
+    let fit = match input.fit.as_str() {
+        "contain" => ImageFit::Contain,
+        "cover" => ImageFit::Cover,
+        _ => {
+            return Err(napi::Error::from_reason(
+                "Image fit must be contain or cover",
+            ));
+        }
+    };
+    Ok(PdfImage {
+        data: input.data.to_vec(),
+        width: input.width as f32,
+        height: input.height as f32,
+        fit,
+    })
+}
 fn to_table(input: NodeTable) -> PdfTable {
     PdfTable {
         columns: input
@@ -99,6 +130,23 @@ fn parse_document(
     blocks: Option<Vec<NodeBlock>>,
     page: Option<NodePage>,
 ) -> napi::Result<PdfDocument> {
+    // Reject oversized images before copying JS buffers into Rust jobs.
+    if let Some(items) = &blocks {
+        let images: Vec<_> = items
+            .iter()
+            .filter_map(|item| item.image.as_ref())
+            .collect();
+        if images.len() > MAX_IMAGE_BLOCKS
+            || images
+                .iter()
+                .try_fold(0usize, |sum, img| sum.checked_add(img.data.len()))
+                .is_none_or(|len| len > MAX_TOTAL_IMAGE_BYTES)
+        {
+            return Err(napi::Error::from_reason(
+                "too many images or too much image data",
+            ));
+        }
+    }
     let doc = PdfDocument {
         title,
         paragraphs,
@@ -110,6 +158,15 @@ fn parse_document(
                 items
                     .into_iter()
                     .map(|item| match item.kind.as_str() {
+                        "image"
+                            if item.image.is_some()
+                                && item.text.is_none()
+                                && item.table.is_none() =>
+                        {
+                            Ok(PdfBlock::Image(to_image(
+                                item.image.expect("image checked"),
+                            )?))
+                        }
                         "paragraph" if item.text.is_some() && item.table.is_none() => {
                             Ok(PdfBlock::Paragraph(item.text.unwrap_or_default()))
                         }
