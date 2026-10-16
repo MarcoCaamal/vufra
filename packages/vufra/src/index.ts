@@ -45,9 +45,11 @@ export interface PdfImage {
 /** An ordered, typed block in Vufra's evolving document AST. */
 export type PdfBlock =
   | { type: 'paragraph'; text: string }
-  | { type: 'heading'; level: 1 | 2 | 3; text: string }
+  | { type: 'heading'; level: 1 | 2 | 3; text: string; keepWithNext?: boolean }
   | { type: 'styled-paragraph'; text: string; style: Partial<PdfTextStyle> }
   | { type: 'spacer'; height: number }
+  | { type: 'list'; ordered?: boolean; items: string[] }
+  | { type: 'rule' | 'rectangle'; width: number; height: number; color?: string }
   | ({ type: 'image' } & PdfImage)
   | { type: 'image'; image: PdfImage } // compatibility alias for nested inputs
   | { type: 'table'; table: PdfTable };
@@ -70,6 +72,8 @@ export interface PdfDocument {
 type NativeBlock = {
   kind: string; text?: string; table?: PdfTable;
   level?: number; style?: PdfTextStyle; height?: number;
+  keepWithNext?: boolean; items?: string[]; ordered?: boolean;
+  graphic?: {kind:string;width:number;height:number;color:string};
   image?: { data: Uint8Array; width: number; height: number; fit: 'contain' | 'cover' };
 };
 interface NativePage {
@@ -214,7 +218,11 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
       }
       if (block?.type === 'heading' && typeof block.text === 'string' &&
           [1, 2, 3].includes(block.level)) {
-        return {kind: 'heading', text:block.text, level:block.level};
+        if (block.keepWithNext !== undefined && typeof block.keepWithNext !== 'boolean') {
+          throw new TypeError('heading.keepWithNext must be boolean');
+        }
+        return {kind: 'heading', text:block.text, level:block.level,
+          keepWithNext:block.keepWithNext ?? true};
       }
       if (block?.type === 'styled-paragraph' && typeof block.text === 'string') {
         return {kind: 'styled-paragraph', text:block.text, style:normalizeStyle(block.style)};
@@ -222,6 +230,26 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
       if (block?.type === 'spacer' && typeof block.height === 'number' &&
           Number.isFinite(block.height) && block.height > 0) {
         return {kind: 'spacer', height:block.height};
+      }
+      if (block?.type === 'list') {
+        if (!Array.isArray(block.items) || block.items.length < 1 || block.items.length > 1000 ||
+            !block.items.every(item => typeof item === 'string' && !!item.trim()) ||
+            (block.ordered !== undefined && typeof block.ordered !== 'boolean')) {
+          throw new TypeError('list requires 1..1000 nonempty string items and optional ordered boolean');
+        }
+        return {kind:'list',items:block.items,ordered:block.ordered ?? false};
+      }
+      if (block?.type === 'rule' || block?.type === 'rectangle') {
+        const printableWidth=page ? page.width-page.marginLeft-page.marginRight : 497;
+        const printableHeight=page ? page.height-page.marginTop-page.marginBottom : 650;
+        if (![block.width,block.height].every(x=>typeof x==='number'&&Number.isFinite(x)&&x>0) ||
+            block.width>printableWidth || block.height>printableHeight ||
+            (block.type==='rule' && block.height>8)) {
+          throw new TypeError('graphic dimensions exceed printable area or allowed rule thickness');
+        }
+        const color=block.color ?? '#333333';
+        if (!/^#[0-9a-fA-F]{6}$/.test(color)) throw new TypeError('graphic color must be #RRGGBB');
+        return {kind:'graphic',graphic:{kind:block.type,width:block.width,height:block.height,color}};
       }
       if (block?.type === 'image') {
         const image = 'image' in block ? block.image : block;
@@ -249,7 +277,7 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
         validateTable(block.table, page ? page.width - page.marginLeft - page.marginRight : 497);
         return { kind: 'table', table: block.table };
       }
-      throw new TypeError('flow block must be a paragraph, heading, spacer, image or table');
+      throw new TypeError('invalid flow block type or payload');
     });
   }
   return [document.title, paragraphs, rows, font, table, blocks, page];

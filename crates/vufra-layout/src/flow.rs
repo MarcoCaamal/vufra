@@ -9,6 +9,9 @@ const EPS: f32 = 0.001;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlowBlock {
+    Graphic {
+        height: f32,
+    },
     Image {
         height: f32,
     },
@@ -31,6 +34,10 @@ pub enum FlowBlock {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlowFragment {
+    Graphic {
+        block: usize,
+        height: f32,
+    },
     Image {
         block: usize,
         height: f32,
@@ -65,6 +72,20 @@ pub fn paginate_flow(
     blocks: &[FlowBlock],
     page_height: f32,
 ) -> Result<Vec<FlowPage>, PaginationError> {
+    paginate_flow_with_keep(blocks, &vec![false; blocks.len()], page_height)
+}
+
+/// Moves a short text block and the beginning of the next block together when
+/// there is enough space on a fresh page. Flags address block indices; only
+/// Paragraph blocks may be flagged. Oversized groups degrade to normal flow.
+pub fn paginate_flow_with_keep(
+    blocks: &[FlowBlock],
+    keep_with_next: &[bool],
+    page_height: f32,
+) -> Result<Vec<FlowPage>, PaginationError> {
+    if keep_with_next.len() != blocks.len() {
+        return Err(PaginationError::InvalidHeight);
+    }
     if !page_height.is_finite() || page_height <= 0.0 {
         return Err(PaginationError::InvalidHeight);
     }
@@ -73,7 +94,68 @@ pub fn paginate_flow(
         used_height: 0.0,
     }];
     for (block, item) in blocks.iter().enumerate() {
+        if keep_with_next[block] {
+            let FlowBlock::Paragraph {
+                lines,
+                line_height,
+                padding_before,
+                spacing_after,
+            } = item
+            else {
+                return Err(PaginationError::InvalidHeight);
+            };
+            if let Some(next) = blocks.get(block + 1) {
+                let own_height = *lines as f32 * line_height + padding_before + spacing_after;
+                let next_height = match next {
+                    FlowBlock::Image { height }
+                    | FlowBlock::Graphic { height }
+                    | FlowBlock::Spacer { height } => *height,
+                    FlowBlock::Paragraph {
+                        line_height,
+                        padding_before,
+                        ..
+                    } => line_height + padding_before,
+                    FlowBlock::Table {
+                        header_height,
+                        line_height,
+                        padding,
+                        ..
+                    } => header_height + line_height + 2.0 * padding,
+                };
+                if own_height.is_finite()
+                    && next_height.is_finite()
+                    && own_height + next_height <= page_height + EPS
+                {
+                    let current = pages.last().expect("initial page exists");
+                    if current.used_height > 0.0
+                        && current.used_height + own_height + next_height > page_height + EPS
+                    {
+                        pages.push(FlowPage {
+                            fragments: Vec::new(),
+                            used_height: 0.0,
+                        });
+                    }
+                }
+            }
+        }
         match item {
+            FlowBlock::Graphic { height } => {
+                if !height.is_finite() || *height <= 0.0 || *height > page_height {
+                    return Err(PaginationError::InvalidHeight);
+                }
+                if pages.last().expect("page exists").used_height + height > page_height + EPS {
+                    pages.push(FlowPage {
+                        fragments: Vec::new(),
+                        used_height: 0.0,
+                    });
+                }
+                let current = pages.last_mut().expect("page exists");
+                current.fragments.push(FlowFragment::Graphic {
+                    block,
+                    height: *height,
+                });
+                current.used_height += height;
+            }
             FlowBlock::Image { height } => {
                 if !height.is_finite() || *height <= 0.0 || *height > page_height {
                     return Err(PaginationError::InvalidHeight);
@@ -384,6 +466,87 @@ mod tests {
         ));
         assert_eq!(pages[1].fragments.len(), 2);
         assert!(paginate_flow(&[FlowBlock::Image { height: 110.0 }], 100.0).is_err());
+    }
+    #[test]
+    fn keep_with_next_moves_heading_and_image_together() {
+        let blocks = [
+            FlowBlock::Spacer { height: 65.0 },
+            para(1),
+            FlowBlock::Image { height: 40.0 },
+        ];
+        let without = paginate_flow(&blocks, 100.0).unwrap();
+        assert!(matches!(
+            without[0].fragments[1],
+            FlowFragment::Paragraph { block: 1, .. }
+        ));
+        let kept = paginate_flow_with_keep(&blocks, &[false, true, false], 100.0).unwrap();
+        assert_eq!(kept.len(), 2);
+        assert!(matches!(
+            kept[1].fragments[0],
+            FlowFragment::Paragraph { block: 1, .. }
+        ));
+        assert!(matches!(
+            kept[1].fragments[1],
+            FlowFragment::Image { block: 2, .. }
+        ));
+        assert!(kept.iter().all(|p| p.used_height <= 100.01));
+    }
+    #[test]
+    fn keep_with_next_table_uses_first_row_as_minimum() {
+        let blocks = [
+            FlowBlock::Spacer { height: 62.0 },
+            para(1),
+            table(&[1, 1, 1, 1, 1, 1]),
+        ];
+        let kept = paginate_flow_with_keep(&blocks, &[false, true, false], 100.0).unwrap();
+        assert!(matches!(
+            kept[1].fragments[0],
+            FlowFragment::Paragraph { block: 1, .. }
+        ));
+        assert!(matches!(
+            kept[1].fragments[1],
+            FlowFragment::Table { block: 2, .. }
+        ));
+        assert!(paginate_flow_with_keep(&blocks, &[false], 100.0).is_err());
+        assert!(paginate_flow_with_keep(&blocks, &[true, false, false], 100.0).is_err());
+    }
+    #[test]
+    fn keep_with_next_gracefully_degrades_when_group_exceeds_page() {
+        let blocks = [
+            FlowBlock::Spacer { height: 50.0 },
+            para(4),
+            FlowBlock::Image { height: 75.0 },
+        ];
+        let pages = paginate_flow_with_keep(&blocks, &[false, true, false], 100.0).unwrap();
+        assert!(pages.len() >= 2);
+        assert_eq!(
+            pages
+                .iter()
+                .map(|p| p
+                    .fragments
+                    .iter()
+                    .filter(|f| matches!(f, FlowFragment::Image { .. }))
+                    .count())
+                .sum::<usize>(),
+            1
+        );
+    }
+    #[test]
+    fn graphics_are_atomic() {
+        let blocks = [
+            FlowBlock::Graphic { height: 70.0 },
+            FlowBlock::Graphic { height: 40.0 },
+        ];
+        let pages = paginate_flow(&blocks, 100.0).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert!(matches!(
+            pages[1].fragments[0],
+            FlowFragment::Graphic {
+                block: 1,
+                height: 40.0
+            }
+        ));
+        assert!(paginate_flow(&[FlowBlock::Graphic { height: 110.0 }], 100.0).is_err());
     }
     #[test]
     fn spacer_moves_to_next_page_and_does_not_draw() {

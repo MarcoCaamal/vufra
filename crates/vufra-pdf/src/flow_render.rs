@@ -20,7 +20,7 @@ use std::{
     borrow::Cow,
     sync::{Arc, atomic::AtomicBool},
 };
-use vufra_layout::flow::{FlowBlock, FlowFragment, paginate_flow};
+use vufra_layout::flow::{FlowBlock, FlowFragment, paginate_flow_with_keep};
 
 enum PreparedBlock {
     Text {
@@ -30,6 +30,11 @@ enum PreparedBlock {
     Table(super::table::PreparedTable),
     Spacer,
     Image(PreparedImage),
+    Graphic,
+    List {
+        lines: Vec<(String, Option<String>)>,
+        style: TextStyle,
+    },
 }
 
 fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), RenderError> {
@@ -57,6 +62,24 @@ fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), Re
                     .checked_add(s.len())
                     .ok_or(RenderError::InvalidInput("text too large"))?;
             }
+            PdfBlock::List { items, .. } => {
+                if items.is_empty()
+                    || items.len() > 1_000
+                    || items
+                        .iter()
+                        .any(|s| s.trim().is_empty() || s.contains('\0'))
+                {
+                    return Err(RenderError::InvalidInput(
+                        "list requires 1..1000 nonempty items",
+                    ));
+                }
+                for item in items {
+                    total = total
+                        .checked_add(item.len())
+                        .ok_or(RenderError::InvalidInput("text too large"))?;
+                }
+            }
+            PdfBlock::Graphic(_) => {}
             PdfBlock::Image(image) => {
                 image_count += 1;
                 image_bytes = image_bytes
@@ -173,6 +196,54 @@ pub(super) fn render_flow(
                 });
                 prepared.push(PreparedBlock::Text { lines, style });
             }
+            PdfBlock::List { items, ordered } => {
+                const INDENT: f32 = 27.0;
+                let mut lines = Vec::new();
+                for (index, item) in items.iter().enumerate() {
+                    check_cancel(cancel)?;
+                    let wrapped = measure_text_lines(
+                        item,
+                        geometry.content_width() - INDENT,
+                        &family,
+                        &mut fonts,
+                        &mut context,
+                        options.text_size,
+                        cancel,
+                    )?;
+                    for (line_index, line) in wrapped.into_iter().enumerate() {
+                        let marker = if line_index == 0 {
+                            Some(if *ordered {
+                                format!("{}.", index + 1)
+                            } else {
+                                "•".to_string()
+                            })
+                        } else {
+                            None
+                        };
+                        lines.push((line, marker));
+                    }
+                }
+                let style = TextStyle {
+                    font_size: options.text_size,
+                    line_height: options.line_height + 2.0,
+                    space_before: 12.0,
+                    space_after: 11.0,
+                };
+                measurements.push(FlowBlock::Paragraph {
+                    lines: lines.len(),
+                    line_height: style.line_height,
+                    padding_before: style.space_before,
+                    spacing_after: style.space_after,
+                });
+                prepared.push(PreparedBlock::List { lines, style });
+            }
+            PdfBlock::Graphic(graphic) => {
+                graphic.validate(geometry.content_width(), geometry.content_height())?;
+                measurements.push(FlowBlock::Graphic {
+                    height: graphic.height,
+                });
+                prepared.push(PreparedBlock::Graphic);
+            }
             PdfBlock::Image(image) => {
                 image.validate_box(geometry.content_width(), geometry.content_height())?;
                 let prepared_image = image.prepare()?;
@@ -213,7 +284,19 @@ pub(super) fn render_flow(
             }
         }
     }
-    let pages = paginate_flow(&measurements, geometry.content_height())
+    let keeps = blocks
+        .iter()
+        .map(|b| {
+            matches!(
+                b,
+                PdfBlock::Heading {
+                    keep_with_next: true,
+                    ..
+                }
+            )
+        })
+        .collect::<Vec<_>>();
+    let pages = paginate_flow_with_keep(&measurements, &keeps, geometry.content_height())
         .map_err(RenderError::InvalidLayout)?;
     let mut output = KrillaDocument::new();
     for (index, plan) in pages.iter().enumerate() {
@@ -251,6 +334,12 @@ pub(super) fn render_flow(
         for fragment in &plan.fragments {
             check_cancel(cancel)?;
             match fragment {
+                FlowFragment::Graphic { block, height } => {
+                    if let PdfBlock::Graphic(graphic) = &blocks[*block] {
+                        graphic.draw(&mut surface, left, y)?;
+                    }
+                    y += height;
+                }
                 FlowFragment::Image { block, height } => {
                     if let (PreparedBlock::Image(prepared_image), PdfBlock::Image(image)) =
                         (&prepared[*block], &blocks[*block])
@@ -276,6 +365,34 @@ pub(super) fn render_flow(
                                         left,
                                         y + padding_before + local as f32 * style.line_height,
                                     ),
+                                    font.clone(),
+                                    style.font_size,
+                                    line,
+                                    false,
+                                    TextDirection::Auto,
+                                );
+                            }
+                        }
+                    }
+                    if let PreparedBlock::List { lines, style } = &prepared[*block] {
+                        for (local, (line, marker)) in
+                            lines[*start_line..*end_line].iter().enumerate()
+                        {
+                            check_cancel(cancel)?;
+                            let baseline = y + padding_before + local as f32 * style.line_height;
+                            if let Some(prefix) = marker {
+                                surface.draw_text(
+                                    Point::from_xy(left, baseline),
+                                    font.clone(),
+                                    style.font_size,
+                                    prefix,
+                                    false,
+                                    TextDirection::Auto,
+                                );
+                            }
+                            if !line.is_empty() {
+                                surface.draw_text(
+                                    Point::from_xy(left + 27.0, baseline),
                                     font.clone(),
                                     style.font_size,
                                     line,

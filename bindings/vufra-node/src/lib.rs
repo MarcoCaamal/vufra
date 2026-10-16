@@ -12,8 +12,8 @@ use std::{
     time::Instant,
 };
 use vufra_pdf::{
-    ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, PageGeometry, PdfBlock,
-    PdfColumn, PdfDocument, PdfImage, PdfTable, RenderOptions, TextStyle,
+    GraphicKind, ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, PageGeometry,
+    PdfBlock, PdfColumn, PdfDocument, PdfGraphic, PdfImage, PdfTable, RenderOptions, TextStyle,
 };
 
 #[napi(object)]
@@ -34,11 +34,22 @@ pub struct NodeBlock {
     pub text: Option<String>,
     pub table: Option<NodeTable>,
     pub image: Option<NodeImage>,
+    pub items: Option<Vec<String>>,
+    pub ordered: Option<bool>,
+    pub keep_with_next: Option<bool>,
+    pub graphic: Option<NodeGraphic>,
     pub level: Option<u32>,
     pub style: Option<NodeTextStyle>,
     pub height: Option<f64>,
 }
 
+#[napi(object)]
+pub struct NodeGraphic {
+    pub kind: String,
+    pub width: f64,
+    pub height: f64,
+    pub color: String,
+}
 #[napi(object)]
 pub struct NodeImage {
     pub data: Buffer,
@@ -86,6 +97,28 @@ impl From<NodeTextStyle> for TextStyle {
     }
 }
 
+fn to_graphic(g: NodeGraphic) -> napi::Result<PdfGraphic> {
+    let kind = match g.kind.as_str() {
+        "rule" => GraphicKind::Rule,
+        "rectangle" => GraphicKind::Rectangle,
+        _ => return Err(napi::Error::from_reason("invalid graphic kind")),
+    };
+    let b = g.color.as_bytes();
+    if b.len() != 7 || b[0] != b'#' || !b[1..].iter().all(u8::is_ascii_hexdigit) {
+        return Err(napi::Error::from_reason("graphic color must be #RRGGBB"));
+    }
+    let mut rgb = [0u8; 3];
+    for (i, value) in rgb.iter_mut().enumerate() {
+        *value = u8::from_str_radix(&g.color[(1 + i * 2)..(3 + i * 2)], 16)
+            .map_err(|_| napi::Error::from_reason("invalid graphic color"))?;
+    }
+    Ok(PdfGraphic {
+        kind,
+        width: g.width as f32,
+        height: g.height as f32,
+        rgb,
+    })
+}
 fn to_image(input: NodeImage) -> napi::Result<PdfImage> {
     if input.data.is_empty() || input.data.len() > MAX_IMAGE_BYTES {
         return Err(napi::Error::from_reason(
@@ -167,12 +200,32 @@ fn parse_document(
                                 item.image.expect("image checked"),
                             )?))
                         }
+                        "list"
+                            if item.items.is_some()
+                                && item.table.is_none()
+                                && item.image.is_none() =>
+                        {
+                            Ok(PdfBlock::List {
+                                items: item.items.expect("items checked"),
+                                ordered: item.ordered.unwrap_or(false),
+                            })
+                        }
+                        "graphic"
+                            if item.graphic.is_some()
+                                && item.table.is_none()
+                                && item.image.is_none() =>
+                        {
+                            Ok(PdfBlock::Graphic(to_graphic(
+                                item.graphic.expect("graphic checked"),
+                            )?))
+                        }
                         "paragraph" if item.text.is_some() && item.table.is_none() => {
                             Ok(PdfBlock::Paragraph(item.text.unwrap_or_default()))
                         }
                         "heading" if item.text.is_some() && item.table.is_none() => {
                             Ok(PdfBlock::Heading {
                                 text: item.text.unwrap_or_default(),
+                                keep_with_next: item.keep_with_next.unwrap_or(true),
                                 level: item.level.and_then(|v| u8::try_from(v).ok()).ok_or_else(
                                     || napi::Error::from_reason("Invalid heading level"),
                                 )?,

@@ -182,9 +182,31 @@ const pdf = await renderPdfAsync({
 
 Images are embedded as raw bytes, not file paths. `contain` retains the entire aspect ratio, centered inside the specified box; `cover` crops centered content to fill that box. PNG transparency is supported. JPEG is embedded without unnecessary raster re-encoding. Image boxes are **atomic pagination blocks**: an image that doesn't fit moves to the next page rather than splitting.
 
-Input limits: 8 MiB per image, 32 MiB total encoded images, 64 images, 12 megapixels per image, 24 megapixels total. These checks mitigate costly images but **are not strict process-memory ceilings**. The queue estimates byte size using raw binary length, not JSON arrays, before copying inputs. Images are not supported in the legacy `paragraphs/rows/table` mode, only `blocks`. Absolute positioning and `keep-with-next` (e.g. heading tied to an image) are pending.
+Input limits: 8 MiB per image, 32 MiB total encoded images, 64 images, 12 megapixels per image, 24 megapixels total. These checks mitigate costly images but **are not strict process-memory ceilings**. The queue estimates byte size using raw binary length, not JSON arrays, before copying inputs. Images are not supported in the legacy `paragraphs/rows/table` mode, only `blocks`. Absolute positioning and advanced grouping are pending; heading `keepWithNext` for the next block was implemented in Unit 11.
 
 Demo: `node examples/images-usage.mjs /path/to/font.ttf artifacts/images-report.pdf`.
+
+## Lists, vector shapes and keepWithNext (Unit 11)
+
+```ts
+const pdf=await renderPdfAsync({
+  title:'Visual report',
+  blocks:[
+    {type:'heading',level:2,text:'Evidence',keepWithNext:true},
+    {type:'image',data:jpegBytes,width:180,height:90,fit:'cover'},
+    {type:'rule',width:440,height:3,color:'#245fa8'},
+    {type:'list',items:['First bullet','Second bullet']},
+    {type:'list',ordered:true,items:['Prepare','Validate','Publish']},
+    {type:'rectangle',width:300,height:20,color:'#dceaf7'}
+  ]
+},font);
+```
+
+- Lists: 1–1000 non-empty text entries; both numbered and bullet lists can span pages, with 27-point hanging indentation. Markers appear only on the first line of each item.
+- Graphics: vector-filled horizontal rule (height up to 8pt) and rectangle, with `#RRGGBB` color, fixed width and height, and page-aware positioning.
+- Headings: `keepWithNext` defaults to true; the heading and the first chunk of the next block move together when the group can fit on a fresh page. Set false to disable. It is not a general-purpose multi-block keep-together mechanism.
+
+Runnable: `node examples/graphics-lists-usage.mjs /path/to/font.ttf artifacts/graphics-lists-report.pdf`.
 
 ## Current support
 
@@ -195,5 +217,6 @@ Demo: `node examples/images-usage.mjs /path/to/font.ttf artifacts/images-report.
 - Synchronous and asynchronous PDF generation; Rust renderer requires no filesystem
 - Multi-column tables with explicit widths, borders, striped rows and repeated headers
 - PNG/JPEG embedded images with transparent PNG, contain/cover cropping and page-aware flow
+- Bullet/numbered lists, vector rules and rectangles with RGB fill, and heading keepWithNext
 
 **Limitations:** a bounded in-process queue and cooperative native cancellation are available, but streaming, cross-process quotas, RSS/output limits, complex bidi, font fallback, vector images/SVG, merged cells, per-span rich-text styles and custom themes are not implemented. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.

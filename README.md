@@ -170,6 +170,24 @@ const pdf = await renderPdfAsync({
 
 Límites experimentales de entrada: **8 MiB por imagen, 32 MiB de imágenes en total, 64 bloques, 12 megapíxeles por imagen y 24 megapíxeles acumulados**. No garantizan una cota estricta de RSS. No soportamos imágenes divididas entre páginas, posicionamiento absoluto ni anclar encabezados a su imagen (pueden quedar separados por salto de página).
 
+### Nuevo: listas, formas vectoriales y `keepWithNext` (Unidad 11)
+
+```typescript
+const pdf = await renderPdfAsync({
+  title: 'Reporte ilustrado',
+  blocks: [
+    {type:'heading',level:2,text:'Evidencia',keepWithNext:true},
+    {type:'image',data:photoJpeg,width:240,height:130,fit:'cover'},
+    {type:'rule',width:450,height:3,color:'#245fa8'},
+    {type:'list',items:['Primer punto','Segundo punto']},
+    {type:'list',ordered:true,items:['Preparar','Verificar','Emitir']},
+    {type:'rectangle',width:320,height:24,color:'#dceaf7'}
+  ]
+},font);
+```
+
+Las listas pueden continuar en otras páginas sin duplicar el texto, con numeración o viñetas y sangría. Las reglas y los rectángulos se dibujan como vectores RGB, no como imágenes. Los títulos conservan por defecto `keepWithNext: true`, de modo que, cuando sea posible, se muevan con la imagen o la primera fila de la tabla siguiente. `keepWithNext: false` lo desactiva. No es aún un agrupador general de varios bloques consecutivos.
+
 ### Iniciar en el workspace
 
 Requisitos: Rust **1.92**, Node.js **20+**, npm, compilador de Rust/C disponible, fuente TTF/OTF propia y Poppler para pruebas PDF.
@@ -194,6 +212,7 @@ node examples/async-usage.mjs "$FONT" artifacts/async-first.pdf
 node examples/queue-usage.mjs "$FONT"
 node examples/cancellation-observe.mjs "$FONT"
 node examples/images-usage.mjs "$FONT" artifacts/images-report.pdf
+node examples/graphics-lists-usage.mjs "$FONT" artifacts/graphics-lists-report.pdf
 pdfinfo artifacts/sdk-first.pdf
 ```
 
@@ -214,6 +233,7 @@ El archivo generado es `artifacts/sdk-first.pdf`; se ignora en Git. **La fuente 
 | 08 | Scheduler FIFO acotado, backpressure y cancelación en espera | Prototipo funcional |
 | 09 | Cancelación cooperativa Rust y telemetría de renders | Prototipo funcional |
 | 10 | Imágenes PNG/JPEG, contain/cover, recorte y flujo de bloques | Prototipo funcional |
+| 11 | Listas, figuras vectoriales y continuidad título/contenido | Prototipo funcional |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -250,7 +270,7 @@ cd packages/vufra && npm test
 
 La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 registros ordenados sin pérdida/duplicación, PDFs multipágina y errores de entrada controlados.
 
-**No soporta aún:** texto RTL/shaping complejo, fallback de fuentes, imágenes, celdas combinadas, estilos de texto enriquecido por fragmento ni páginas de tamaño diferente dentro del mismo documento. **En el modo `blocks`, los párrafos y las filas de tablas multicolumna continúan entre páginas; en el modo heredado, párrafos y filas simples siguen indivisibles.** Palabras inquebrantables más anchas que una columna generan error. Solo se ha probado Linux x86_64.
+**No soporta aún:** texto RTL/shaping complejo, fallback de fuentes, SVG/otras imágenes vectoriales, celdas combinadas, estilos de texto enriquecido por fragmento ni páginas de tamaño diferente dentro del mismo documento. **En el modo `blocks`, los párrafos y las filas de tablas multicolumna continúan entre páginas; en el modo heredado, párrafos y filas simples siguen indivisibles.** Palabras inquebrantables más anchas que una columna generan error. Solo se ha probado Linux x86_64.
 
 ## Documentación
 
@@ -266,6 +286,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 08 — Cola y backpressure](docs/experiments/09-queue-backpressure.md)
 - [Unidad 09 — Cancelación y observabilidad](docs/experiments/10-cancellation-observability.md)
 - [Unidad 10 — Imágenes en el compositor](docs/experiments/11-images-milestone.md)
+- [Unidad 11 — Listas y gráficos](docs/experiments/12-lists-graphics-milestone.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
@@ -277,6 +298,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [ADR-0009 Cola de PDF local](docs/adr/0009-pdf-render-queue.md)
 - [ADR-0010 Cancelación Rust y métricas](docs/adr/0010-cancellation-observability.md)
 - [ADR-0011 Imágenes raster en bloques](docs/adr/0011-raster-image-blocks.md)
+- [ADR-0012 Listas y continuidad semántica](docs/adr/0012-lists-graphics-keep-next.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

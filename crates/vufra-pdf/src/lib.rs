@@ -31,7 +31,9 @@ pub(crate) fn check_cancel(cancel: &AtomicBool) -> Result<(), RenderError> {
     }
 }
 mod flow_render;
+mod graphic;
 mod image;
+pub use graphic::{GraphicKind, PdfGraphic};
 mod style;
 pub use image::{ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, PdfImage};
 mod table;
@@ -43,10 +45,24 @@ pub use table::{PdfColumn, PdfTable};
 pub enum PdfBlock {
     Paragraph(String),
     Table(PdfTable),
-    Heading { text: String, level: u8 },
-    StyledParagraph { text: String, style: TextStyle },
-    Spacer { height: f32 },
+    Heading {
+        text: String,
+        level: u8,
+        keep_with_next: bool,
+    },
+    StyledParagraph {
+        text: String,
+        style: TextStyle,
+    },
+    Spacer {
+        height: f32,
+    },
     Image(PdfImage),
+    List {
+        items: Vec<String>,
+        ordered: bool,
+    },
+    Graphic(PdfGraphic),
 }
 use table::{draw_table_fragment, prepare_table};
 use vufra_core::TableRow;
