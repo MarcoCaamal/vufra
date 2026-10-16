@@ -1,5 +1,8 @@
 //! Small N-API bridge. Keep all PDF logic inside vufra-pdf.
-use napi::bindgen_prelude::Buffer;
+use napi::{
+    Env, Task,
+    bindgen_prelude::{AsyncTask, Buffer},
+};
 use napi_derive::napi;
 use vufra_pdf::{
     PageGeometry, PdfBlock, PdfColumn, PdfDocument, PdfTable, RenderOptions, TextStyle,
@@ -81,16 +84,14 @@ fn to_table(input: NodeTable) -> PdfTable {
     }
 }
 
-#[napi]
-pub fn render_pdf_native(
+fn parse_document(
     title: String,
     paragraphs: Vec<String>,
     rows: Vec<String>,
-    font_data: Buffer,
     table: Option<NodeTable>,
     blocks: Option<Vec<NodeBlock>>,
     page: Option<NodePage>,
-) -> napi::Result<Buffer> {
+) -> napi::Result<PdfDocument> {
     let doc = PdfDocument {
         title,
         paragraphs,
@@ -143,7 +144,59 @@ pub fn render_pdf_native(
             })
             .transpose()?,
     };
+    Ok(doc)
+}
+
+/// Synchronous API: unchanged, useful for simple scripts and worker threads.
+#[napi]
+pub fn render_pdf_native(
+    title: String,
+    paragraphs: Vec<String>,
+    rows: Vec<String>,
+    font_data: Buffer,
+    table: Option<NodeTable>,
+    blocks: Option<Vec<NodeBlock>>,
+    page: Option<NodePage>,
+) -> napi::Result<Buffer> {
+    let doc = parse_document(title, paragraphs, rows, table, blocks, page)?;
     vufra_pdf::render_pdf(&doc, font_data.as_ref(), RenderOptions::default())
         .map(Buffer::from)
         .map_err(|error| napi::Error::from_reason(error.to_string()))
+}
+
+/// Owned input, moved off the JS thread before CPU-heavy layout and rendering.
+pub struct PdfRenderTask {
+    doc: PdfDocument,
+    font_data: Vec<u8>,
+}
+impl Task for PdfRenderTask {
+    type Output = Vec<u8>;
+    type JsValue = Buffer;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        vufra_pdf::render_pdf(&self.doc, &self.font_data, RenderOptions::default())
+            .map_err(|error| napi::Error::from_reason(error.to_string()))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(Buffer::from(output))
+    }
+}
+
+/// Queued using N-API/libuv async work. No Tokio runtime or JS event-loop CPU rendering.
+#[napi]
+pub fn render_pdf_async_native(
+    title: String,
+    paragraphs: Vec<String>,
+    rows: Vec<String>,
+    font_data: Buffer,
+    table: Option<NodeTable>,
+    blocks: Option<Vec<NodeBlock>>,
+    page: Option<NodePage>,
+) -> napi::Result<AsyncTask<PdfRenderTask>> {
+    let doc = parse_document(title, paragraphs, rows, table, blocks, page)?;
+    Ok(AsyncTask::new(PdfRenderTask {
+        doc,
+        font_data: font_data.to_vec(),
+    }))
 }

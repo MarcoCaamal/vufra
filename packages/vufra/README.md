@@ -31,6 +31,23 @@ const pdf = renderPdf({
 writeFileSync('report.pdf', pdf);
 ```
 
+## Async PDF generation for backend servers
+
+```typescript
+import { renderPdfAsync } from 'vufra';
+
+const pdf = await renderPdfAsync({
+  title: 'Report',
+  blocks: [{ type: 'paragraph', text: '¡Hola, Cancún!' }]
+}, font);
+```
+
+The async method runs CPU-heavy rendering on a native libuv worker via napi-rs `AsyncTask`, keeping the event loop responsive. `renderPdf` remains synchronous, sharing the same validation and PDF engine. Both methods use the same document schema and embedded caller-supplied font.
+
+There is **no built-in concurrency limit, cancellation or streaming**. Jobs produce full PDFs in memory. For NestJS, use `await renderPdfAsync`, expose the response as `StreamableFile`, and apply app-level job limits. Copyable NestJS reference snippets: `examples/nestjs/pdf.service.ts` and `examples/nestjs/pdf.controller.ts`. These are not compiled/tested as a standalone NestJS application in this repository.
+
+Run `node examples/async-usage.mjs /path/to/font.ttf artifacts/async-first.pdf` from repo root.
+
 ## Multi-column tables
 
 ```ts
@@ -103,7 +120,7 @@ Runnable: `node examples/styled-document.mjs /path/to/font.ttf artifacts/styled-
 - Automatic paragraph/row line-breaking driven by Parley
 - A4, Letter and custom-size pages (in ordered blocks mode), with configurable margins
 - Error handling for invalid input (including too-tall paragraphs)
-- Returns PDF bytes, without requiring a filesystem from the Rust engine
+- Synchronous and asynchronous PDF generation; Rust renderer requires no filesystem
 - Multi-column tables with explicit widths, borders, striped rows and repeated headers
 
-**Limitations:** no complex bidi, font fallback, images, merged cells, per-span rich-text styles or custom table themes. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.
+**Limitations:** no async job cancellation, streaming, concurrency quotas, complex bidi, font fallback, images, merged cells, per-span rich-text styles or custom table themes. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.

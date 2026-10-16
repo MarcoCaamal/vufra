@@ -22,6 +22,24 @@ writeFileSync('reporte.pdf', bytes);
 
 La API Rust subyacente vive en `crates/vufra-pdf`: `render_pdf(&PdfDocument, &[u8], RenderOptions)`.
 
+### Nuevo: generación asíncrona para Node.js y NestJS (Unidad 07)
+
+```typescript
+import { renderPdfAsync } from 'vufra';
+
+const bytes = await renderPdfAsync({
+  title: 'Reporte de operaciones',
+  blocks: [
+    { type: 'heading', level: 1, text: 'Resultados' },
+    { type: 'paragraph', text: '¡Hola, México!' }
+  ]
+}, font);
+```
+
+`renderPdfAsync` ejecuta el render PDF en una tarea nativa de libuv y devuelve una `Promise<Uint8Array>`; en Node el valor es un `Buffer`. La validación inicial y copia de inputs sigue siendo síncrona y la memoria se mantiene hasta completar cada tarea. **No hay cancelación, streaming ni límite de concurrencia incorporado:** los servidores deben limitar jobs concurrentes. La API `renderPdf` sincrónica sigue funcionando.
+
+Ejemplos: `examples/async-usage.mjs` y `examples/nestjs/` (los últimos son snippets de integración, no una aplicación NestJS compilada).
+
 También puedes pasar una tabla de varias columnas:
 
 ```typescript
@@ -107,6 +125,7 @@ node examples/table-usage.mjs "$FONT" artifacts/table-first.pdf
 node examples/long-row-usage.mjs "$FONT" artifacts/long-row.pdf
 node examples/flow-usage.mjs "$FONT" artifacts/flow-first.pdf
 node examples/styled-document.mjs "$FONT" artifacts/styled-document.pdf
+node examples/async-usage.mjs "$FONT" artifacts/async-first.pdf
 pdfinfo artifacts/sdk-first.pdf
 ```
 
@@ -123,6 +142,7 @@ El archivo generado es `artifacts/sdk-first.pdf`; se ignora en Git. **La fuente 
 | 04 | Continuación de una fila de tabla a través de varias páginas | Prototipo funcional |
 | 05 | Compositor ordenado de tablas y párrafos fragmentables | Prototipo funcional |
 | 06 | Nodos estilizados y geometría de página configurable | Prototipo funcional |
+| 07 | SDK async no bloqueante para Node/NestJS (N-API/libuv) | Prototipo funcional |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -171,6 +191,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 04 — Filas fragmentables](docs/experiments/05-row-fragmentation.md)
 - [Unidad 05 — Compositor unificado](docs/experiments/06-unified-flow.md)
 - [Unidad 06 — AST estilizado y geometría](docs/experiments/07-styled-geometry.md)
+- [Unidad 07 — Generación asíncrona Node](docs/experiments/08-async-node.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
@@ -178,6 +199,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [ADR-0005 Fragmentación por líneas](docs/adr/0005-split-row-pagination.md)
 - [ADR-0006 Flujo de contenido ordenado](docs/adr/0006-unified-flow.md)
 - [ADR-0007 Geometría y bloques semánticos](docs/adr/0007-styled-page.md)
+- [ADR-0008 Trabajo nativo asíncrono N-API](docs/adr/0008-node-async-work.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

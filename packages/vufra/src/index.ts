@@ -69,6 +69,10 @@ interface NativeBinding {
     title: string, paragraphs: string[], rows: string[], font: Uint8Array,
     table?: PdfTable, blocks?: NativeBlock[], page?: NativePage
   ): Uint8Array;
+  renderPdfAsyncNative(
+    title: string, paragraphs: string[], rows: string[], font: Uint8Array,
+    table?: PdfTable, blocks?: NativeBlock[], page?: NativePage
+  ): Promise<Uint8Array>;
 }
 declare const require: (path: string) => NativeBinding;
 
@@ -132,7 +136,13 @@ function normalizeStyle(style: Partial<PdfTextStyle>): PdfTextStyle {
   return resolved;
 }
 
-export function renderPdf(document: PdfDocument, font: Uint8Array): Uint8Array {
+type NativeArguments = [
+  title: string, paragraphs: string[], rows: string[], font: Uint8Array,
+  table?: PdfTable, blocks?: NativeBlock[], page?: NativePage,
+];
+
+/** Shared preflight/normalization for both the synchronous and asynchronous API. */
+function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments {
   if (!document || typeof document.title !== 'string' || !document.title.trim()) {
     throw new TypeError('Vufra requires a nonempty document.title');
   }
@@ -181,5 +191,24 @@ export function renderPdf(document: PdfDocument, font: Uint8Array): Uint8Array {
       throw new TypeError('flow block must be a paragraph or a table');
     });
   }
-  return native.renderPdfNative(document.title, paragraphs, rows, font, table, blocks, page);
+  return [document.title, paragraphs, rows, font, table, blocks, page];
+}
+
+/** Synchronous native render. Blocks the Node.js event loop until the PDF is ready. */
+export function renderPdf(document: PdfDocument, font: Uint8Array): Uint8Array {
+  return native.renderPdfNative(...normalizePdf(document, font));
+}
+
+/**
+ * Generate a PDF on a native libuv worker, returning a Promise of PDF bytes.
+ * The document and font are copied/owned by the native job before it is queued.
+ * Suitable for NestJS request handlers: `await renderPdfAsync(doc, font)`.
+ *
+ * No cancellation or streaming in this prototype. Large concurrent jobs use
+ * the libuv worker pool and consume memory; apply app-level concurrency limits.
+ */
+export async function renderPdfAsync(
+  document: PdfDocument, font: Uint8Array,
+): Promise<Uint8Array> {
+  return native.renderPdfAsyncNative(...normalizePdf(document, font));
 }
