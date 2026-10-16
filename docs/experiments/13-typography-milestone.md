@@ -1,5 +1,7 @@
 # Unidad 12 — Tipografía real y párrafos multifuente
 
+> **Histórico:** la [Unidad 13](14-inline-style-milestone.md) incorporó tamaños/colores inline y fallback explícito después de completar este hito.
+
 **Fecha:** 2026-10-16. **Estado:** experimental, funcional.
 
 ## Implementado

@@ -11,3 +11,4 @@ vufra-core.workspace = true
 vufra-layout.workspace = true
 krilla.workspace = true
 parley.workspace = true
+ttf-parser.workspace = true

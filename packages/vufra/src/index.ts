@@ -47,6 +47,12 @@ export interface PdfRichRun {
   text: string;
   /** 'regular' references the required second argument; other names resolve in fontFaces. */
   font?: string;
+  /** Font size for this run, in PDF points (6..36). */
+  fontSize?: number;
+  /** Hex RGB text fill for this run; default black. */
+  color?: string;
+  /** Ordered font face IDs to use if the primary font cannot cover a whole word. */
+  fallbackFonts?: string[];
 }
 /** An ordered, typed block in Vufra's evolving document AST. */
 export type PdfBlock =
@@ -80,7 +86,7 @@ export interface PdfDocument {
 
 type NativeBlock = {
   kind: string; text?: string; table?: PdfTable;
-  runs?: {text:string;font:string}[];
+  runs?: {text:string;font:string;fontSize?:number;color?:string;fallbackFonts?:string[]}[];
   level?: number; style?: PdfTextStyle; height?: number;
   keepWithNext?: boolean; items?: string[]; ordered?: boolean;
   graphic?: {kind:string;width:number;height:number;color:string};
@@ -263,8 +269,25 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
         if(!block.runs.every(r=>names.has(r.font ?? 'regular'))) {
           throw new TypeError('rich-paragraph references unknown font face');
         }
+        for (const r of block.runs) {
+          if (r.fontSize!==undefined &&
+            (typeof r.fontSize!=='number' || !Number.isFinite(r.fontSize) ||
+              r.fontSize<6 || r.fontSize>36)) {
+            throw new TypeError('rich text fontSize must be 6..36 points');
+          }
+          if (r.color!==undefined &&
+            (typeof r.color!=='string' || !/^#[0-9a-fA-F]{6}$/.test(r.color))) {
+            throw new TypeError('rich text color must be #RRGGBB');
+          }
+          if (r.fallbackFonts!==undefined &&
+            (!Array.isArray(r.fallbackFonts) || r.fallbackFonts.length>6 ||
+              !r.fallbackFonts.every(f=>typeof f==='string' && names.has(f)))) {
+            throw new TypeError('rich text fallbackFonts must list up to six known font faces');
+          }
+        }
         return {kind:'rich-paragraph',runs:block.runs.map(r=>({
-          text:r.text,font:r.font ?? 'regular'
+          text:r.text,font:r.font ?? 'regular',
+          fontSize:r.fontSize, color:r.color, fallbackFonts:r.fallbackFonts
         })),style:normalizeStyle(block.style ?? {})};
       }
       if (block?.type === 'styled-paragraph' && typeof block.text === 'string') {

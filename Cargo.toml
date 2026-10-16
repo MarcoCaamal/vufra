@@ -9,6 +9,7 @@ rust-version = "1.92"
 pdf-writer = "0.15.0"
 krilla = "0.8.2"
 parley = "0.12.0"
+ttf-parser = "0.25.1"
 napi = { version = "3.14.2", default-features = false, features = ["napi4", "dyn-symbols"] }
 napi-derive = "3.6.12"
 vufra-core = { path = "crates/vufra-core" }

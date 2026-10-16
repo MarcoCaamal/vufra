@@ -212,6 +212,25 @@ const pdf = await renderPdfAsync({
 
 La fuente de `renderPdfAsync(...,regularFontBytes)` es la cara `regular`; las adicionales se identifican por nombre. Cada fragmento se mide usando Parley y se dibuja con su **archivo de fuente auténtico incrustado en el PDF** por Krilla; no se simulan negritas ni cursivas. El compositor conserva cambios de fuente en líneas que envuelven y saltan de página. Este hito todavía no implementa fallback por glifos ni shaping entre estilos, y los tamaños/colores son de bloque, no por run. Los archivos TTF/OTF los proporciona el consumidor.
 
+### Nuevo: color/tamaño por fragmento y fallback explícito (Unidad 13)
+
+```typescript
+const pdf = await renderPdfAsync({
+  title: 'Certificado',
+  fontFaces: {bold: boldFontBytes, symbols: symbolsFontBytes},
+  blocks: [{
+    type: 'rich-paragraph',
+    runs: [
+      {text: 'Texto regular '},
+      {text: 'IMPORTANTE ', font: 'bold', fontSize: 27, color: '#BB3322'},
+      {text: '★', fontSize: 18, color: '#2255BB', fallbackFonts: ['symbols']}
+    ]
+  }]
+}, regularFontBytes);
+```
+
+Cada run puede tener tamaño individual (6–36 puntos), color RGB `#RRGGBB` y un orden explícito de fuentes alternativas. Vufra mide con Parley, dibuja con Krilla y comprueba cobertura de glifos con `ttf-parser`; cuando ninguna fuente propuesta puede cubrir una **palabra completa**, devuelve un error. Se unen runs contiguos con estilo idéntico, conservando oportunidades de ligadura dentro de una misma palabra. **Esto no implementa fallback automático ni garantiza RTL/shaping Unicode complejo.** Las líneas reservan la altura del run mayor (por ahora con espaciado conservador); los extractores basados en coordenadas pueden reordenar palabras de tamaños distintos aunque `pdftotext -raw` conserve el flujo original.
+
 ### Iniciar en el workspace
 
 Requisitos: Rust **1.92**, Node.js **20+**, npm, compilador de Rust/C disponible, fuente TTF/OTF propia y Poppler para pruebas PDF.
@@ -242,6 +261,12 @@ node examples/rich-typography.mjs \
   "$(fc-match 'Noto Sans:style=Bold' -f '%{file}')" \
   "$(fc-match 'Noto Sans:style=Italic' -f '%{file}')" \
   "$(fc-match 'Noto Serif' -f '%{file}')" artifacts/rich-typography.pdf
+node examples/inline-typography.mjs \
+  "$(fc-match 'Noto Sans' -f '%{file}')" \
+  "$(fc-match 'Noto Sans:style=Bold' -f '%{file}')" \
+  "$(fc-match 'Noto Sans:style=Italic' -f '%{file}')" \
+  "$(fc-match 'Noto Serif' -f '%{file}')" \
+  "$(fc-match 'Noto Sans Symbols 2' -f '%{file}')" artifacts/inline-typography.pdf
 pdfinfo artifacts/sdk-first.pdf
 ```
 
@@ -264,6 +289,7 @@ El archivo generado es `artifacts/sdk-first.pdf`; se ignora en Git. **La fuente 
 | 10 | Imágenes PNG/JPEG, contain/cover, recorte y flujo de bloques | Prototipo funcional |
 | 11 | Listas, figuras vectoriales y continuidad título/contenido | Prototipo funcional |
 | 12 | Font faces incrustadas y párrafos enriquecidos por fragmento | Prototipo funcional |
+| 13 | Color y tamaño por run, coalescencia para ligaduras y fallback opt-in | Prototipo funcional |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -300,7 +326,7 @@ cd packages/vufra && npm test
 
 La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 registros ordenados sin pérdida/duplicación, PDFs multipágina y errores de entrada controlados.
 
-**No soporta aún:** texto RTL/shaping complejo, fallback de fuentes, SVG/otras imágenes vectoriales, celdas combinadas, estilos de texto enriquecido por fragmento ni páginas de tamaño diferente dentro del mismo documento. **En el modo `blocks`, los párrafos y las filas de tablas multicolumna continúan entre páginas; en el modo heredado, párrafos y filas simples siguen indivisibles.** Palabras inquebrantables más anchas que una columna generan error. Solo se ha probado Linux x86_64.
+**No soporta aún:** texto RTL/shaping complejo, fallback automático por cluster Unicode, SVG/otras imágenes vectoriales, celdas combinadas, estilos enriquecidos en celdas ni páginas de tamaño diferente dentro del mismo documento. **En el modo `blocks`, los párrafos y las filas de tablas multicolumna continúan entre páginas; en el modo heredado, párrafos y filas simples siguen indivisibles.** Palabras inquebrantables más anchas que una columna generan error. Solo se ha probado Linux x86_64.
 
 ## Documentación
 
@@ -318,6 +344,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 10 — Imágenes en el compositor](docs/experiments/11-images-milestone.md)
 - [Unidad 11 — Listas y gráficos](docs/experiments/12-lists-graphics-milestone.md)
 - [Unidad 12 — Tipografía multifuente](docs/experiments/13-typography-milestone.md)
+- [Unidad 13 — Estilos inline y fallback](docs/experiments/14-inline-style-milestone.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
@@ -331,6 +358,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [ADR-0011 Imágenes raster en bloques](docs/adr/0011-raster-image-blocks.md)
 - [ADR-0012 Listas y continuidad semántica](docs/adr/0012-lists-graphics-keep-next.md)
 - [ADR-0013 Fuentes y texto enriquecido](docs/adr/0013-explicit-font-faces-and-rich-text.md)
+- [ADR-0014 Estilos inline y fallback explícito](docs/adr/0014-inline-styles-and-explicit-fallback.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

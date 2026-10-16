@@ -1,5 +1,7 @@
 # ADR-0013 — Fuentes nombradas y párrafos enriquecidos
 
+> **Histórico (Unidad 12):** [ADR-0014](0014-inline-styles-and-explicit-fallback.md) añade colores/tamaños por run y fallback opt-in posterior. Las limitaciones de esta decisión describen su estado original.
+
 - **Fecha:** 2026-10-16
 - **Estado:** aceptada para prototipo experimental (Unidad 12).
 

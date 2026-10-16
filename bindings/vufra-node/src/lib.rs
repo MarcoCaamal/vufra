@@ -49,6 +49,9 @@ pub struct NodeBlock {
 pub struct NodeRichRun {
     pub text: String,
     pub font: String,
+    pub font_size: Option<f64>,
+    pub color: Option<String>,
+    pub fallback_fonts: Option<Vec<String>>,
 }
 #[napi(object)]
 pub struct NodeFontFace {
@@ -265,11 +268,42 @@ fn parse_document(
                                     .runs
                                     .expect("runs checked")
                                     .into_iter()
-                                    .map(|r| PdfTextRun {
-                                        text: r.text,
-                                        font: r.font,
+                                    .map(|r| {
+                                        Ok(PdfTextRun {
+                                            text: r.text,
+                                            font: r.font,
+                                            font_size: r.font_size.map(|s| s as f32),
+                                            fallback_fonts: r.fallback_fonts.unwrap_or_default(),
+                                            color: r
+                                                .color
+                                                .map(|c| {
+                                                    let b = c.as_bytes();
+                                                    if b.len() != 7
+                                                        || b[0] != b'#'
+                                                        || !b[1..].iter().all(u8::is_ascii_hexdigit)
+                                                    {
+                                                        return Err(napi::Error::from_reason(
+                                                            "rich text color must be #RRGGBB",
+                                                        ));
+                                                    }
+                                                    let mut rgb = [0u8; 3];
+                                                    for (i, v) in rgb.iter_mut().enumerate() {
+                                                        *v = u8::from_str_radix(
+                                                            &c[(1 + 2 * i)..(3 + 2 * i)],
+                                                            16,
+                                                        )
+                                                        .map_err(|_| {
+                                                            napi::Error::from_reason(
+                                                                "invalid rich text color",
+                                                            )
+                                                        })?;
+                                                    }
+                                                    Ok(rgb)
+                                                })
+                                                .transpose()?,
+                                        })
                                     })
-                                    .collect(),
+                                    .collect::<napi::Result<Vec<_>>>()?,
                                 style: item.style.expect("style checked").into(),
                             })
                         }

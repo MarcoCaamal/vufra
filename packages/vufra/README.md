@@ -238,6 +238,24 @@ All faces are caller-supplied, embedded TTF/OTF bytes. `regular` denotes the sec
 
 Example: `node examples/rich-typography.mjs regular.ttf bold.ttf italic.ttf serif.ttf artifacts/rich-typography.pdf`.
 
+## Inline colors, per-run size and opt-in fallback (Unit 13)
+
+```ts
+const pdf=await renderPdfAsync({
+  title:'Colorful certificate',
+  fontFaces:{bold:boldBytes,symbols:symbolsBytes},
+  blocks:[{type:'rich-paragraph',runs:[
+    {text:'Normal '},
+    {text:'LARGE RED ',font:'bold',fontSize:28,color:'#CC3311'},
+    {text:'★',fontSize:18,color:'#3355AA',fallbackFonts:['symbols']}
+  ]}]
+},regularBytes);
+```
+
+Each `PdfRichRun` accepts optional `fontSize` (6–36pt), `color` (`#RRGGBB`), and `fallbackFonts` (up to six known font IDs). Fallback is **explicit per word/token**: only if the primary face lacks a codepoint does Vufra select the first nominated face that can draw that whole token, otherwise a clear error. It checks font character maps with `ttf-parser`; it does not query the operating system, split combining grapheme clusters, or guarantee complex-script shaping. Adjacent runs with identical font/size/color/fallback policy coalesce before shaping so words split between compatible API runs remain ligature-eligible.
+
+Line heights grow to fit the largest inline size across a paragraph (currently conservative), while RGB fills are restored after each run. `pdftotext -raw` preserves text stream order; geometric extraction can reorder mixed-size words. No fonts are bundled. Example: `node examples/inline-typography.mjs regular.ttf bold.ttf italic.ttf serif.ttf symbols.ttf artifacts/inline-typography.pdf`.
+
 ## Current support
 
 - UTF-8 Spanish/Latin text with caller-supplied TTF/OTF font
@@ -250,4 +268,4 @@ Example: `node examples/rich-typography.mjs regular.ttf bold.ttf italic.ttf seri
 - Bullet/numbered lists, vector rules and rectangles with RGB fill, and heading keepWithNext
 - Explicit embedded font faces and Latin rich paragraphs with real bold/italic/alternate families
 
-**Limitations:** a bounded in-process queue and cooperative native cancellation are available, but streaming, cross-process quotas, RSS/output limits, complex bidi, font fallback, vector images/SVG, merged cells, per-span rich-text styles and custom themes are not implemented. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.
+**Limitations:** a bounded in-process queue and cooperative native cancellation are available, but streaming, cross-process quotas, RSS/output limits, complex bidi, automatic grapheme-cluster fallback, vector images/SVG, merged cells, rich styles inside tables and custom themes are not implemented. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.

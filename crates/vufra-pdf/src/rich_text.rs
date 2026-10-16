@@ -23,15 +23,23 @@ pub struct PdfFontFace {
 pub struct PdfTextRun {
     pub text: String,
     pub font: String,
+    /// Optional font size in points (6..=36); defaults to parent paragraph size.
+    pub font_size: Option<f32>,
+    /// Optional RGB text color; defaults to black.
+    pub color: Option<[u8; 3]>,
+    /// Ordered fallback font names, tried for a missing-glyph token.
+    pub fallback_fonts: Vec<String>,
 }
 struct FontSlot {
     font: Font,
     family: String,
     fonts: FontContext,
+    source: Vec<u8>,
 }
 pub struct FontRegistry {
     slots: Vec<FontSlot>,
     lookup: HashMap<String, usize>,
+    glyph_cache: HashMap<(usize, char), bool>,
 }
 impl FontRegistry {
     pub fn new(default: &[u8], extras: &[PdfFontFace]) -> Result<Self, RenderError> {
@@ -41,6 +49,7 @@ impl FontRegistry {
         let mut r = Self {
             slots: Vec::new(),
             lookup: HashMap::new(),
+            glyph_cache: HashMap::new(),
         };
         r.add("regular", default)?;
         let mut total = 0usize;
@@ -89,6 +98,7 @@ impl FontRegistry {
             font,
             family,
             fonts,
+            source: bytes.to_vec(),
         });
         Ok(())
     }
@@ -99,6 +109,45 @@ impl FontRegistry {
             .ok_or(RenderError::InvalidInput(
                 "rich text references unknown font face",
             ))
+    }
+    fn covers_char(&mut self, index: usize, ch: char) -> Result<bool, RenderError> {
+        if ch.is_whitespace() || ch.is_control() {
+            return Ok(true);
+        }
+        if let Some(cached) = self.glyph_cache.get(&(index, ch)) {
+            return Ok(*cached);
+        }
+        let face = ttf_parser::Face::parse(&self.slots[index].source, 0)
+            .map_err(|_| RenderError::InvalidFont)?;
+        let available = face.glyph_index(ch).is_some_and(|gid| gid.0 != 0);
+        self.glyph_cache.insert((index, ch), available);
+        Ok(available)
+    }
+    fn supports_token(&mut self, index: usize, token: &str) -> Result<bool, RenderError> {
+        for ch in token.chars() {
+            if !self.covers_char(index, ch)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+    fn select_face(
+        &mut self,
+        primary: usize,
+        fallbacks: &[usize],
+        token: &str,
+    ) -> Result<usize, RenderError> {
+        if fallbacks.is_empty() || self.supports_token(primary, token)? {
+            return Ok(primary);
+        }
+        for &fallback in fallbacks {
+            if self.supports_token(fallback, token)? {
+                return Ok(fallback);
+            }
+        }
+        Err(RenderError::InvalidInput(
+            "no font face covers every glyph in rich text token",
+        ))
     }
     pub fn font(&self, index: usize) -> Font {
         self.slots[index].font.clone()
@@ -121,6 +170,8 @@ pub struct PositionedRun {
     pub text: String,
     pub x: f32,
     pub font_index: usize,
+    pub font_size: f32,
+    pub color: Option<[u8; 3]>,
 }
 pub type RichLine = Vec<PositionedRun>;
 
@@ -141,11 +192,44 @@ pub fn prepare_rich(
             "rich paragraph requires 1..1000 nonempty runs",
         ));
     }
+    for r in runs {
+        if let Some(size) = r.font_size
+            && (!size.is_finite() || !(6.0..=36.0).contains(&size))
+        {
+            return Err(RenderError::InvalidInput(
+                "rich text font size must be 6..36 points",
+            ));
+        }
+    }
+    // Coalesce adjacent runs with identical style before tokenizing so
+    // ligatures can be shaped within one word split between API spans.
+    let mut canonical: Vec<PdfTextRun> = Vec::new();
+    for run in runs {
+        if let Some(prev) = canonical.last_mut()
+            && prev.font == run.font
+            && prev.font_size == run.font_size
+            && prev.color == run.color
+            && prev.fallback_fonts == run.fallback_fonts
+        {
+            prev.text.push_str(&run.text);
+        } else {
+            canonical.push(run.clone());
+        }
+    }
     let mut lines: Vec<RichLine> = vec![vec![]];
     let mut used = 0.0f32;
-    for run in runs {
+    for run in &canonical {
         check_cancel(cancel)?;
-        let idx = fonts.resolve(&run.font)?;
+        let primary = fonts.resolve(&run.font)?;
+        if run.fallback_fonts.len() > 6 {
+            return Err(RenderError::InvalidInput("too many fallback font faces"));
+        }
+        let fallback_indices = run
+            .fallback_fonts
+            .iter()
+            .map(|f| fonts.resolve(f))
+            .collect::<Result<Vec<_>, _>>()?;
+        let font_size = run.font_size.unwrap_or(style.font_size);
         for (paragraph_index, paragraph) in run.text.split('\n').enumerate() {
             if paragraph_index > 0 {
                 lines.push(vec![]);
@@ -162,7 +246,8 @@ pub fn prepare_rich(
                 if token.is_empty() {
                     continue;
                 }
-                let mut measured = fonts.measure(idx, &token, style.font_size)?;
+                let idx = fonts.select_face(primary, &fallback_indices, &token)?;
+                let mut measured = fonts.measure(idx, &token, font_size)?;
                 if !measured.is_finite() || measured > width + 0.01 {
                     return Err(RenderError::InvalidInput(
                         "rich text unbreakable token exceeds printable width",
@@ -175,7 +260,7 @@ pub fn prepare_rich(
                     if trimmed.is_empty() {
                         continue;
                     }
-                    measured = fonts.measure(idx, &trimmed, style.font_size)?;
+                    measured = fonts.measure(idx, &trimmed, font_size)?;
                     (trimmed, 0.0)
                 } else {
                     (token, used)
@@ -189,6 +274,8 @@ pub fn prepare_rich(
                     text,
                     x,
                     font_index: idx,
+                    font_size,
+                    color: run.color,
                 });
                 used += measured;
             }

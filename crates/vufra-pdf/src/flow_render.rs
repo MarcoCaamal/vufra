@@ -9,8 +9,10 @@ use super::{
 };
 use krilla::{
     Document as KrillaDocument,
+    color::rgb,
     geom::Point,
     page::PageSettings,
+    paint::Fill,
     text::{Font, TextDirection},
 };
 use parley::{
@@ -34,7 +36,7 @@ enum PreparedBlock {
     Graphic,
     Rich {
         lines: Vec<RichLine>,
-        style: TextStyle,
+        line_height: f32,
     },
     List {
         lines: Vec<(String, Option<String>)>,
@@ -202,16 +204,20 @@ pub(super) fn render_flow(
                     font_registry.as_mut().expect("rich paragraph has registry"),
                     cancel,
                 )?;
+                // The flow planner uses fixed line heights for a paragraph.
+                // Reserve enough vertical space for its largest inline font.
+                let largest = runs
+                    .iter()
+                    .map(|r| r.font_size.unwrap_or(style.font_size))
+                    .fold(style.font_size, f32::max);
+                let line_height = style.line_height.max(largest * 1.35);
                 measurements.push(FlowBlock::Paragraph {
                     lines: lines.len(),
-                    line_height: style.line_height,
+                    line_height,
                     padding_before: style.space_before,
                     spacing_after: style.space_after,
                 });
-                prepared.push(PreparedBlock::Rich {
-                    lines,
-                    style: *style,
-                });
+                prepared.push(PreparedBlock::Rich { lines, line_height });
             }
             PdfBlock::Paragraph(text)
             | PdfBlock::Heading { text, .. }
@@ -422,22 +428,34 @@ pub(super) fn render_flow(
                             }
                         }
                     }
-                    if let PreparedBlock::Rich { lines, style } = &prepared[*block] {
+                    if let PreparedBlock::Rich { lines, line_height } = &prepared[*block] {
                         for (local, rich_line) in lines[*start_line..*end_line].iter().enumerate() {
                             check_cancel(cancel)?;
-                            let baseline = y + padding_before + local as f32 * style.line_height;
+                            // Place the baseline within each reserved line box;
+                            // continuation pages have no extra top padding.
+                            let baseline = y + padding_before + (local as f32 + 0.8) * line_height;
                             for run in rich_line {
+                                let old_fill = surface.get_fill().cloned();
+                                if let Some(color) = run.color {
+                                    surface.set_fill(Some(Fill {
+                                        paint: rgb::Color::new(color[0], color[1], color[2]).into(),
+                                        ..Fill::default()
+                                    }));
+                                } else {
+                                    surface.set_fill(None);
+                                }
                                 surface.draw_text(
                                     Point::from_xy(left + run.x, baseline),
                                     font_registry
                                         .as_ref()
                                         .expect("rich paragraph has registry")
                                         .font(run.font_index),
-                                    style.font_size,
+                                    run.font_size,
                                     &run.text,
                                     false,
                                     TextDirection::Auto,
                                 );
+                                surface.set_fill(old_fill);
                             }
                         }
                     }
