@@ -1,6 +1,6 @@
 # Vufra — Arquitectura conceptual (objetivo de diseño)
 
-> Los experimentos de la Unidad 01 ya implementan un subconjunto de estas ideas (modelo semántico mínimo, BreakToken para tablas y escritores PDF). El pipeline general de abajo sigue siendo **propuesto**, no una implementación integral. Véanse los [resultados](../experiments/02-results.md).
+> Unidad 01 validó los escritores y BreakToken. Unidad 02 implementó una **primera versión parcial** del pipeline usando `vufra-pdf`, Parley, Krilla y el SDK Node/TypeScript. El AST jerárquico y el layout general de cajas abajo siguen **propuestos**, no están terminados. Véanse los [resultados de Unidad 02](../experiments/03-sdk-milestone.md).
 
 ## Problema que resolvemos
 

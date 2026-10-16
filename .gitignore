@@ -1,3 +1,7 @@
 /target/
 /artifacts/
+packages/vufra/node_modules/
+packages/vufra/dist/
+packages/vufra/native/
 .DS_Store
+*.swp

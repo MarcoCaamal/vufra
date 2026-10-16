@@ -1,9 +1,11 @@
-name: Rust experiments
+name: Rust and Node SDK checks
+
 on:
   push:
   pull_request:
+
 jobs:
-  rust:
+  rust-node:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -11,9 +13,26 @@ jobs:
         with:
           toolchain: "1.92.0"
           components: rustfmt, clippy
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: packages/vufra/package-lock.json
       - name: Install PDF validation tools and fonts
         run: sudo apt-get update && sudo apt-get install -y poppler-utils fonts-noto-core fontconfig
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
-      - run: bash scripts/verify-experiments.sh
+      - name: Verify Rust PDF experiments
+        run: bash scripts/verify-experiments.sh
+      - name: Compile Rust Node addon
+        run: bash scripts/build-native.sh
+      - name: Install SDK dependencies
+        working-directory: packages/vufra
+        run: npm ci
+      - name: TypeScript typecheck/build
+        working-directory: packages/vufra
+        run: npm run build
+      - name: Node end-to-end PDF tests
+        working-directory: packages/vufra
+        run: npm test

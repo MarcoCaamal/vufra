@@ -1,68 +1,105 @@
 # Vufra 🦀
 
-Motor PDF open source en **Rust** para documentos estructurados, texto Unicode y paginación. Un SDK TypeScript/Node.js vendrá después de estabilizar el núcleo.
+Motor PDF **open source** escrito en Rust. Incluye un **SDK experimental para Node.js/TypeScript** que llama al motor Rust mediante N-API, sin Chromium ni HTML.
 
-> **Estado: prototipo experimental de Unidad 01 (NO producción).** Ya genera PDF desde Rust; aún no existe la API pública final, un motor integral de layout, ni el SDK TypeScript.
+> **Estado actual: prototipo funcional (2026-10-16).** El API y el empaquetado todavía no son estables ni adecuados para producción. Nada está publicado en npm o crates.io.
 
-## Hito completado (2026-10-16)
+## ¡Ya puedes generar documentos con TypeScript!
 
-- Tres PDF reales generados: uno mediante pdf-writer y dos con krilla.
-- PDF multipágina con texto español Unicode seleccionable y fuente embebida.
-- Tabla de **1,000 filas en 29 páginas**, paginada por vufra-layout mediante BreakToken.
-- Extracción independiente confirma que las filas aparecen una sola vez y en orden.
-- Seis tests de Rust, cargo fmt y cargo clippy superados.
-- Parley probado para medición y line breaking (3 líneas a 360 pt, 5 a 180 pt).
+```typescript
+import { renderPdf } from 'vufra';
+import { readFileSync, writeFileSync } from 'node:fs';
 
-Archivos locales generados (ignorados por Git):
+const font = readFileSync('/ruta/a/NotoSans-Regular.ttf');
+const bytes = renderPdf({
+  title: 'Reporte de ventas',
+  paragraphs: ['¡Hola, Cancún! Documento generado desde Rust y Node.js.'],
+  rows: Array.from({ length: 1000 }, (_, i) => 'Registro ' + (i + 1))
+}, font);
 
-```text
-artifacts/pdf-writer-first.pdf
-artifacts/krilla-first.pdf
-artifacts/1000-rows.pdf
+writeFileSync('reporte.pdf', bytes);
 ```
 
-## Ejecutar experimentos
+La API Rust subyacente vive en `crates/vufra-pdf`: `render_pdf(&PdfDocument, &[u8], RenderOptions)`.
 
-Requiere Rust **1.92**, Cargo, una fuente TrueType con cobertura en español (como Noto Sans), y opcionalmente Poppler para validación.
+### Iniciar en el workspace
+
+Requisitos: Rust **1.92**, Node.js **20+**, npm, compilador de Rust/C disponible, fuente TTF/OTF propia y Poppler para pruebas PDF.
 
 ```bash
-cargo test --workspace
-cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
+# Desde la raíz de Vufra
+bash scripts/build-native.sh
+cd packages/vufra
+npm ci
+npm run build
+npm test
+cd ../..
 
+# Crear un ejemplo de 1,000 registros
 FONT=$(fc-match 'Noto Sans' -f '%{file}\n' | head -1)
-cargo run -p sp-01-pdf-writer -- artifacts/pdf-writer-first.pdf
-cargo run -p sp-01-krilla -- artifacts/krilla-first.pdf "$FONT"
-cargo run -p sp-02-parley
-cargo run -p sp-03-pagination -- artifacts/1000-rows.pdf "$FONT"
-
-# Generación y verificación automatizadas (requiere pdfinfo y pdftotext):
-bash scripts/verify-experiments.sh
+node examples/sdk-usage.mjs "$FONT" artifacts/sdk-first.pdf
+pdfinfo artifacts/sdk-first.pdf
 ```
 
-Los experimentos consumen una fuente instalada en el sistema; **no** se distribuye un archivo de fuente con Vufra.
+El archivo generado es `artifacts/sdk-first.pdf`; se ignora en Git. **La fuente la proporciona el usuario**; no empaquetamos ni redistribuimos fuentes externas.
 
-## Arquitectura
+## Hitos
+
+| Unidad | Hito | Estado |
+|---|---|---|
+| 00 | Diseño y decisiones del proyecto | Completada |
+| 01 | Prototipos `pdf-writer`, `krilla`, Parley y tablas 1,000 filas | Completada |
+| 02 | API Rust reusable, texto medido con Parley, SDK TypeScript + N-API | Prototipo funcional |
+| 03 | Composición compleja, tablas multi-columna, fragmentación y más opciones | Pendiente |
+| Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
+
+## Arquitectura implementada
 
 ```text
-crates/vufra-core         Semántica de filas/página (experimental)
-crates/vufra-layout       Paginación reanudable (experimental)
-experiments/sp-01-*       Comparación de escritores PDF
-experiments/sp-02-parley  Tipografía, medición y saltos de línea
-experiments/sp-03-*       Integración real: 1,000 filas a PDF
+packages/vufra/src/index.ts   SDK TypeScript (validación y tipos)
+             │
+             ▼
+bindings/vufra-node            API nativa con NAPI-RS
+             │
+             ▼
+crates/vufra-pdf               Composición y escritura PDF con Krilla
+           │       │
+     Parley       vufra-layout  -> BreakToken
+                      │
+                  vufra-core
+
+experiments/sp-01-*            Comparación de escritores (Unidad 01)
+experiments/sp-02-parley       Medición aislada (Unidad 01)
+experiments/sp-03-pagination   PDF de 1000 filas (Unidad 01)
 ```
 
-El diseño previsto contempla añadir vufra-text, vufra-pdf y una fachada Rust una vez se evalúen sus límites; el SDK TS no es parte de estos experimentos.
+## Calidad y límites
+
+Ejecutar:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+bash scripts/verify-experiments.sh
+cd packages/vufra && npm test
+```
+
+La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 registros ordenados sin pérdida/duplicación, PDFs multipágina y errores de entrada controlados.
+
+**No soporta aún:** contenido RTL/shaping complejo, fallback de fuentes, imágenes, tablas multi-columna, estilos arbitrarios, división de una sola fila entre páginas o formatos de página configurables. Cada fila/paragraph es indivisible al paginar; demasiadas líneas generan un error explícito. El SDK actual se ha probado únicamente en Linux x86_64.
 
 ## Documentación
 
-- [W0 — Plan original](docs/planning/01-w0-workspace.md)
+- [Plan de W0](docs/planning/01-w0-workspace.md)
 - [Arquitectura conceptual](docs/architecture/overview.md)
-- [Experimentos y criterios](docs/experiments/01-spikes.md)
-- [Resultados medidos de Unidad 01](docs/experiments/02-results.md)
-- [ADR 0001: licencia](docs/adr/0001-license.md)
-- [ADR 0002: monorepo](docs/adr/0002-monorepo.md)
+- [Resultados de Unidad 01](docs/experiments/02-results.md)
+- [Resultados y guía Unidad 02](docs/experiments/03-sdk-milestone.md)
+- [ADR-0001 Licencia](docs/adr/0001-license.md)
+- [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
+- [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
+- [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia
 
-**MIT OR Apache-2.0**. Textos oficiales en [LICENSE-MIT](LICENSE-MIT) y [LICENSE-APACHE](LICENSE-APACHE).
+**MIT OR Apache-2.0**. Textos en [LICENSE-MIT](LICENSE-MIT) y [LICENSE-APACHE](LICENSE-APACHE).
