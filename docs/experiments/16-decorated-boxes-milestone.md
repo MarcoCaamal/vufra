@@ -34,7 +34,7 @@ const pdf = await vufra.document({title:'Reporte',page:'A4'})
 
 ## Experimentos verificables
 
-- `packages/vufra/tests/box.test.mjs`: pixel de relleno/borde en PNG renderizado con Poppler, coordenadas bbox que confirman padding y alineación, 1000 tokens únicos extraídos en orden a través de varias páginas, caja corta movida junta a página siguiente, PNG y línea vectorial dentro, errores de validación, generación async y cola.
+- `packages/vufra/tests/box.test.mjs`: píxeles RGB de relleno/borde en PPM de Poppler (sin ImageMagick), coordenadas bbox que confirman padding y alineación, 1000 tokens únicos extraídos en orden a través de varias páginas, caja corta movida junta a página siguiente, PNG y línea vectorial dentro, errores de validación, generación async y cola.
 - Tests Rust en `vufra-layout` validan fragmentos y rangos consecutivos, banderas first/last, límites de página y error al intentar ubicar una unidad demasiado grande.
 - `examples/fluent-panels.mjs` crea `artifacts/fluent-panels.pdf`: 9 páginas Letter, resumen con fondo azul, total a la derecha con fondo cálido, 110 filas de servicios y un apartado legal largo con 500 tokens continuos.
 - `pdftotext -raw` confirma orden, `pdftoppm` las apariencias de primera página y página 8. `pdfinfo` verifica formato/cantidad.

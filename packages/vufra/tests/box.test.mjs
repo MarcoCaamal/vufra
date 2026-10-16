@@ -22,20 +22,42 @@ function inspect(bytes){
  .map(m=>({x:+m[1],y:+m[2],right:+m[3],bottom:+m[4],text:m[5]}));
  return {pdf,dir,pages:+info.match(/Pages:\s+(\d+)/)[1],raw,layout,words};
 }
-function ppm(path,page=1){
- const target=join(path.dir,'sample');
- execFileSync('pdftoppm',['-r','72','-f',String(page),'-l',String(page),'-singlefile',
-  '-png',path.pdf,target]);
- // ImageMagick can query target colors, use convert text output directly.
- return target+'.png';
+// Read Poppler P6 RGB pixels directly; no ImageMagick or other CI dependencies.
+const rasterCache=new Map();
+function ppm(pdf,page=1){
+ const key=pdf.pdf+':'+page;
+ if(rasterCache.has(key))return rasterCache.get(key);
+ const target=join(pdf.dir,'sample-'+page);
+ execFileSync('pdftoppm',['-r','72','-f',String(page),'-l',String(page),
+   '-singlefile',pdf.pdf,target]);
+ const data=readFileSync(target+'.ppm');
+ let pos=0;
+ function next(){
+   while(pos<data.length){
+     if(data[pos]===35){while(pos<data.length && data[pos]!==10)pos++;continue;}
+     if([9,10,13,32].includes(data[pos])){pos++;continue;}
+     break;
+   }
+   const from=pos;
+   while(pos<data.length && ![9,10,13,32].includes(data[pos]))pos++;
+   return data.toString('ascii',from,pos);
+ }
+ assert.equal(next(),'P6');
+ const width=Number(next()),height=Number(next()),max=Number(next());
+ assert.equal(max,255);
+ // Poppler's PPM has one whitespace byte after its header.
+ assert.ok([9,10,13,32].includes(data[pos]));
+ pos++;
+ const raster={data,width,height,offset:pos};
+ rasterCache.set(key,raster);
+ return raster;
 }
 function pixel(pdf,x,y,page){
- const file=ppm(pdf,page);
- const output=execFileSync('magick',[file,'-format',`%[pixel:p{${Math.round(x)},${Math.round(y)}}]`,'info:'],
-  {encoding:'utf8'});
- const nums=output.match(/\(([^)]+)\)/);
- if(!nums)throw new Error('unknown image pixel: '+output);
- return nums[1].split(',').slice(0,3).map(v=>+v.trim());
+ const {data,width,height,offset}=ppm(pdf,page);
+ const px=Math.round(x),py=Math.round(y);
+ assert.ok(px>=0 && px<width && py>=0 && py<height);
+ const start=offset+3*(py*width+px);
+ return [...data.subarray(start,start+3)];
 }
 test('decorated box fills pixels, preserves padding and keeps following text outside',()=>{
  const doc=vufra.document({title:'Box QA'})
