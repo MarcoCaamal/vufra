@@ -188,6 +188,30 @@ const pdf = await renderPdfAsync({
 
 Las listas pueden continuar en otras páginas sin duplicar el texto, con numeración o viñetas y sangría. Las reglas y los rectángulos se dibujan como vectores RGB, no como imágenes. Los títulos conservan por defecto `keepWithNext: true`, de modo que, cuando sea posible, se muevan con la imagen o la primera fila de la tabla siguiente. `keepWithNext: false` lo desactiva. No es aún un agrupador general de varios bloques consecutivos.
 
+### Nuevo: tipografía real por fragmentos (Unidad 12)
+
+```typescript
+const pdf = await renderPdfAsync({
+  title: 'Contrato',
+  fontFaces: {
+    bold: readFileSync('NotoSans-Bold.ttf'),
+    italic: readFileSync('NotoSans-Italic.ttf'),
+    serif: readFileSync('NotoSerif-Regular.ttf')
+  },
+  blocks: [{
+    type: 'rich-paragraph',
+    runs: [
+      {text: 'Texto normal '},
+      {text: 'negrita real ',font: 'bold'},
+      {text: 'cursiva real ',font: 'italic'},
+      {text: 'y otra familia.',font: 'serif'}
+    ]
+  }]
+}, regularFontBytes);
+```
+
+La fuente de `renderPdfAsync(...,regularFontBytes)` es la cara `regular`; las adicionales se identifican por nombre. Cada fragmento se mide usando Parley y se dibuja con su **archivo de fuente auténtico incrustado en el PDF** por Krilla; no se simulan negritas ni cursivas. El compositor conserva cambios de fuente en líneas que envuelven y saltan de página. Este hito todavía no implementa fallback por glifos ni shaping entre estilos, y los tamaños/colores son de bloque, no por run. Los archivos TTF/OTF los proporciona el consumidor.
+
 ### Iniciar en el workspace
 
 Requisitos: Rust **1.92**, Node.js **20+**, npm, compilador de Rust/C disponible, fuente TTF/OTF propia y Poppler para pruebas PDF.
@@ -213,6 +237,11 @@ node examples/queue-usage.mjs "$FONT"
 node examples/cancellation-observe.mjs "$FONT"
 node examples/images-usage.mjs "$FONT" artifacts/images-report.pdf
 node examples/graphics-lists-usage.mjs "$FONT" artifacts/graphics-lists-report.pdf
+node examples/rich-typography.mjs \
+  "$(fc-match 'Noto Sans' -f '%{file}')" \
+  "$(fc-match 'Noto Sans:style=Bold' -f '%{file}')" \
+  "$(fc-match 'Noto Sans:style=Italic' -f '%{file}')" \
+  "$(fc-match 'Noto Serif' -f '%{file}')" artifacts/rich-typography.pdf
 pdfinfo artifacts/sdk-first.pdf
 ```
 
@@ -234,6 +263,7 @@ El archivo generado es `artifacts/sdk-first.pdf`; se ignora en Git. **La fuente 
 | 09 | Cancelación cooperativa Rust y telemetría de renders | Prototipo funcional |
 | 10 | Imágenes PNG/JPEG, contain/cover, recorte y flujo de bloques | Prototipo funcional |
 | 11 | Listas, figuras vectoriales y continuidad título/contenido | Prototipo funcional |
+| 12 | Font faces incrustadas y párrafos enriquecidos por fragmento | Prototipo funcional |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -287,6 +317,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 09 — Cancelación y observabilidad](docs/experiments/10-cancellation-observability.md)
 - [Unidad 10 — Imágenes en el compositor](docs/experiments/11-images-milestone.md)
 - [Unidad 11 — Listas y gráficos](docs/experiments/12-lists-graphics-milestone.md)
+- [Unidad 12 — Tipografía multifuente](docs/experiments/13-typography-milestone.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
@@ -299,6 +330,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [ADR-0010 Cancelación Rust y métricas](docs/adr/0010-cancellation-observability.md)
 - [ADR-0011 Imágenes raster en bloques](docs/adr/0011-raster-image-blocks.md)
 - [ADR-0012 Listas y continuidad semántica](docs/adr/0012-lists-graphics-keep-next.md)
+- [ADR-0013 Fuentes y texto enriquecido](docs/adr/0013-explicit-font-faces-and-rich-text.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

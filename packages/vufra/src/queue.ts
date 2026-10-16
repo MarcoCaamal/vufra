@@ -183,16 +183,23 @@ export class PdfRenderQueue {
           const image = 'image' in block ? block.image : block;
           return sum + (image?.data instanceof Uint8Array ? image.data.byteLength : 0);
         },0);
-        const metadata = imageBlocks.length ? {...document, blocks:document.blocks?.map(b => {
+        const imageMetadata = imageBlocks.length ? {...document, blocks:document.blocks?.map(b => {
           if (b?.type !== 'image') return b;
           const image = 'image' in b ? b.image : b;
           return {type:'image',image:{...image,data:undefined}};
         })} : document;
+        const faces = document.fontFaces ? Object.entries(document.fontFaces) : [];
+        const faceBytes = faces.reduce((sum,[,bytes]) =>
+          sum + (bytes instanceof Uint8Array ? bytes.byteLength : 0),0);
+        // The extra font payload is accounted by byteLength, not by JSON's
+        // expansion of each byte to decimal characters.
+        const metadata = faces.length ? {...imageMetadata,
+          fontFaces:Object.fromEntries(faces.map(([name])=>[name,null]))} : imageMetadata;
         const serialized = JSON.stringify(metadata);
         if (typeof serialized !== 'string') {
           throw new TypeError('Vufra document must be serializable');
         }
-        const estimatedBytes = font.byteLength + serialized.length * 2 + imagesBytes;
+        const estimatedBytes = font.byteLength + serialized.length * 2 + imagesBytes + faceBytes;
         if (!Number.isSafeInteger(estimatedBytes) || estimatedBytes > this.maxJobBytes) {
           deny(new PdfQueueError('JOB_TOO_LARGE', 'PDF input exceeds maxJobBytes'), estimatedBytes);
           return;

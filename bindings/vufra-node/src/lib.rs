@@ -13,7 +13,8 @@ use std::{
 };
 use vufra_pdf::{
     GraphicKind, ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, PageGeometry,
-    PdfBlock, PdfColumn, PdfDocument, PdfGraphic, PdfImage, PdfTable, RenderOptions, TextStyle,
+    PdfBlock, PdfColumn, PdfDocument, PdfFontFace, PdfGraphic, PdfImage, PdfTable, PdfTextRun,
+    RenderOptions, TextStyle,
 };
 
 #[napi(object)]
@@ -32,6 +33,7 @@ pub struct NodeTable {
 pub struct NodeBlock {
     pub kind: String,
     pub text: Option<String>,
+    pub runs: Option<Vec<NodeRichRun>>,
     pub table: Option<NodeTable>,
     pub image: Option<NodeImage>,
     pub items: Option<Vec<String>>,
@@ -43,6 +45,16 @@ pub struct NodeBlock {
     pub height: Option<f64>,
 }
 
+#[napi(object)]
+pub struct NodeRichRun {
+    pub text: String,
+    pub font: String,
+}
+#[napi(object)]
+pub struct NodeFontFace {
+    pub name: String,
+    pub data: Buffer,
+}
 #[napi(object)]
 pub struct NodeGraphic {
     pub kind: String,
@@ -162,6 +174,7 @@ fn parse_document(
     table: Option<NodeTable>,
     blocks: Option<Vec<NodeBlock>>,
     page: Option<NodePage>,
+    font_faces: Option<Vec<NodeFontFace>>,
 ) -> napi::Result<PdfDocument> {
     // Reject oversized images before copying JS buffers into Rust jobs.
     if let Some(items) = &blocks {
@@ -180,12 +193,34 @@ fn parse_document(
             ));
         }
     }
+    if font_faces.as_ref().is_some_and(|faces| {
+        faces.len() > 6
+            || faces
+                .iter()
+                .any(|f| f.data.is_empty() || f.data.len() > 12 * 1024 * 1024)
+            || faces
+                .iter()
+                .try_fold(0usize, |sum, f| sum.checked_add(f.data.len()))
+                .is_none_or(|total| total > 30 * 1024 * 1024)
+    }) {
+        return Err(napi::Error::from_reason(
+            "font faces exceed count or byte limits",
+        ));
+    }
     let doc = PdfDocument {
         title,
         paragraphs,
         rows,
         table: table.map(to_table),
         page: page.map(Into::into),
+        fonts: font_faces
+            .unwrap_or_default()
+            .into_iter()
+            .map(|f| PdfFontFace {
+                name: f.name,
+                data: f.data.to_vec(),
+            })
+            .collect(),
         blocks: blocks
             .map(|items| {
                 items
@@ -218,6 +253,25 @@ fn parse_document(
                             Ok(PdfBlock::Graphic(to_graphic(
                                 item.graphic.expect("graphic checked"),
                             )?))
+                        }
+                        "rich-paragraph"
+                            if item.runs.is_some()
+                                && item.style.is_some()
+                                && item.text.is_none()
+                                && item.table.is_none() =>
+                        {
+                            Ok(PdfBlock::RichParagraph {
+                                runs: item
+                                    .runs
+                                    .expect("runs checked")
+                                    .into_iter()
+                                    .map(|r| PdfTextRun {
+                                        text: r.text,
+                                        font: r.font,
+                                    })
+                                    .collect(),
+                                style: item.style.expect("style checked").into(),
+                            })
                         }
                         "paragraph" if item.text.is_some() && item.table.is_none() => {
                             Ok(PdfBlock::Paragraph(item.text.unwrap_or_default()))
@@ -264,7 +318,8 @@ fn parse_document(
     Ok(doc)
 }
 
-/// Synchronous API: unchanged, useful for simple scripts and worker threads.
+/// Synchronous API: unchanged for existing callers.
+#[allow(clippy::too_many_arguments)]
 #[napi]
 pub fn render_pdf_native(
     title: String,
@@ -274,8 +329,9 @@ pub fn render_pdf_native(
     table: Option<NodeTable>,
     blocks: Option<Vec<NodeBlock>>,
     page: Option<NodePage>,
+    font_faces: Option<Vec<NodeFontFace>>,
 ) -> napi::Result<Buffer> {
-    let doc = parse_document(title, paragraphs, rows, table, blocks, page)?;
+    let doc = parse_document(title, paragraphs, rows, table, blocks, page, font_faces)?;
     vufra_pdf::render_pdf(&doc, font_data.as_ref(), RenderOptions::default())
         .map(Buffer::from)
         .map_err(|error| napi::Error::from_reason(error.to_string()))
@@ -358,8 +414,9 @@ pub fn render_pdf_async_native(
     blocks: Option<Vec<NodeBlock>>,
     page: Option<NodePage>,
     token: Option<&PdfCancellationToken>,
+    font_faces: Option<Vec<NodeFontFace>>,
 ) -> napi::Result<AsyncTask<PdfRenderTask>> {
-    let doc = parse_document(title, paragraphs, rows, table, blocks, page)?;
+    let doc = parse_document(title, paragraphs, rows, table, blocks, page, font_faces)?;
     Ok(AsyncTask::new(PdfRenderTask {
         doc,
         font_data: font_data.to_vec(),

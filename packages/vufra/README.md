@@ -208,6 +208,36 @@ const pdf=await renderPdfAsync({
 
 Runnable: `node examples/graphics-lists-usage.mjs /path/to/font.ttf artifacts/graphics-lists-report.pdf`.
 
+## Explicit embedded font faces and inline rich paragraphs (Unit 12)
+
+```typescript
+import {readFileSync} from 'node:fs';
+import {renderPdfAsync} from 'vufra';
+
+const pdf=await renderPdfAsync({
+  title:'Report',
+  fontFaces:{
+    bold:readFileSync('MySans-Bold.ttf'),
+    italic:readFileSync('MySans-Italic.ttf'),
+    serif:readFileSync('MySerif-Regular.ttf'),
+  },
+  blocks:[
+    {type:'rich-paragraph',runs:[
+      {text:'Regular text '},
+      {text:'genuine bold ',font:'bold'},
+      {text:'genuine italic ',font:'italic'},
+      {text:'and serif.',font:'serif'}
+    ],style:{fontSize:12,lineHeight:19,spaceBefore:8,spaceAfter:8}}
+  ]
+},regularFontBytes);
+```
+
+All faces are caller-supplied, embedded TTF/OTF bytes. `regular` denotes the second argument and need not be provided in `fontFaces`. Names are ASCII identifiers, with up to six additional faces / 12 MiB each / 30 MiB combined. Each run references its explicit face, enabling real bold and italic when the caller supplies the actual bold/italic font. Line wrapping uses Parley advance from that face and Krilla draws that same embedded file; no synthetic styles. Word-wrap, newlines and multiple pages work. The queue safely accounts for fonts using raw `byteLength`, not JSON byte expansion.
+
+**Scope limitation:** No automatic Unicode font fallback, shaping across style boundaries, automatic bold/italic discovery, inline colors or per-run font sizes. This path has been tested primarily for Latin scripts. Existing paragraph/table/heading nodes still use the base regular font.
+
+Example: `node examples/rich-typography.mjs regular.ttf bold.ttf italic.ttf serif.ttf artifacts/rich-typography.pdf`.
+
 ## Current support
 
 - UTF-8 Spanish/Latin text with caller-supplied TTF/OTF font
@@ -218,5 +248,6 @@ Runnable: `node examples/graphics-lists-usage.mjs /path/to/font.ttf artifacts/gr
 - Multi-column tables with explicit widths, borders, striped rows and repeated headers
 - PNG/JPEG embedded images with transparent PNG, contain/cover cropping and page-aware flow
 - Bullet/numbered lists, vector rules and rectangles with RGB fill, and heading keepWithNext
+- Explicit embedded font faces and Latin rich paragraphs with real bold/italic/alternate families
 
 **Limitations:** a bounded in-process queue and cooperative native cancellation are available, but streaming, cross-process quotas, RSS/output limits, complex bidi, font fallback, vector images/SVG, merged cells, per-span rich-text styles and custom themes are not implemented. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.

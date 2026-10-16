@@ -33,7 +33,9 @@ pub(crate) fn check_cancel(cancel: &AtomicBool) -> Result<(), RenderError> {
 mod flow_render;
 mod graphic;
 mod image;
+mod rich_text;
 pub use graphic::{GraphicKind, PdfGraphic};
+pub use rich_text::{PdfFontFace, PdfTextRun};
 mod style;
 pub use image::{ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, PdfImage};
 mod table;
@@ -63,6 +65,10 @@ pub enum PdfBlock {
         ordered: bool,
     },
     Graphic(PdfGraphic),
+    RichParagraph {
+        runs: Vec<PdfTextRun>,
+        style: TextStyle,
+    },
 }
 use table::{draw_table_fragment, prepare_table};
 use vufra_core::TableRow;
@@ -92,6 +98,8 @@ pub struct PdfDocument {
     pub blocks: Option<Vec<PdfBlock>>,
     /// Page geometry applies to the ordered `blocks` mode only.
     pub page: Option<PageGeometry>,
+    /// Additional named fonts for rich text blocks; regular font is supplied separately.
+    pub fonts: Vec<PdfFontFace>,
 }
 
 /// Render settings. Defaults are chosen for an A4 document.
@@ -214,6 +222,7 @@ pub fn render_pdf_with_cancel(
             font_bytes,
             options,
             document.page.unwrap_or_default(),
+            &document.fonts,
             cancel,
         );
     }
@@ -542,6 +551,7 @@ mod tests {
             table: None,
             blocks: None,
             page: None,
+            fonts: vec![],
         };
         assert!(matches!(
             render_pdf(&doc, &[1], RenderOptions::default()),

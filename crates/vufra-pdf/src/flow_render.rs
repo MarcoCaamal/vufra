@@ -5,6 +5,7 @@ use super::{
     TextStyle, draw_table_fragment,
     image::{MAX_IMAGE_BLOCKS, MAX_TOTAL_IMAGE_BYTES, MAX_TOTAL_IMAGE_PIXELS, PreparedImage},
     measure_text_lines, prepare_table,
+    rich_text::{FontRegistry, PdfFontFace, RichLine, prepare_rich},
 };
 use krilla::{
     Document as KrillaDocument,
@@ -31,6 +32,10 @@ enum PreparedBlock {
     Spacer,
     Image(PreparedImage),
     Graphic,
+    Rich {
+        lines: Vec<RichLine>,
+        style: TextStyle,
+    },
     List {
         lines: Vec<(String, Option<String>)>,
         style: TextStyle,
@@ -61,6 +66,18 @@ fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), Re
                 total = total
                     .checked_add(s.len())
                     .ok_or(RenderError::InvalidInput("text too large"))?;
+            }
+            PdfBlock::RichParagraph { runs, .. } => {
+                if runs.is_empty() || runs.len() > 1_000 {
+                    return Err(RenderError::InvalidInput(
+                        "rich paragraph requires 1..1000 runs",
+                    ));
+                }
+                for run in runs {
+                    total = total
+                        .checked_add(run.text.len())
+                        .ok_or(RenderError::InvalidInput("text too large"))?;
+                }
             }
             PdfBlock::List { items, .. } => {
                 if items.is_empty()
@@ -125,6 +142,7 @@ pub(super) fn render_flow(
     font_bytes: &[u8],
     options: RenderOptions,
     geometry: PageGeometry,
+    extra_fonts: &[PdfFontFace],
     cancel: &AtomicBool,
 ) -> Result<Vec<u8>, RenderError> {
     check_cancel(cancel)?;
@@ -159,12 +177,42 @@ pub(super) fn render_flow(
         return Err(RenderError::InvalidInput("title exceeds printable width"));
     }
 
+    // Do not allocate duplicate font contexts for documents without rich text.
+    let mut font_registry = if !extra_fonts.is_empty()
+        || blocks
+            .iter()
+            .any(|b| matches!(b, PdfBlock::RichParagraph { .. }))
+    {
+        Some(FontRegistry::new(font_bytes, extra_fonts)?)
+    } else {
+        None
+    };
     let mut prepared = Vec::with_capacity(blocks.len());
     let mut measurements = Vec::with_capacity(blocks.len());
     let mut total_image_pixels = 0u64;
     for block in blocks {
         check_cancel(cancel)?;
         match block {
+            PdfBlock::RichParagraph { runs, style } => {
+                style.validate(geometry.content_height())?;
+                let lines = prepare_rich(
+                    runs,
+                    *style,
+                    geometry.content_width(),
+                    font_registry.as_mut().expect("rich paragraph has registry"),
+                    cancel,
+                )?;
+                measurements.push(FlowBlock::Paragraph {
+                    lines: lines.len(),
+                    line_height: style.line_height,
+                    padding_before: style.space_before,
+                    spacing_after: style.space_after,
+                });
+                prepared.push(PreparedBlock::Rich {
+                    lines,
+                    style: *style,
+                });
+            }
             PdfBlock::Paragraph(text)
             | PdfBlock::Heading { text, .. }
             | PdfBlock::StyledParagraph { text, .. } => {
@@ -368,6 +416,25 @@ pub(super) fn render_flow(
                                     font.clone(),
                                     style.font_size,
                                     line,
+                                    false,
+                                    TextDirection::Auto,
+                                );
+                            }
+                        }
+                    }
+                    if let PreparedBlock::Rich { lines, style } = &prepared[*block] {
+                        for (local, rich_line) in lines[*start_line..*end_line].iter().enumerate() {
+                            check_cancel(cancel)?;
+                            let baseline = y + padding_before + local as f32 * style.line_height;
+                            for run in rich_line {
+                                surface.draw_text(
+                                    Point::from_xy(left + run.x, baseline),
+                                    font_registry
+                                        .as_ref()
+                                        .expect("rich paragraph has registry")
+                                        .font(run.font_index),
+                                    style.font_size,
+                                    &run.text,
                                     false,
                                     TextDirection::Auto,
                                 );

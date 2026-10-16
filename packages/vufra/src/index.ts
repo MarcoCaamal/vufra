@@ -42,11 +42,18 @@ export interface PdfImage {
   /** contain preserves entire image; cover fills the box and clips overflow. */
   fit?: 'contain' | 'cover';
 }
+export interface PdfRichRun {
+  /** Text is drawn using a real embedded font file, not artificial bold/italic. */
+  text: string;
+  /** 'regular' references the required second argument; other names resolve in fontFaces. */
+  font?: string;
+}
 /** An ordered, typed block in Vufra's evolving document AST. */
 export type PdfBlock =
   | { type: 'paragraph'; text: string }
   | { type: 'heading'; level: 1 | 2 | 3; text: string; keepWithNext?: boolean }
   | { type: 'styled-paragraph'; text: string; style: Partial<PdfTextStyle> }
+  | { type: 'rich-paragraph'; runs: PdfRichRun[]; style?: Partial<PdfTextStyle> }
   | { type: 'spacer'; height: number }
   | { type: 'list'; ordered?: boolean; items: string[] }
   | { type: 'rule' | 'rectangle'; width: number; height: number; color?: string }
@@ -67,10 +74,13 @@ export interface PdfDocument {
   blocks?: PdfBlock[];
   /** Flow-only page geometry: A4, Letter, custom dimensions and margins. */
   page?: PdfPageOptions;
+  /** Named TTF/OTF font bytes for rich text; reserved name: regular. Max 6 extra fonts. */
+  fontFaces?: Record<string, Uint8Array>;
 }
 
 type NativeBlock = {
   kind: string; text?: string; table?: PdfTable;
+  runs?: {text:string;font:string}[];
   level?: number; style?: PdfTextStyle; height?: number;
   keepWithNext?: boolean; items?: string[]; ordered?: boolean;
   graphic?: {kind:string;width:number;height:number;color:string};
@@ -105,15 +115,16 @@ interface NativeToken {
   cancel(): void;
   readonly isCancelled: boolean;
 }
+interface NativeFontFace {name:string;data:Uint8Array}
 interface NativeBinding {
   PdfCancellationToken: new () => NativeToken;
   renderPdfNative(
     title: string, paragraphs: string[], rows: string[], font: Uint8Array,
-    table?: PdfTable, blocks?: NativeBlock[], page?: NativePage
+    table?: PdfTable, blocks?: NativeBlock[], page?: NativePage, fontFaces?: NativeFontFace[]
   ): Uint8Array;
   renderPdfAsyncNative(
     title: string, paragraphs: string[], rows: string[], font: Uint8Array,
-    table?: PdfTable, blocks?: NativeBlock[], page?: NativePage, token?: NativeToken
+    table?: PdfTable, blocks?: NativeBlock[], page?: NativePage, token?: NativeToken, fontFaces?: NativeFontFace[]
   ): Promise<{ pdf: Uint8Array; renderMs: number }>;
 }
 declare const require: (path: string) => NativeBinding;
@@ -180,7 +191,7 @@ function normalizeStyle(style: Partial<PdfTextStyle>): PdfTextStyle {
 
 type NativeArguments = [
   title: string, paragraphs: string[], rows: string[], font: Uint8Array,
-  table?: PdfTable, blocks?: NativeBlock[], page?: NativePage,
+  table?: PdfTable, blocks?: NativeBlock[], page?: NativePage, fontFaces?: NativeFontFace[],
 ];
 
 /** Shared preflight/normalization for both the synchronous and asynchronous API. */
@@ -202,6 +213,23 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
   const table = document.table;
   if (table !== undefined) validateTable(table);
   const page = document.page === undefined ? undefined : normalizePage(document.page);
+  const faceEntries = Object.entries(document.fontFaces ?? {});
+  if (faceEntries.length > 6) throw new TypeError('fontFaces supports a maximum of six additional fonts');
+  let totalFontBytes=0;
+  const fontFaces: NativeFontFace[] = faceEntries.map(([name,data])=>{
+    if (!/^[A-Za-z0-9_-]{1,24}$/.test(name) || name==='regular') {
+      throw new TypeError('fontFaces names must be unique ASCII identifiers other than regular');
+    }
+    if (!(data instanceof Uint8Array) || data.byteLength===0 || data.byteLength>12*1024*1024) {
+      throw new TypeError('fontFaces require nonempty TTF/OTF bytes up to 12 MiB per face');
+    }
+    totalFontBytes+=data.byteLength;
+    if(totalFontBytes>30*1024*1024)throw new TypeError('fontFaces exceed 30 MiB total');
+    return {name,data};
+  });
+  if (fontFaces.length && document.blocks===undefined) {
+    throw new TypeError('fontFaces requires blocks mode');
+  }
   if (page !== undefined && document.blocks === undefined) {
     throw new TypeError('page geometry requires blocks mode');
   }
@@ -223,6 +251,21 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
         }
         return {kind: 'heading', text:block.text, level:block.level,
           keepWithNext:block.keepWithNext ?? true};
+      }
+      if (block?.type === 'rich-paragraph') {
+        if (!Array.isArray(block.runs) || !block.runs.length || block.runs.length>1000 ||
+            !block.runs.every(run => run && typeof run.text==='string' && !!run.text &&
+              typeof (run.font ?? 'regular')==='string' &&
+              (run.font ?? 'regular')!=='') ) {
+          throw new TypeError('rich-paragraph requires 1..1000 nonempty text runs');
+        }
+        const names=new Set(['regular',...fontFaces.map(f=>f.name)]);
+        if(!block.runs.every(r=>names.has(r.font ?? 'regular'))) {
+          throw new TypeError('rich-paragraph references unknown font face');
+        }
+        return {kind:'rich-paragraph',runs:block.runs.map(r=>({
+          text:r.text,font:r.font ?? 'regular'
+        })),style:normalizeStyle(block.style ?? {})};
       }
       if (block?.type === 'styled-paragraph' && typeof block.text === 'string') {
         return {kind: 'styled-paragraph', text:block.text, style:normalizeStyle(block.style)};
@@ -280,7 +323,7 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
       throw new TypeError('invalid flow block type or payload');
     });
   }
-  return [document.title, paragraphs, rows, font, table, blocks, page];
+  return [document.title, paragraphs, rows, font, table, blocks, page, fontFaces];
 }
 
 /** Synchronous native render. Blocks the Node.js event loop until the PDF is ready. */
@@ -304,7 +347,10 @@ export async function renderPdfAsyncMeasured(
   signal?.addEventListener('abort', cancel, { once: true });
   try {
     if (signal?.aborted) token.cancel();
-    const result = await native.renderPdfAsyncNative(...args, token);
+    const [title, paragraphs, rows, regular, table, blocks, page, faces]=args;
+    const result = await native.renderPdfAsyncNative(
+      title,paragraphs,rows,regular,table,blocks,page,token,faces
+    );
     if (!Number.isFinite(result.renderMs) || result.renderMs < 0) {
       throw new Error('Invalid native render time');
     }
