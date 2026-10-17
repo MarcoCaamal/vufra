@@ -119,6 +119,7 @@ enum PreparedContent {
     Row(PreparedRow, usize),
     SplitRow(PreparedRow, PdfRow),
     TableRow(PreparedRow, usize, usize),
+    TableRowFragment(PreparedRow, PdfRow, usize, usize),
     Box(Box<PreparedBox>, usize),
     Spacer,
 }
@@ -172,9 +173,11 @@ impl PdfBox {
                     i += 1;
                     let mut rows = Vec::new();
                     while i < items.len() {
-                        if let PreparedContent::TableRow(_, source, _) = &items[i].kind
-                            && source == table_idx
-                        {
+                        let belongs = matches!(&items[i].kind,
+                            PreparedContent::TableRow(_,source,_) |
+                            PreparedContent::TableRowFragment(_,_,source,_)
+                            if source==table_idx);
+                        if belongs {
                             rows.push(items[i].height);
                             i += 1;
                         } else {
@@ -183,7 +186,7 @@ impl PdfBox {
                     }
                     nodes.push(LayoutNode::RepeatTable { header, rows });
                 }
-                PreparedContent::TableRow(..) => {
+                PreparedContent::TableRow(..) | PreparedContent::TableRowFragment(..) => {
                     return Err(RenderError::InvalidInput("table row without header"));
                 }
                 _ => {
@@ -408,8 +411,9 @@ impl PdfBox {
                             });
                         }
                         Err(error) if PdfRow::is_tall_row_error(&error) => {
-                            for segment in
-                                r.as_fragmentable_box(family, fonts, context, cancel)?.items
+                            for segment in r
+                                .as_fragmentable_box(family, fonts, context, registry, cancel)?
+                                .items
                             {
                                 let PdfBoxItem::Row(source_row) = segment else {
                                     unreachable!("split row contains only rows");
@@ -442,7 +446,7 @@ impl PdfBox {
                         .enumerate()
                     {
                         check_cancel(cancel)?;
-                        let prepared = row.prepare_depth(
+                        match row.prepare_depth(
                             (inner, page_height - 2.0 * self.padding),
                             family,
                             fonts,
@@ -450,14 +454,48 @@ impl PdfBox {
                             registry,
                             cancel,
                             depth + 1,
-                        )?;
-                        pixels = pixels.saturating_add(prepared.image_pixels);
-                        items.push(PreparedItem {
-                            flat_start: 0,
-                            flat_end: 0,
-                            height: prepared.height.max(1.0),
-                            kind: PreparedContent::TableRow(prepared, idx, row_idx),
-                        });
+                        ) {
+                            Ok(prepared) => {
+                                pixels = pixels.saturating_add(prepared.image_pixels);
+                                items.push(PreparedItem {
+                                    flat_start: 0,
+                                    flat_end: 0,
+                                    height: prepared.height.max(1.0),
+                                    kind: PreparedContent::TableRow(prepared, idx, row_idx),
+                                });
+                            }
+                            Err(error) if row_idx > 0 && PdfRow::is_tall_row_error(&error) => {
+                                // Keep the original table-row fill index for
+                                // all fragments; fragment only the row cells.
+                                let fragments = row.as_fragmentable_box(
+                                    family, fonts, context, registry, cancel,
+                                )?;
+                                for source in fragments.items {
+                                    let PdfBoxItem::Row(fragment) = source else {
+                                        unreachable!("row fragment contains only rows")
+                                    };
+                                    let prepared = fragment.prepare_depth(
+                                        (inner, page_height - 2.0 * self.padding),
+                                        family,
+                                        fonts,
+                                        context,
+                                        registry,
+                                        cancel,
+                                        depth + 1,
+                                    )?;
+                                    pixels = pixels.saturating_add(prepared.image_pixels);
+                                    items.push(PreparedItem {
+                                        flat_start: 0,
+                                        flat_end: 0,
+                                        height: prepared.height.max(1.0),
+                                        kind: PreparedContent::TableRowFragment(
+                                            prepared, fragment, idx, row_idx,
+                                        ),
+                                    });
+                                }
+                            }
+                            Err(error) => return Err(error),
+                        }
                     }
                 }
                 PdfBoxItem::Box(boxed) => {
@@ -574,6 +612,7 @@ impl PreparedBox {
         prepared: &PreparedRow,
         table_idx: usize,
         row_idx: usize,
+        row_override: Option<&PdfRow>,
         cancel: &AtomicBool,
     ) -> Result<(), RenderError> {
         use krilla::{
@@ -585,11 +624,13 @@ impl PreparedBox {
             Some(PdfBoxItem::Table(t)) => t,
             _ => return Err(RenderError::InvalidInput("invalid styled table source")),
         };
-        let row = if row_idx == 0 {
-            &table.header
-        } else {
-            &table.rows[row_idx - 1]
-        };
+        let row = row_override.unwrap_or_else(|| {
+            if row_idx == 0 {
+                &table.header
+            } else {
+                &table.rows[row_idx - 1]
+            }
+        });
         let mut x = origin.0;
         for (index, col) in row.columns.iter().enumerate() {
             let fill = table.fills[row_idx][index].unwrap_or(if row_idx == 0 {
@@ -812,6 +853,21 @@ impl PreparedBox {
                         prepared,
                         *table_idx,
                         *row_idx,
+                        None,
+                        cancel,
+                    )?;
+                }
+                PreparedContent::TableRowFragment(prepared, fragment, table_idx, row_idx) => {
+                    self.draw_table_row(
+                        source,
+                        surface,
+                        font,
+                        registry,
+                        (x + self.padding, y),
+                        prepared,
+                        *table_idx,
+                        *row_idx,
+                        Some(fragment),
                         cancel,
                     )?;
                 }

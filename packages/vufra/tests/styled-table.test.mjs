@@ -71,11 +71,18 @@ test('narrow box table columns measure against inner box width',()=>{
     ]});
   }),/columns exceed/);
 });
-test('oversized atomic row rejects and previous plain table API is unaffected',()=>{
-  const huge='SUPERTOKEN '.repeat(2600);
-  assert.throws(()=>app.document({title:'Impossible',page:'Letter'}).tableStyled([
+test('oversized plain-text styled row fragments and previous table API stays unchanged',()=>{
+  const huge='SUPERTOKEN '.repeat(640);
+  const continued=inspect(app.document({title:'Continued',page:'Letter'}).tableStyled([
     ['OK',huge,'$1']
-  ],{columns}).renderSync(),/row height exceeds|pagination|InvalidHeight|Invalid document/i);
+  ],{columns}).renderSync());
+  assert.ok(continued.pages>=3);
+  assert.equal((continued.raw.match(/SUPERTOKEN/g)??[]).length,640);
+  for(let pg=1;pg<=continued.pages;pg++)
+    assert.equal((continued.page(pg).match(/\bITEM\b/g)??[]).length,1);
+  assert.throws(()=>app.document({title:'Over budget',page:'Letter'}).tableStyled([
+    ['OK','SUPERTOKEN '.repeat(2600),'$1']
+  ],{columns}).renderSync(),/more than 500 line fragments/);
   const standard=inspect(app.document({title:'Legacy unaffected'})
     .table([{service:'OLD_TABLE_ROW',amount:22}]).renderSync());
   assert.match(standard.raw,/OLD_TABLE_ROW/);

@@ -466,6 +466,39 @@ siguen especializados. Un rich-run individual muy alto, una imagen
 gigante o una caja muy alta dentro de una celda siguen siendo atómicos.
 Las tablas enriquecidas parten entre filas. Véase ADR-0021.
 
+### Texto enriquecido fragmentable y semántica Rust compartida (Unidad 21)
+
+Vufra ahora divide entre páginas un párrafo rich con negritas, colores
+y fuentes reales dentro de Row/Grid, así como el cuerpo de una celda de
+tabla enriquecida. El encabezado de la tabla se repite y el fill RGB
+permanece idéntico en cada segmento. No cambia la Fluent API.
+
+~~~typescript
+const pdf=await engine.document({page:'Letter'})
+  .box({padding:14},b=>b.table([
+    ['REC001',{runs:[
+      {text:'Importante ',bold:true,color:'#BB3344'},
+      {text:'detalle '.repeat(150)}
+    ],background:'#E1F4DC'}]
+  ],{columns:[
+    {title:'Folio',width:'30%'},{title:'Detalle',width:'70%'}
+  ]}))
+  .render();
+~~~
+
+Internamente Rust tiene ahora una vista semántica común
+(\`SemanticNode\` + \`SemanticBudget\`) para bloques, boxes, rows y
+tablas; la validación recursiva utiliza efectivamente esa interfaz,
+mientras que el layout geométrico de Unidad 20 sigue paginando.
+Los tipos de contenido especializados antiguos siguen existiendo
+como adaptadores para compatibilidad. El texto rich ya formado conserva
+font index, x, size y color al fragmentarse, sin volver a reconstruirse.
+
+Límites: rich fragmenta por líneas medidas (máx. 500 por fila),
+no por mitad de un glyph o una imagen; encabezados de tabla muy altos,
+imágenes imposibles y boxes gigantes dentro de celdas aún se rechazan.
+Véase ADR-0022.
+
 ## Hitos
 
 | Unidad | Hito | Estado |
@@ -491,6 +524,7 @@ Las tablas enriquecidas parten entre filas. Véase ADR-0021.
 | 18 | Tablas enriquecidas y encabezados repetidos dentro de cajas | Prototipo funcional |
 | 19 | Composición funcional + Fluent compartida, cajas anidadas nativas | Refactor incremental |
 | 20 | Árbol geométrico Rust, cajas fragmentables y filas largas paginadas | Prototipo funcional |
+| 21 | Vista semántica Rust común y celdas rich fragmentables | Hito funcional local |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -553,6 +587,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 18 — Tablas enriquecidas](docs/experiments/19-styled-tables-milestone.md)
 - [Unidad 19 — Fluent componible](docs/experiments/20-composable-nodes-milestone.md)
 - [Unidad 20 — Paginación jerárquica](docs/experiments/21-hierarchical-layout-milestone.md)
+- [Unidad 21 — Rich en celdas](docs/experiments/22-rich-cell-pagination-milestone.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
@@ -574,6 +609,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [ADR-0019 Tablas enriquecidas en cajas](docs/adr/0019-styled-tables-in-boxes.md)
 - [ADR-0020 Fluent componible y nodos](docs/adr/0020-composable-fluent-and-unified-nodes.md)
 - [ADR-0021 Layout jerárquico y paginación](docs/adr/0021-hierarchical-layout-and-recursive-pagination.md)
+- [ADR-0022 Semántica común y rich paginado](docs/adr/0022-shared-semantic-view-and-rich-cell-fragments.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

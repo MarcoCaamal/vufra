@@ -15,6 +15,15 @@ use parley::{FontContext, FontFamily, FontFamilyName, Layout, LayoutContext, Sty
 use std::borrow::Cow;
 use std::sync::atomic::AtomicBool;
 
+/// Internal shaped fragment: the original caller can never manufacture
+/// cached font indices or skip the native rich-text input preflight.
+#[derive(Debug, Clone)]
+pub struct PreparedRichFragment {
+    line: RichLine,
+    style: TextStyle,
+    line_height: f32,
+}
+
 #[derive(Debug, Clone)]
 pub enum PdfRowItem {
     Text {
@@ -25,6 +34,10 @@ pub enum PdfRowItem {
         runs: Vec<PdfTextRun>,
         style: TextStyle,
     },
+    /// Internal pre-shaped line produced during safe page fragmentation.
+    /// Retains exact real font indices, sizes, colors and horizontal positions.
+    #[doc(hidden)]
+    MeasuredRichLine(PreparedRichFragment),
     Image(PdfImage),
     Box(Box<PdfBox>),
     Graphic(PdfGraphic),
@@ -84,6 +97,7 @@ impl PdfRow {
         family: &str,
         fonts: &mut FontContext,
         context: &mut LayoutContext<()>,
+        registry: &mut FontRegistry,
         cancel: &AtomicBool,
     ) -> Result<PdfBox, RenderError> {
         // Shape ordinary text with the same Parley width used by the painter.
@@ -116,6 +130,32 @@ impl PdfRow {
                                 style.space_after = 0.0;
                             }
                             expanded.push(PdfRowItem::Text { text: line, style });
+                        }
+                    }
+                    PdfRowItem::RichText { runs, style } => {
+                        // Preserve the actual shaped faces and baseline metrics.
+                        // Reconstructing PdfTextRun from lines would lose fallback
+                        // glyph selection and color/font positioning.
+                        let lines = prepare_rich(runs, *style, col.width, registry, cancel)?;
+                        let largest = runs
+                            .iter()
+                            .map(|r| r.font_size.unwrap_or(style.font_size))
+                            .fold(style.font_size, f32::max);
+                        let line_height = style.line_height.max(largest * 1.35);
+                        let len = lines.len();
+                        for (idx, line) in lines.into_iter().enumerate() {
+                            let mut part = *style;
+                            if idx > 0 {
+                                part.space_before = 0.0;
+                            }
+                            if idx + 1 < len {
+                                part.space_after = 0.0;
+                            }
+                            expanded.push(PdfRowItem::MeasuredRichLine(PreparedRichFragment {
+                                line,
+                                style: part,
+                                line_height,
+                            }));
                         }
                     }
                     other => expanded.push(other.clone()),
@@ -214,6 +254,20 @@ impl PdfRow {
                         style.validate(page_height)?;
                         if runs.is_empty() || runs.len() > 1_000 {
                             return Err(RenderError::InvalidInput("invalid row rich text runs"));
+                        }
+                    }
+                    PdfRowItem::MeasuredRichLine(PreparedRichFragment {
+                        line,
+                        style,
+                        line_height,
+                    }) => {
+                        style.validate(page_height)?;
+                        if line.is_empty()
+                            || !line_height.is_finite()
+                            || *line_height <= 0.0
+                            || *line_height > page_height
+                        {
+                            return Err(RenderError::InvalidInput("invalid measured rich line"));
                         }
                     }
                     PdfRowItem::Image(img) => img.validate_box(col.width, page_height)?,
@@ -330,6 +384,26 @@ impl PdfRow {
                                 style: *style,
                                 line_height,
                                 offsets,
+                            },
+                        )
+                    }
+                    PdfRowItem::MeasuredRichLine(PreparedRichFragment {
+                        line,
+                        style,
+                        line_height,
+                    }) => {
+                        let offset = if col.right_align {
+                            (col.width - registry.line_width(line)?).max(0.0)
+                        } else {
+                            0.0
+                        };
+                        (
+                            style.space_before + line_height + style.space_after,
+                            PreparedItemKind::Rich {
+                                lines: vec![line.clone()],
+                                style: *style,
+                                line_height: *line_height,
+                                offsets: vec![offset],
                             },
                         )
                     }

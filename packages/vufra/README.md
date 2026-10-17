@@ -440,3 +440,23 @@ pero no sustituye los tipos especializados para contenido y pintura.
 Rich-text multi-font individual, imágenes gigantes o boxes muy grandes
 dentro de celdas siguen indivisibles y las tablas avanzadas dividen
 entre filas. ADR-0021 y examples/fluent-hierarchical.mjs.
+
+
+## Texto enriquecido paginado en Row/Grid y celdas de tabla (Unidad 21)
+
+Los párrafos rich dentro de Row/Grid y las celdas de cuerpo de tablas
+enriquecidas pueden dividirse entre páginas sin perder el font face real,
+color RGB ni offsets horizontales de sus spans. El renderer prepara las
+líneas una sola vez y conserva el resultado por fragmento, evitando el
+shaping distinto en la página siguiente. El encabezado de tabla se
+repite y el fondo RGB de las celdas se vuelve a pintar. No hay cambios
+en .richText(), .tableStyled(), .box(), ni en la Fluent chaining API.
+
+Vufra Rust añade un semantic view unificado para recorrer contenido de
+PdfBlock, PdfBoxItem y PdfRowItem y validar budgets de forma homogénea.
+Los enums existentes siguen por compatibilidad: el AST semántico
+owned universal queda pendiente. Tope de 500 fragmentos de línea por
+fila desbordada; imágenes gigantes, encabezados imposibles, boxes
+muy grandes dentro de una única celda y rowspan/colspan aún no se parten.
+
+Ejemplo: examples/fluent-rich-pagination.mjs y ADR-0022.

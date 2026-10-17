@@ -366,9 +366,71 @@ test('nested boxes repaint actual RGB backgrounds on first, middle and last page
   }
 });
 
-test('complex rich-text row still rejects a single indivisible overheight run',()=>{
-  const huge='IMPOSSIBLE_RICH '.repeat(2200);
-  assert.throws(()=>engine.document({title:'Oversized one rich run'})
-    .row(r=>r.column(c=>c.paragraph(huge,{bold:true})))
-    .renderSync(),/row height exceeds printable page/i);
+test('mixed-font rich paragraph within a row continues across pages without duplicate tokens',()=>{
+  const a=Array.from({length:135},(_,i)=>'RICH_A_'+String(i+1).padStart(4,'0')).join(' ')+' ';
+  const b=Array.from({length:135},(_,i)=>'RICH_B_'+String(i+1).padStart(4,'0')).join(' ');
+  const out=inspect(engine.document({title:'Rich text continuation',page:'Letter'})
+    .row(r=>r.column({width:'70%'},c=>c.richText(t=>{
+      t.add(a,{bold:true,color:'#BB3344'});
+      t.add(b,{fontSize:14});
+    },{fontSize:12,lineHeight:19})))
+    .renderSync());
+  assert.ok(out.pages>=3);
+  for(const type of ['A','B']){
+    const actual=[...out.raw.matchAll(new RegExp('RICH_'+type+'_(\\d{4})','g'))].map(m=>+m[1]);
+    assert.deepEqual(actual,Array.from({length:135},(_,i)=>i+1));
+  }
+  assert.match(out.fonts,/NotoSans-Bold/);
+});
+test('rich cell of a styled table fragments and repeats the header without losing colors',()=>{
+  const a=Array.from({length:160},(_,i)=>'CELLRED_'+String(i+1).padStart(4,'0')).join(' ')+' ';
+  const b=Array.from({length:160},(_,i)=>'CELLBLACK_'+String(i+1).padStart(4,'0')).join(' ');
+  const out=inspect(engine.document({title:'Cell fragmentation',page:'Letter'})
+    .box({padding:12},content=>content.table([
+      ['IDENTITY_A',{runs:[
+        {text:a,bold:true,color:'#BB3344'},
+        {text:b}
+      ],background:'#E1F4DC'}]
+    ],{columns:[
+      {title:'CELL_KEY',width:'30%'},
+      {title:'CELL_DETAILS',width:'70%'}
+    ]})).renderSync());
+  assert.ok(out.pages>=4);
+  for(const [kind,expected] of [['CELLRED_',160],['CELLBLACK_',160]]){
+    const actual=[...out.raw.matchAll(new RegExp(kind+'(\\d{4})','g'))].map(m=>+m[1]);
+    assert.deepEqual(actual,Array.from({length:expected},(_,i)=>i+1));
+  }
+  for(let p=1;p<=out.pages;p++){
+    const pg=execFileSync('pdftotext',['-raw','-f',String(p),'-l',String(p),out.path,'-'],{encoding:'utf8'});
+    assert.equal((pg.match(/CELL_KEY/g)??[]).length,1,'table header on page '+p);
+  }
+  assert.match(out.fonts,/NotoSans-Bold/);
+});
+
+
+test('split rich table cell repaints its RGB background on continuation page',()=>{
+  const rich=Array.from({length:150},(_,i)=>
+    'CELLCOLOR_'+String(i+1).padStart(4,'0')).join(' ');
+  const out=inspect(engine.document({title:'Rich cell continuity',page:'Letter'})
+    .tableStyled([
+      ['RICH_CELL',{runs:[{text:rich,bold:true,color:'#AA2244'}],
+        background:'#E1F4DC'}]
+    ],{columns:[
+      {title:'IDENTIFIER',width:'30%'},{title:'DETAILS',width:'70%'}
+    ]}).renderSync());
+  assert.ok(out.pages>=2);
+  for(const page of [1,2]){
+    const bbox=execFileSync('pdftotext',['-bbox','-f',String(page),
+      '-l',String(page),out.path,'-'],{encoding:'utf8'});
+    const word=bbox.match(/<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">CELLCOLOR_\d{4}<\/word>/);
+    assert.ok(word,'colored text in body page '+page);
+    const ppm=execFileSync('pdftoppm',['-f',String(page),'-l',String(page),
+      '-r','72','-singlefile',out.path],{maxBuffer:8*1024*1024});
+    const hdr=ppm.subarray(0,90).toString('latin1').match(/^P6\s+(\d+)\s+(\d+)\s+255\s/);
+    assert.ok(hdr);
+    const x=Math.floor(+word[1]+310),y=Math.floor(+word[2]+4);
+    const at=hdr[0].length+(y*(+hdr[1])+x)*3;
+    assert.deepEqual([...ppm.subarray(at,at+3)],[225,244,220],
+      'green background preserved on page '+page);
+  }
 });

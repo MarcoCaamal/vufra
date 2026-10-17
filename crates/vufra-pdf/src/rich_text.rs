@@ -172,7 +172,7 @@ impl FontRegistry {
         Ok(layout.full_width())
     }
 }
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct PositionedRun {
     pub text: String,
     pub x: f32,
