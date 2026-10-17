@@ -460,3 +460,28 @@ fila desbordada; imágenes gigantes, encabezados imposibles, boxes
 muy grandes dentro de una única celda y rowspan/colspan aún no se parten.
 
 Ejemplo: examples/fluent-rich-pagination.mjs y ADR-0022.
+
+
+## AST semántico Rust owned (Unidad 22)
+
+El motor Rust incorpora un AST de entrada owned y recursivo
+\`ContentNode\`, \`ContentFrame\`, \`ContentColumn\` y
+\`SemanticDocument\`. Las estructuras antiguas \`PdfBlock\`,
+\`PdfBoxItem\` y \`PdfRowItem\` se convierten automáticamente al modelo
+semántico común antes de validar presupuestos y renderizar. Los tipos
+históricos se mantienen como adaptadores para Krilla/NAPI, evitando
+cambios a la Fluent API de TypeScript y a los métodos existentes.
+
+Rust también expone \`render_semantic_pdf\` para construir documentos
+desde nodos propios, sin necesidad de Node.js ni JSON. Incluye adapters
+seguros que rechazan relaciones inválidas para evitar perder
+\`keepWithNext\`, colores o estilos.
+
+La etapa geométrica \`vufra-layout::tree::LayoutNode\` sigue paginando
+contenedores, filas y tablas. La nueva capa semántica no cambia sus
+reglas de 8 niveles, 500 fragmentos de fila ni los límites de imágenes.
+La normalización del input legacy owned puede clonar datos grandes;
+el renderer Krilla preparado todavía usa sus estructuras especializadas.
+
+Ejemplo: \`crates/vufra-pdf/examples/owned-semantic.rs\`,
+documentación: ADR-0023.

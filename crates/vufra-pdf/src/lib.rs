@@ -43,6 +43,10 @@ pub use graphic::{GraphicKind, PdfGraphic};
 pub use page_chrome::PdfPageChrome;
 pub use rich_text::{PdfFontFace, PdfTextRun};
 pub use row::{PdfRow, PdfRowColumn, PdfRowItem};
+pub use semantic::{
+    ContentColumn, ContentFrame, ContentNode, ContentTableColumn, SemanticDocument,
+    TextPresentation,
+};
 mod style;
 pub use image::{ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, PdfImage};
 mod table;
@@ -206,6 +210,34 @@ pub fn render_pdf(
     options: RenderOptions,
 ) -> Result<Vec<u8>, RenderError> {
     render_pdf_with_cancel(document, font_bytes, options, &NEVER_CANCELLED)
+}
+
+/// Render directly from the owned recursive semantic AST. Legacy PdfBlock,
+/// PdfBoxItem and PdfRowItem remain supported as interoperability adapters.
+pub fn render_semantic_pdf(
+    document: &SemanticDocument,
+    font_bytes: &[u8],
+    options: RenderOptions,
+) -> Result<Vec<u8>, RenderError> {
+    // Same validation of public RenderOptions as the legacy entry.
+    validate(
+        &PdfDocument {
+            title: document.title.clone(),
+            ..PdfDocument::default()
+        },
+        font_bytes,
+        options,
+    )?;
+    flow_render::render_semantic_flow(
+        &document.title,
+        &document.nodes,
+        font_bytes,
+        options,
+        document.page.unwrap_or_default(),
+        &document.fonts,
+        document.chrome.as_ref(),
+        &NEVER_CANCELLED,
+    )
 }
 
 /// Cooperative cancellation at text, cell, and page boundaries.

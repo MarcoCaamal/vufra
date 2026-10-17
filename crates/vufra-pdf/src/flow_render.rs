@@ -6,7 +6,7 @@ use super::{
     image::{MAX_IMAGE_BLOCKS, MAX_TOTAL_IMAGE_BYTES, MAX_TOTAL_IMAGE_PIXELS, PreparedImage},
     measure_text_lines, prepare_table,
     rich_text::{FontRegistry, PdfFontFace, RichLine, prepare_rich},
-    semantic::SemanticBudget,
+    semantic::{ContentNode, SemanticBudget},
 };
 use krilla::{
     Document as KrillaDocument,
@@ -56,6 +56,7 @@ fn validate_flow(
     blocks: &[PdfBlock],
     font: &[u8],
     chrome: Option<&PdfPageChrome>,
+    canonical: &[ContentNode],
 ) -> Result<(), RenderError> {
     if title.trim().is_empty() || title.contains('\0') {
         return Err(RenderError::InvalidInput(
@@ -73,8 +74,8 @@ fn validate_flow(
         ..SemanticBudget::default()
     };
     let mut rows = 0usize;
-    for block in blocks {
-        budget.visit(block, 0)?;
+    for (block, node) in blocks.iter().zip(canonical) {
+        budget.visit(node, 0)?;
         match block {
             PdfBlock::Paragraph(_)
             | PdfBlock::Heading { .. }
@@ -97,12 +98,7 @@ fn validate_flow(
                         "list requires 1..1000 nonempty items",
                     ));
                 }
-                for item in items {
-                    budget.text_bytes = budget
-                        .text_bytes
-                        .checked_add(item.len())
-                        .ok_or(RenderError::InvalidInput("text too large"))?;
-                }
+                // Canonical semantic traversal already counts list item bytes.
             }
             PdfBlock::Box(_) => {}
             PdfBlock::Row(row) => row.validate_structure(2000.0, 2000.0)?,
@@ -116,20 +112,7 @@ fn validate_flow(
                 rows = rows
                     .checked_add(table.rows.len())
                     .ok_or(RenderError::InvalidInput("too many rows"))?;
-                for column in &table.columns {
-                    budget.text_bytes = budget
-                        .text_bytes
-                        .checked_add(column.header.len())
-                        .ok_or(RenderError::InvalidInput("text too large"))?;
-                }
-                for cells in &table.rows {
-                    for cell in cells {
-                        budget.text_bytes = budget
-                            .text_bytes
-                            .checked_add(cell.len())
-                            .ok_or(RenderError::InvalidInput("text too large"))?;
-                    }
-                }
+                // Headers/cells are accounted by the same owned AST visitor.
             }
         }
         if budget.text_bytes > MAX_TOTAL_TEXT_BYTES || rows > 10_000 {
@@ -148,7 +131,7 @@ fn validate_flow(
         {
             for col in &row.columns {
                 for item in &col.items {
-                    budget.visit(item, 0)?;
+                    budget.visit(&ContentNode::from(item), 0)?;
                 }
             }
         }
@@ -164,8 +147,67 @@ fn validate_flow(
     Ok(())
 }
 
+/// Normalize every legacy document to one owned semantic tree *before*
+/// validation, pagination, font preparation or PDF painting.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render_flow(
+    title: &str,
+    blocks: &[PdfBlock],
+    font_bytes: &[u8],
+    options: RenderOptions,
+    geometry: PageGeometry,
+    extra_fonts: &[PdfFontFace],
+    chrome: Option<&PdfPageChrome>,
+    cancel: &AtomicBool,
+) -> Result<Vec<u8>, RenderError> {
+    let canonical = blocks.iter().map(ContentNode::from).collect::<Vec<_>>();
+    render_semantic_flow(
+        title,
+        &canonical,
+        font_bytes,
+        options,
+        geometry,
+        extra_fonts,
+        chrome,
+        cancel,
+    )
+}
+
+/// The owned semantic nodes are the single input of preparation. Writer
+/// adapters are instantiated only after the canonical tree passes preflight.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn render_semantic_flow(
+    title: &str,
+    canonical: &[ContentNode],
+    font_bytes: &[u8],
+    options: RenderOptions,
+    geometry: PageGeometry,
+    extra_fonts: &[PdfFontFace],
+    chrome: Option<&PdfPageChrome>,
+    cancel: &AtomicBool,
+) -> Result<Vec<u8>, RenderError> {
+    check_cancel(cancel)?;
+    geometry.validate()?;
+    let writer = canonical
+        .iter()
+        .cloned()
+        .map(PdfBlock::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_flow(title, &writer, font_bytes, chrome, canonical)?;
+    render_writer_flow(
+        title,
+        &writer,
+        font_bytes,
+        options,
+        geometry,
+        extra_fonts,
+        chrome,
+        cancel,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn render_writer_flow(
     title: &str,
     blocks: &[PdfBlock],
     font_bytes: &[u8],
@@ -175,9 +217,6 @@ pub(super) fn render_flow(
     chrome: Option<&PdfPageChrome>,
     cancel: &AtomicBool,
 ) -> Result<Vec<u8>, RenderError> {
-    check_cancel(cancel)?;
-    geometry.validate()?;
-    validate_flow(title, blocks, font_bytes, chrome)?;
     let font = Font::new(font_bytes.to_vec().into(), 0).ok_or(RenderError::InvalidFont)?;
     let mut fonts = FontContext {
         collection: Collection::new(CollectionOptions {

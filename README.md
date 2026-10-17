@@ -499,6 +499,43 @@ no por mitad de un glyph o una imagen; encabezados de tabla muy altos,
 imágenes imposibles y boxes gigantes dentro de celdas aún se rechazan.
 Véase ADR-0022.
 
+### AST semántico Rust owned y compatibilidad (Unidad 22)
+
+Los documentos ahora se normalizan a un árbol \`ContentNode\` owned antes
+de validarse o prepararse para el PDF. El mismo nodo semántico representa
+texto, rich text, imágenes, cajas, filas, tablas, listas y saltos;
+\`ContentFrame\` y \`ContentColumn\` guardan layout y estilos.
+
+El motor mantiene el árbol geométrico \`LayoutNode\` de la Unidad 20
+para paginar; el AST semántico no duplica sus responsabilidades.
+\`SemanticBudget\` recorre el árbol owned para aplicar las mismas
+reglas de seguridad en todas las ramas. Los tipos
+\`PdfBlock/PdfBoxItem/PdfRowItem\` se conservan únicamente como
+adaptadores públicos y de dibujo compatibles con el SDK anterior.
+
+Nueva entrada nativa directamente en Rust:
+
+~~~rust
+let mut doc=SemanticDocument::new("Reporte");
+doc.page=Some(PageGeometry::letter());
+doc.nodes.push(ContentNode::paragraph("Introducción"));
+doc.nodes.push(ContentNode::boxed(
+    ContentFrame {padding:14.0,..ContentFrame::default()},
+    vec![ContentNode::paragraph("Contenido anidado")]
+));
+let pdf=render_semantic_pdf(&doc,&font,RenderOptions::default())?;
+~~~
+
+No hay cambios a la sintaxis encadenada de TypeScript. Los contextos
+inválidos (\`PageBreak\` dentro de una fila, estilo rich en tabla simple,
+etc.) dan error explícito y no descartan propiedades.
+
+**Límite actual:** no se han eliminado todos los tipos del pintor Krilla
+ni el costo temporal de clonar datos al adaptar los inputs históricos.
+El render de imágenes gigantes dentro de una celda, columnas
+independientes, RTL universal y colspan/rowspan sigue fuera del alcance.
+Detalles en ADR-0023 y ejemplo Rust \`owned-semantic.rs\`.
+
 ## Hitos
 
 | Unidad | Hito | Estado |
@@ -525,6 +562,7 @@ Véase ADR-0022.
 | 19 | Composición funcional + Fluent compartida, cajas anidadas nativas | Refactor incremental |
 | 20 | Árbol geométrico Rust, cajas fragmentables y filas largas paginadas | Prototipo funcional |
 | 21 | Vista semántica Rust común y celdas rich fragmentables | Hito funcional local |
+| 22 | AST semántico owned Rust, API nativa y adapters legacy | Hito funcional local |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -588,6 +626,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 19 — Fluent componible](docs/experiments/20-composable-nodes-milestone.md)
 - [Unidad 20 — Paginación jerárquica](docs/experiments/21-hierarchical-layout-milestone.md)
 - [Unidad 21 — Rich en celdas](docs/experiments/22-rich-cell-pagination-milestone.md)
+- [Unidad 22 — AST semántico owned](docs/experiments/23-owned-semantic-ast-milestone.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
@@ -610,6 +649,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [ADR-0020 Fluent componible y nodos](docs/adr/0020-composable-fluent-and-unified-nodes.md)
 - [ADR-0021 Layout jerárquico y paginación](docs/adr/0021-hierarchical-layout-and-recursive-pagination.md)
 - [ADR-0022 Semántica común y rich paginado](docs/adr/0022-shared-semantic-view-and-rich-cell-fragments.md)
+- [ADR-0023 AST semántico owned en Rust](docs/adr/0023-owned-semantic-ast-and-legacy-paint-adapters.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia
