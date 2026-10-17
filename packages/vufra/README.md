@@ -150,3 +150,14 @@ siguen aplicándose, incluso con referencias a imágenes idénticas.
 Las fuentes extraordinariamente grandes se liberan después
 de la preparación del trabajo para evitar retención del GC.
 Ver `scripts/benchmark-reused-assets.mjs` y ADR-0031.
+
+## Rendimiento raster y renders concurrentes
+
+Los PNG y JPEG se preparan de forma aislada para cada PDF.
+Un caché compartido del objeto preparado de Krilla fue probado
+y **rechazado** por una regresión severa en tareas concurrentes.
+El caché acotado de bytes comprimidos permanece intacto.
+
+Benchmark: `scripts/benchmark-large-raster.mjs`; test:
+`packages/vufra/tests/large-raster-concurrency.test.mjs`.
+Detalles: ADR-0032. La Fluent API no cambia.

@@ -302,3 +302,27 @@ tiempo o pico RSS** en este benchmark; se optimizaron las copias
 de buffers, el alcance y la vida útil de los recursos.
 
 Consulta [ADR-0031](docs/adr/0031-bounded-shared-font-and-image-assets.md).
+
+## Unidad 31: raster grande y concurrencia
+
+Vufra dispone de un benchmark reproducible para repetir un mismo
+PNG/JPEG de 1.280×1.280 entre **3 renderizados secuenciales y
+3 concurrentes**. Se prueban páginas, fuentes, imágenes, hashes
+y memoria máxima de procesos independientes.
+
+```bash
+node scripts/benchmark-large-raster.mjs REGULAR.ttf 3 1280 png
+# La variante JPEG requiere ImageMagick local (magick):
+node scripts/benchmark-large-raster.mjs REGULAR.ttf 3 1280 jpeg
+```
+
+Se experimentó con compartir un `krilla::Image` ya preparado
+entre PDFs, pero el lote paralelo pasó de **119,88 ms a 327,07 ms**
+(mediana de tres procesos PNG) a cambio de un ahorro de RSS
+de unos 6 MiB. La optimización fue **revertida** y la latencia
+volvió a **119,13 ms**. Se conserva únicamente el caché acotado
+de bytes comprimidos de Unidad30, sin nuevo código muerto ni
+API experimental de compatibilidad.
+
+La investigación y la decisión están en
+[ADR-0032](docs/adr/0032-large-raster-concurrency-and-cache-rejection.md).
