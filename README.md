@@ -323,6 +323,9 @@ node examples/fluent-panels.mjs \
 node examples/fluent-page-templates.mjs \
   "$(fc-match 'Noto Sans' -f '%{file}')" \
   "$(fc-match 'Noto Sans:style=Bold' -f '%{file}')" artifacts/fluent-page-templates.pdf
+node examples/fluent-styled-tables.mjs \
+  "$(fc-match 'Noto Sans' -f '%{file}')" \
+  "$(fc-match 'Noto Sans:style=Bold' -f '%{file}')" artifacts/fluent-styled-tables.pdf
 pdfinfo artifacts/sdk-first.pdf
 ```
 
@@ -360,6 +363,36 @@ layouts largos que dejarían menos de 100pt de cuerpo devuelven error.
 Ejemplo real: examples/fluent-page-templates.mjs. ADR-0018 detalla la
 precedencia y los límites de las plantillas.
 
+### Nuevo: tablas enriquecidas dentro de cajas (Unidad 18)
+
+Vufra puede generar tablas empresariales dentro de cajas decoradas, con
+texto regular, negrita real, colores, relleno RGB, varios fragmentos tipográficos
+o imagen PNG/JPEG por celda. El encabezado se repite en cada nueva página.
+
+~~~typescript
+const pdf = await createVufra({font: regularBytes, fonts: {bold: boldBytes}})
+  .document({title:'Factura',page:'Letter'})
+  .box({padding:14,background:'#FFFFFF',border:{width:1,color:'#223366'}},box=>{
+    box.heading('Estado de cuenta', {bold:true});
+    box.table([
+      [{text:'INV0001',bold:true}, 'Servicio premium',
+       {text:'$250.00',background:'#E1F4DC',align:'right'}],
+      ['INV0002', {runs:[
+        {text:'Envío ',bold:true,color:'#BB3344'},{text:'express'}
+      ]}, '$99.00']
+    ],{columns:[
+      {title:'Folio',width:'25%'},
+      {title:'Descripción',width:'50%'},
+      {title:'Importe',width:'25%',align:'right'}
+    ]});
+  }).render();
+~~~
+
+También existe document.tableStyled(rows,{columns}) sin caja visible.
+A diferencia de table() clásica, las filas enriquecidas son ATÓMICAS: pueden
+moverse a otra página y el encabezado se repetirá, pero una fila más alta que
+una página imprimible da error. No hay colspan, rowspan ni tablas recursivas.
+
 ## Hitos
 
 | Unidad | Hito | Estado |
@@ -382,6 +415,7 @@ precedencia y los límites de las plantillas.
 | 15 | `box()` con padding, fondo, bordes y fragmentación entre páginas | Prototipo funcional |
 | 16 | Tipografía real y filas/grids anidados dentro de cajas; reglas de salto | Prototipo funcional |
 | 17 | Plantillas de página, portada distinta, logos y numeración tardía | Prototipo funcional |
+| 18 | Tablas enriquecidas y encabezados repetidos dentro de cajas | Prototipo funcional |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -441,6 +475,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 15 — Cajas decoradas fragmentables](docs/experiments/16-decorated-boxes-milestone.md)
 - [Unidad 16 — Layouts anidados](docs/experiments/17-nested-layouts-milestone.md)
 - [Unidad 17 — Plantillas de página](docs/experiments/18-page-templates-milestone.md)
+- [Unidad 18 — Tablas enriquecidas](docs/experiments/19-styled-tables-milestone.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
@@ -459,6 +494,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [ADR-0016 Cajas fragmentables](docs/adr/0016-decorated-boxes-page-fragments.md)
 - [ADR-0017 Layouts anidados](docs/adr/0017-nested-layouts-and-page-policies.md)
 - [ADR-0018 Plantillas de página](docs/adr/0018-page-templates-and-running-bands.md)
+- [ADR-0019 Tablas enriquecidas en cajas](docs/adr/0019-styled-tables-in-boxes.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

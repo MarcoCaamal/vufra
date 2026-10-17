@@ -129,6 +129,39 @@ fn validate_flow(
                                 .checked_add(img.data.len())
                                 .ok_or(RenderError::InvalidInput("too much image data"))?;
                         }
+                        super::PdfBoxItem::Table(table) => {
+                            for row in std::iter::once(&table.header).chain(&table.rows) {
+                                for column in &row.columns {
+                                    for nested in &column.items {
+                                        match nested {
+                                            super::row::PdfRowItem::RichText { runs, .. } => {
+                                                for run in runs {
+                                                    total = total
+                                                        .checked_add(run.text.len())
+                                                        .ok_or(RenderError::InvalidInput(
+                                                            "text too large",
+                                                        ))?;
+                                                }
+                                            }
+                                            super::row::PdfRowItem::Text { text, .. } => {
+                                                total = total.checked_add(text.len()).ok_or(
+                                                    RenderError::InvalidInput("text too large"),
+                                                )?;
+                                            }
+                                            super::row::PdfRowItem::Image(img) => {
+                                                image_count += 1;
+                                                image_bytes = image_bytes
+                                                    .checked_add(img.data.len())
+                                                    .ok_or(RenderError::InvalidInput(
+                                                        "too much image data",
+                                                    ))?;
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         super::PdfBoxItem::Row(row) => {
                             for column in &row.columns {
                                 for nested in &column.items {
@@ -393,6 +426,7 @@ pub(super) fn render_flow(
                 measurements.push(FlowBlock::Box {
                     item_heights: prepared_box.item_heights.clone(),
                     padding: boxed.padding,
+                    repeat_headers: prepared_box.repeat_headers.clone(),
                     keep_together: boxed.keep_together,
                     break_before: boxed.break_before,
                 });
@@ -645,6 +679,7 @@ pub(super) fn render_flow(
                     block,
                     start_item,
                     end_item,
+                    repeat_header,
                     first,
                     last,
                     height,
@@ -664,6 +699,7 @@ pub(super) fn render_flow(
                                 top: y,
                                 start: *start_item,
                                 end: *end_item,
+                                repeat_header: *repeat_header,
                                 first: *first,
                                 last: *last,
                                 height: *height,

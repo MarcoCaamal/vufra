@@ -37,7 +37,7 @@ mod image;
 mod page_chrome;
 mod rich_text;
 mod row;
-pub use box_layout::{BoxAlign, PdfBox, PdfBoxItem};
+pub use box_layout::{BoxAlign, PdfBox, PdfBoxItem, PdfBoxTable};
 pub use graphic::{GraphicKind, PdfGraphic};
 pub use page_chrome::PdfPageChrome;
 pub use rich_text::{PdfFontFace, PdfTextRun};

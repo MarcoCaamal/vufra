@@ -1,5 +1,5 @@
 export {vufra, createVufra, Vufra, DocumentBuilder} from './fluent';
-export type {VufraStyle,VufraTheme,VufraConfig,DocumentOptions,HeadingOptions,TableColumn,TableOptions,RowOptions,ColumnOptions,GridOptions,ImageOptions,BoxOptions,PageBandScope,PageNumberTokens} from './fluent';
+export type {VufraStyle,VufraTheme,VufraConfig,DocumentOptions,HeadingOptions,TableColumn,TableOptions,RowOptions,ColumnOptions,GridOptions,ImageOptions,BoxOptions,StyledTableCell,StyledTableColumn,StyledTableOptions,PageBandScope,PageNumberTokens} from './fluent';
 
 /**
  * Vufra v0.1 — experimental native Rust PDF SDK for Node.js.
@@ -60,10 +60,18 @@ export interface PdfRow {
   gap?: number;
   columns: PdfRowColumn[];
 }
+/** Rich table rendered inside a decorated box; rows remain atomic across pages. */
+export interface PdfBoxTable {
+  header: PdfRow;
+  rows: PdfRow[];
+  /** Backgrounds: header first, then every data row, per column. */
+  fills: (string | undefined)[][];
+}
 export type PdfBoxItem =
   | {type:'text';text:string;style?:Partial<PdfTextStyle>;color?:string}
   | {type:'rich';runs:PdfRichRun[];style?:Partial<PdfTextStyle>}
   | {type:'row';row:PdfRow}
+  | {type:'table';table:PdfBoxTable}
   | {type:'image';data:Uint8Array;width:number;height:number;fit?:'contain'|'cover'}
   | {type:'rule'|'rectangle';width:number;height:number;color?:string}
   | {type:'spacer';height:number};
@@ -149,6 +157,8 @@ type NativeBlock = {
       kind:string;text?:string;style?:PdfTextStyle;color?:string;height?:number;
       runs?:{text:string;font:string;fontSize?:number;color?:string;fallbackFonts?:string[]}[];
       row?:NativeBlock['row'];
+      tableData?:{header:NonNullable<NativeBlock['row']>;rows:NonNullable<NativeBlock['row']>[];
+        fills:(string|undefined)[][]};
       image?:{data:Uint8Array;width:number;height:number;fit:'contain'|'cover'};
       graphic?:{kind:string;width:number;height:number;color:string}
     }>};
@@ -534,6 +544,26 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
           }
           if(item?.type==='row'){
             return {kind:'row',row:normalizeRow(item.row,innerWidth,printableHeight-2*padding)};
+          }
+          if(item?.type==='table'){
+            const t=item.table;
+            if(!t || !Array.isArray(t.rows) || !t.rows.length || t.rows.length>1000 ||
+               !Array.isArray(t.fills) || t.fills.length!==t.rows.length+1) {
+              throw new TypeError('boxed table requires 1..1000 rows and fills');
+            }
+            const header=normalizeRow(t.header,innerWidth,printableHeight-2*padding);
+            const rows=t.rows.map(r=>normalizeRow(r,innerWidth,printableHeight-2*padding));
+            if(header.gap!==0 || header.columns.length>6 || rows.some(r=>
+              r.gap!==0 || r.columns.length!==header.columns.length ||
+              r.columns.some((c,i)=>Math.abs(c.width-header.columns[i].width)>0.01))) {
+              throw new TypeError('boxed table must share contiguous 1..6 column widths');
+            }
+            const fills=t.fills.map(f=>{
+              if(!Array.isArray(f) || f.length!==header.columns.length)
+                throw new TypeError('boxed table fills must match column count');
+              return f.map(rgb);
+            });
+            return {kind:'table',tableData:{header,rows,fills}};
           }
           if(item?.type==='text' && typeof item.text==='string'){
             return {kind:'text',text:item.text,style:normalizeStyle(

@@ -7,12 +7,20 @@ use super::{
 
 const EPS: f32 = 0.001;
 
+/// Header row of a nested table, repeated when continuation starts inside its body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BoxRepeatSpan {
+    pub header_item: usize,
+    pub end_item: usize,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum FlowBlock {
     PageBreak,
     Box {
         item_heights: Vec<f32>,
         padding: f32,
+        repeat_headers: Vec<BoxRepeatSpan>,
         keep_together: bool,
         break_before: bool,
     },
@@ -45,6 +53,7 @@ pub enum FlowFragment {
         block: usize,
         start_item: usize,
         end_item: usize,
+        repeat_header: Option<usize>,
         first: bool,
         last: bool,
         height: f32,
@@ -167,6 +176,7 @@ pub fn paginate_flow_with_keep(
             FlowBlock::Box {
                 item_heights,
                 padding,
+                repeat_headers,
                 keep_together,
                 break_before,
             } => {
@@ -186,6 +196,20 @@ pub fn paginate_flow_with_keep(
                     })
                 {
                     return Err(PaginationError::InvalidHeight);
+                }
+                let mut previous_end = 0;
+                for span in repeat_headers {
+                    if span.header_item < previous_end
+                        || span.end_item > item_heights.len()
+                        || span.end_item < span.header_item + 2
+                        || item_heights[span.header_item]
+                            + item_heights[span.header_item + 1]
+                            + 2.0 * padding
+                            > page_height + EPS
+                    {
+                        return Err(PaginationError::InvalidHeight);
+                    }
+                    previous_end = span.end_item;
                 }
                 let sum = item_heights.iter().sum::<f32>() + 2.0 * padding;
                 if !sum.is_finite() {
@@ -209,13 +233,39 @@ pub fn paginate_flow_with_keep(
                         });
                         continue;
                     }
+                    // A continued table reserves another measured header row.
+                    let continuation = repeat_headers
+                        .iter()
+                        .find(|span| cursor > span.header_item && cursor < span.end_item);
+                    let replay = continuation.map(|span| span.header_item);
+                    let header_extra = replay.map(|idx| item_heights[idx]).unwrap_or(0.0);
+                    // A new table header must fit with at least its first row.
+                    if repeat_headers.iter().any(|span| span.header_item == cursor) {
+                        let needed =
+                            item_heights[cursor] + item_heights[cursor + 1] + 2.0 * padding;
+                        if needed > available + EPS && current.used_height > 0.0 {
+                            pages.push(FlowPage {
+                                fragments: Vec::new(),
+                                used_height: 0.0,
+                            });
+                            continue;
+                        }
+                    }
                     let mut end = cursor;
-                    let mut consumed = 2.0 * padding;
+                    let mut consumed = 2.0 * padding + header_extra;
                     while end < item_heights.len()
                         && consumed + item_heights[end] <= available + EPS
                     {
                         consumed += item_heights[end];
                         end += 1;
+                    }
+                    // Never leave an isolated table header at the page bottom.
+                    if repeat_headers
+                        .iter()
+                        .any(|span| span.header_item >= cursor && span.header_item + 1 == end)
+                    {
+                        end -= 1;
+                        consumed -= item_heights[end];
                     }
                     if end == cursor {
                         if current.fragments.is_empty() {
@@ -232,6 +282,7 @@ pub fn paginate_flow_with_keep(
                         block,
                         start_item: cursor,
                         end_item: end,
+                        repeat_header: replay,
                         first: cursor == 0,
                         last,
                         height: consumed,
@@ -488,10 +539,71 @@ mod tests {
         }
     }
     #[test]
+    fn repeated_box_table_header_is_charged_on_every_continuation_page() {
+        let block = FlowBlock::Box {
+            item_heights: vec![20.0, 25.0, 25.0, 25.0, 25.0],
+            padding: 5.0,
+            repeat_headers: vec![BoxRepeatSpan {
+                header_item: 0,
+                end_item: 5,
+            }],
+            keep_together: false,
+            break_before: false,
+        };
+        let pages = paginate_flow(&[block], 85.0).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert!(matches!(
+            &pages[0].fragments[0],
+            FlowFragment::Box {
+                start_item: 0,
+                end_item: 3,
+                repeat_header: None,
+                ..
+            }
+        ));
+        assert!(matches!(&pages[1].fragments[0],
+            FlowFragment::Box { start_item:3,end_item:5,repeat_header:Some(0),height,..}
+                if (*height-80.0).abs()<0.01));
+        assert!(pages.iter().all(|p| p.used_height <= 85.0));
+    }
+    #[test]
+    fn nested_table_header_is_never_orphaned_after_prior_content() {
+        let block = FlowBlock::Box {
+            item_heights: vec![60.0, 20.0, 20.0, 20.0],
+            padding: 5.0,
+            repeat_headers: vec![BoxRepeatSpan {
+                header_item: 1,
+                end_item: 4,
+            }],
+            keep_together: false,
+            break_before: false,
+        };
+        let pages = paginate_flow(&[block], 100.0).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert!(matches!(
+            &pages[0].fragments[0],
+            FlowFragment::Box {
+                start_item: 0,
+                end_item: 1,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &pages[1].fragments[0],
+            FlowFragment::Box {
+                start_item: 1,
+                end_item: 4,
+                repeat_header: None,
+                ..
+            }
+        ));
+    }
+    #[test]
     fn box_page_policies_are_explicit_and_preserve_order() {
         let boxed = |keep_together, break_before| FlowBlock::Box {
             item_heights: vec![21.0, 21.0],
             padding: 5.0,
+            repeat_headers: vec![],
             keep_together,
             break_before,
         };
@@ -515,6 +627,7 @@ mod tests {
         let too_tall = FlowBlock::Box {
             item_heights: vec![45.0, 45.0, 45.0],
             padding: 5.0,
+            repeat_headers: vec![],
             keep_together: true,
             break_before: false,
         };
@@ -530,6 +643,7 @@ mod tests {
         let splittable = FlowBlock::Box {
             item_heights,
             padding,
+            repeat_headers: vec![],
             keep_together: false,
             break_before: false,
         };
@@ -561,6 +675,7 @@ mod tests {
             FlowBlock::Box {
                 item_heights: vec![20.0],
                 padding: 5.0,
+                repeat_headers: vec![],
                 keep_together: true,
                 break_before: false,
             },
@@ -604,6 +719,7 @@ mod tests {
             FlowBlock::Box {
                 item_heights: items.clone(),
                 padding: 9.0,
+                repeat_headers: vec![],
                 keep_together: false,
                 break_before: false,
             },
@@ -662,6 +778,7 @@ mod tests {
             FlowBlock::Box {
                 item_heights: vec![24.0, 24.0],
                 padding: 12.0,
+                repeat_headers: vec![],
                 keep_together: false,
                 break_before: false,
             },
@@ -681,6 +798,7 @@ mod tests {
                 &[FlowBlock::Box {
                     item_heights: vec![105.0],
                     padding: 5.0,
+                    repeat_headers: vec![],
                     keep_together: false,
                     break_before: false,
                 }],

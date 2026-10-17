@@ -370,3 +370,27 @@ null desactiva una banda (también la original). Los márgenes se reservan
 automáticamente según el alto máximo de las variantes, sin superponer cuerpo y
 bandas. Una banda contiene una sola fila/texto/imagen/grid y, por ahora, no
 admite apilar varios bloques ni páginas pares/impares distintas.
+
+
+## Tablas enriquecidas (Unidad 18)
+
+Dentro de box(), utiliza box.table(rows,{columns}) para diseñar tablas
+con texto de varias fuentes, negritas reales, rich runs, rellenos RGB,
+colores y logotipos PNG/JPEG. El motor conserva cada fila completa y repite
+el encabezado en continuaciones. Los anchos usan el espacio INTERIOR de la caja.
+
+document.tableStyled(rows,{columns}) crea una tabla sin panel visible.
+Admite 1–6 columnas (mínimo 60pt cada una) y hasta 1000 filas.
+
+~~~ts
+const pdf = await engine.document({title:'Resumen'})
+  .tableStyled([
+    [{text:'Servicio A',bold:true}, {text:'$150',background:'#DDF0DD'}],
+    ['Servicio B', {runs:[{text:'Envío ',bold:true},{text:'premium'}]}]
+  ],{columns:[{title:'Concepto',width:'60%'},{title:'Total',width:'40%'}]})
+  .render();
+~~~
+
+Las filas enriquecidas son indivisibles verticalmente. Si una fila no cabe
+en una página vacía, se rechaza. table() clásico sigue fragmentando por líneas.
+Los encabezados anidados se repiten; no hay colspan ni rowspan.

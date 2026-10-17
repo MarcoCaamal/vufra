@@ -14,6 +14,7 @@ use krilla::{
 };
 use parley::{FontContext, LayoutContext};
 use std::sync::atomic::AtomicBool;
+use vufra_layout::flow::BoxRepeatSpan;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoxAlign {
@@ -35,6 +36,7 @@ pub enum PdfBoxItem {
     Image(PdfImage),
     Graphic(PdfGraphic),
     Row(PdfRow),
+    Table(PdfBoxTable),
     Spacer(f32),
 }
 #[derive(Debug, Clone)]
@@ -49,6 +51,51 @@ pub struct PdfBox {
     pub break_before: bool,
     pub keep_with_next: bool,
     pub items: Vec<PdfBoxItem>,
+}
+/// Bounded, rich table inside a decorated box. Each row is atomic; the header
+/// is repainted on continuation pages by the outer page compositor.
+#[derive(Debug, Clone)]
+pub struct PdfBoxTable {
+    pub header: PdfRow,
+    pub rows: Vec<PdfRow>,
+    /// RGB fills: header at index zero, then each body row, one per column.
+    pub fills: Vec<Vec<Option<[u8; 3]>>>,
+}
+impl PdfBoxTable {
+    fn validate(&self, width: f32, height: f32) -> Result<(), RenderError> {
+        if self.rows.is_empty()
+            || self.rows.len() > 1_000
+            || self.fills.len() != self.rows.len() + 1
+        {
+            return Err(RenderError::InvalidInput(
+                "styled table requires 1..1000 rows and fills",
+            ));
+        }
+        let cols = self.header.columns.len();
+        if cols == 0 || cols > 6 || self.header.gap != 0.0 {
+            return Err(RenderError::InvalidInput(
+                "styled table requires 1..6 contiguous columns",
+            ));
+        }
+        self.header.validate_structure(width, height)?;
+        for (i, row) in std::iter::once(&self.header).chain(&self.rows).enumerate() {
+            row.validate_structure(width, height)?;
+            if row.columns.len() != cols
+                || row.gap != 0.0
+                || self.fills[i].len() != cols
+                || row
+                    .columns
+                    .iter()
+                    .zip(&self.header.columns)
+                    .any(|(a, b)| (a.width - b.width).abs() > 0.01)
+            {
+                return Err(RenderError::InvalidInput(
+                    "styled table column widths must match",
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 enum PreparedContent {
     Text {
@@ -66,6 +113,7 @@ enum PreparedContent {
     Image(PreparedImage, usize),
     Graphic(usize),
     Row(PreparedRow, usize),
+    TableRow(PreparedRow, usize, usize),
     Spacer,
 }
 struct PreparedItem {
@@ -75,6 +123,7 @@ struct PreparedItem {
 pub struct PreparedBox {
     pub item_heights: Vec<f32>,
     pub image_pixels: u64,
+    pub repeat_headers: Vec<BoxRepeatSpan>,
     width: f32,
     x: f32,
     padding: f32,
@@ -127,6 +176,9 @@ impl PdfBox {
                 PdfBoxItem::Row(r) => {
                     r.validate_structure(w - 2.0 * self.padding, page_height - 2.0 * self.padding)?
                 }
+                PdfBoxItem::Table(t) => {
+                    t.validate(w - 2.0 * self.padding, page_height - 2.0 * self.padding)?
+                }
                 PdfBoxItem::Spacer(h)
                     if !h.is_finite() || *h <= 0.0 || *h + 2.0 * self.padding > page_height =>
                 {
@@ -157,6 +209,7 @@ impl PdfBox {
         };
         let mut items = Vec::new();
         let mut pixels = 0u64;
+        let mut repeat_headers = Vec::new();
         for (idx, item) in self.items.iter().enumerate() {
             check_cancel(cancel)?;
             match item {
@@ -250,6 +303,33 @@ impl PdfBox {
                         kind: PreparedContent::Row(prepared, idx),
                     });
                 }
+                PdfBoxItem::Table(table) => {
+                    table.validate(inner, page_height - 2.0 * self.padding)?;
+                    let header_item = items.len();
+                    for (row_idx, row) in std::iter::once(&table.header)
+                        .chain(table.rows.iter())
+                        .enumerate()
+                    {
+                        check_cancel(cancel)?;
+                        let prepared = row.prepare(
+                            (inner, page_height - 2.0 * self.padding),
+                            family,
+                            fonts,
+                            context,
+                            registry,
+                            cancel,
+                        )?;
+                        pixels = pixels.saturating_add(prepared.image_pixels);
+                        items.push(PreparedItem {
+                            height: prepared.height.max(1.0),
+                            kind: PreparedContent::TableRow(prepared, idx, row_idx),
+                        });
+                    }
+                    repeat_headers.push(BoxRepeatSpan {
+                        header_item,
+                        end_item: items.len(),
+                    });
+                }
                 PdfBoxItem::Spacer(h) => items.push(PreparedItem {
                     height: *h,
                     kind: PreparedContent::Spacer,
@@ -263,6 +343,7 @@ impl PdfBox {
         Ok(PreparedBox {
             item_heights: heights,
             image_pixels: pixels,
+            repeat_headers,
             width,
             x,
             padding: self.padding,
@@ -297,11 +378,72 @@ pub struct BoxFragmentPosition {
     pub top: f32,
     pub start: usize,
     pub end: usize,
+    pub repeat_header: Option<usize>,
     pub first: bool,
     pub last: bool,
     pub height: f32,
 }
 impl PreparedBox {
+    #[allow(clippy::too_many_arguments)]
+    fn draw_table_row(
+        &self,
+        source: &PdfBox,
+        surface: &mut Surface,
+        font: &Font,
+        registry: &FontRegistry,
+        origin: (f32, f32),
+        prepared: &PreparedRow,
+        table_idx: usize,
+        row_idx: usize,
+        cancel: &AtomicBool,
+    ) -> Result<(), RenderError> {
+        use krilla::{
+            color::rgb,
+            geom::{PathBuilder, Rect},
+            paint::{Fill, Stroke},
+        };
+        let table = match source.items.get(table_idx) {
+            Some(PdfBoxItem::Table(t)) => t,
+            _ => return Err(RenderError::InvalidInput("invalid styled table source")),
+        };
+        let row = if row_idx == 0 {
+            &table.header
+        } else {
+            &table.rows[row_idx - 1]
+        };
+        let mut x = origin.0;
+        for (index, col) in row.columns.iter().enumerate() {
+            let fill = table.fills[row_idx][index].unwrap_or(if row_idx == 0 {
+                [225, 236, 249]
+            } else if row_idx.is_multiple_of(2) {
+                [247, 250, 253]
+            } else {
+                [255, 255, 255]
+            });
+            let old_fill = surface.get_fill().cloned();
+            let old_stroke = surface.get_stroke().cloned();
+            surface.set_fill(Some(Fill {
+                paint: rgb::Color::new(fill[0], fill[1], fill[2]).into(),
+                ..Fill::default()
+            }));
+            surface.set_stroke(Some(Stroke {
+                paint: rgb::Color::new(187, 197, 207).into(),
+                width: 0.5,
+                ..Stroke::default()
+            }));
+            if let Some(rect) = Rect::from_xywh(x, origin.1, col.width, prepared.height) {
+                let mut path = PathBuilder::new();
+                path.push_rect(rect);
+                if let Some(path) = path.finish() {
+                    surface.draw_path(&path);
+                }
+            }
+            surface.set_fill(old_fill);
+            surface.set_stroke(old_stroke);
+            x += col.width;
+        }
+        prepared.draw(row, surface, font, registry, origin, cancel)
+    }
     pub fn draw(
         &self,
         source: &PdfBox,
@@ -316,6 +458,7 @@ impl PreparedBox {
             top,
             start,
             end,
+            repeat_header,
             first,
             last,
             height,
@@ -336,6 +479,29 @@ impl PreparedBox {
             }
         }
         let mut y = top + self.padding;
+        if let Some(header) = repeat_header {
+            let item = self.items.get(header).ok_or(RenderError::InvalidInput(
+                "invalid repeated table header index",
+            ))?;
+            if let PreparedContent::TableRow(prepared, table_idx, row_idx) = &item.kind {
+                self.draw_table_row(
+                    source,
+                    surface,
+                    font,
+                    registry,
+                    (x + self.padding, y),
+                    prepared,
+                    *table_idx,
+                    *row_idx,
+                    cancel,
+                )?;
+                y += item.height;
+            } else {
+                return Err(RenderError::InvalidInput(
+                    "invalid repeated table header item",
+                ));
+            }
+        }
         for item in &self.items[start..end] {
             check_cancel(cancel)?;
             match &item.kind {
@@ -410,6 +576,19 @@ impl PreparedBox {
                     if let PdfBoxItem::Row(r) = &source.items[*index] {
                         prepared.draw(r, surface, font, registry, (x + self.padding, y), cancel)?;
                     }
+                }
+                PreparedContent::TableRow(prepared, table_idx, row_idx) => {
+                    self.draw_table_row(
+                        source,
+                        surface,
+                        font,
+                        registry,
+                        (x + self.padding, y),
+                        prepared,
+                        *table_idx,
+                        *row_idx,
+                        cancel,
+                    )?;
                 }
                 PreparedContent::Spacer => {}
             }

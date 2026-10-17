@@ -7,7 +7,7 @@
  */
 import { renderPdf, renderPdfAsync, type PdfAsyncOptions, type PdfBlock,
   type PdfDocument, type PdfPageOptions, type PdfBox, type PdfBoxItem, type PdfRow, type PdfRowColumn,
-  type PdfRowItem, type PdfRichRun, type PdfTable, type PdfTextStyle, type PdfPageChrome
+  type PdfRowItem, type PdfRichRun, type PdfTable, type PdfTextStyle, type PdfPageChrome, type PdfBoxTable
 } from './index';
 import { PdfRenderQueue, type PdfEnqueueOptions } from './queue';
 declare const structuredClone: <T>(value:T)=>T;
@@ -58,6 +58,34 @@ export interface TableOptions<T> {
 /** Tokens resolved by Rust once the final page count is known; not JS per-page callbacks. */
 export interface PageNumberTokens { page: string; total: string }
 export type PageBandText = string | ((tokens:PageNumberTokens)=>string);
+/** A table cell may carry a full sequence of spans with genuine embedded fonts. */
+export type StyledTableCell = string | number | {
+  /** Cell content: choose text, rich runs or a raster image. */
+  image?: Uint8Array;
+  width?: number;
+  height?: number;
+  fit?: 'contain'|'cover';
+  text?: string;
+  runs?: Array<{text:string;bold?:boolean;font?:string;color?:string;fontSize?:number}>;
+  bold?: boolean;
+  font?: string;
+  color?: string;
+  fontSize?: number;
+  background?: string;
+  align?: 'left'|'right';
+};
+export interface StyledTableColumn {
+  title: string;
+  width?: number | '*' | `${number}%`;
+  align?: 'left' | 'right';
+  background?: string;
+  color?: string;
+}
+export interface StyledTableOptions {
+  columns: StyledTableColumn[];
+  /** Repeated on continuation pages. Always true in Unit18. */
+  repeatHeader?: true;
+}
 export interface RowOptions { gap?: number }
 export interface ColumnOptions { width?: number | `${number}%` | '*'; align?: 'left' | 'right' }
 export interface GridOptions { columns: number; gap?: number }
@@ -393,6 +421,91 @@ export class PageBandScope {
   }
 }
 
+function styledTable(
+  ctx:BuilderContext, innerWidth:number, rows:readonly (readonly StyledTableCell[])[],
+  options:StyledTableOptions
+):PdfBoxTable {
+  const columns=options?.columns;
+  if(!Array.isArray(columns)||columns.length<1||columns.length>6 ||
+     (options.repeatHeader!==undefined&&options.repeatHeader!==true)) {
+    fail('styled table requires 1..6 columns and repeatHeader true');
+  }
+  if(!Array.isArray(rows)||rows.length<1||rows.length>1000){
+    fail('styled table requires 1..1000 rows');
+  }
+  const available=innerWidth;
+  const assigned=columns.map(c=>buildColumnWidth(c.width,available));
+  const fixed=assigned.reduce<number>((sum,w)=>sum+(w??0),0);
+  const missing=assigned.filter(w=>w===null).length;
+  const auto=missing?(available-fixed)/missing:0;
+  const widths=assigned.map(w=>w??auto);
+  if(widths.some(w=>!validNumber(w)||w<60) ||
+     widths.reduce((a,b)=>a+b,0)>innerWidth+0.02){
+    fail('styled table columns exceed available width or need 60pt minimum');
+  }
+  if(columns.some(c=>!c || typeof c.title!=='string'||!c.title.trim() ||
+    (c.align!==undefined && !['left','right'].includes(c.align)))){
+    fail('styled table column requires a title and valid align');
+  }
+  const fills:(string|undefined)[][]=[];
+  const line=(cells:readonly StyledTableCell[], rowIndex:number)=>{
+    if(!Array.isArray(cells)||cells.length!==columns.length) {
+      fail('styled table row cells must match columns');
+    }
+    const backgrounds:(string|undefined)[]=[];
+    const cols:PdfRow['columns']=cells.map((entry,i)=>{
+      const data=typeof entry==='number'||typeof entry==='string'?{text:String(entry)}:entry;
+      if(!data || !plainObject(data) || (data.align!==undefined&&!['left','right'].includes(data.align as string))){
+        fail('invalid styled table cell');
+      }
+      const value=data as Exclude<StyledTableCell,string|number>;
+      const color=value.color??(rowIndex===0?columns[i].color:undefined);
+      if(value.image!==undefined && (value.text!==undefined||value.runs!==undefined)) {
+        fail('styled table cell image cannot combine with text or runs');
+      }
+      const cell:PdfRowItem= value.image!==undefined
+        ? (()=>{
+          if(!(value.image instanceof Uint8Array) || !validNumber(value.width) ||
+             !validNumber(value.height) || value.width<=0 || value.height<=0 ||
+             value.width>widths[i] || (value.fit!==undefined&&!['contain','cover'].includes(value.fit))){
+            fail('invalid styled table cell image or dimensions');
+          }
+          return {type:'image' as const,data:value.image,width:value.width,
+            height:value.height,fit:value.fit??'contain'};
+        })()
+        : value.runs!==undefined
+        ? (()=>{
+          if(!Array.isArray(value.runs)||value.runs.length===0||value.runs.length>1000){
+            fail('styled table runs must have 1..1000 spans');
+          }
+          const runs:PdfRichRun[]=value.runs.map(r=>{
+            if(!r||typeof r.text!=='string'||!r.text.trim())fail('invalid styled table span text');
+            const style:VufraStyle={font:r.font,bold:r.bold,color:r.color,fontSize:r.fontSize};
+            return {text:r.text,font:faceFor(style,ctx.fonts),color:colorHex(r.color,ctx.theme),
+              fontSize:r.fontSize};
+          });
+          return {type:'rich' as const,runs,style:{
+            fontSize:11,lineHeight:18,spaceBefore:5,spaceAfter:5
+          }};
+        })()
+        : asRowItemText(ctx,String(value.text??''),{
+            bold:value.bold??(rowIndex===0&&Object.hasOwn(ctx.fonts,'bold')),
+            font:value.font,
+            color,fontSize:value.fontSize,
+            spaceBefore:5,spaceAfter:5,lineHeight:18
+          });
+      backgrounds.push(colorHex(value.background??(rowIndex===0?columns[i].background:undefined),ctx.theme));
+      return {width:widths[i],align:value.align??columns[i].align??'left',items:[cell]};
+    });
+    fills.push(backgrounds);
+    return {gap:0,columns:cols};
+  };
+  const head=line(columns.map(c=>({text:c.title,bold:Object.hasOwn(ctx.fonts,'bold'),
+    color:c.color,background:c.background,align:c.align})),0);
+  const body=rows.map((r,i)=>line(r,i+1));
+  return {header:head,rows:body,fills};
+}
+
 /** One visually decorated, page-fragmentable vertical flow. */
 class BoxScope {
   private active=true;
@@ -443,6 +556,10 @@ class BoxScope {
     try{requireSyncResult(callback(collector));}finally{active=false;}
     if(!runs.length)fail('box richText requires runs');
     return this.add({type:'rich',runs,style});
+  }
+  table(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):this{
+    if(!this.active)fail('box table scope is closed');
+    return this.add({type:'table',table:styledTable(this.ctx,this.innerWidth,rows,options)});
   }
   image(data:Uint8Array,options:ImageOptions):this{
     if(!(data instanceof Uint8Array))fail('box image needs PNG/JPEG bytes');
@@ -563,6 +680,9 @@ class ContentScope {
   }
   table<T extends object>(data:readonly T[]|PdfTable,options?:TableOptions<T>):this {
     return this.append({type:'table',table:asTable(data,options,contentWidth(this.ctx))});
+  }
+  tableStyled(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):this{
+    return this.box({padding:0}, box=>box.table(rows,options));
   }
   row(options:RowOptions,callback:(row:RowScope)=>void):this;
   row(callback:(row:RowScope)=>void):this;
@@ -686,6 +806,9 @@ export class DocumentBuilder {
   }
   table<T extends object>(data:readonly T[]|PdfTable,opts?:TableOptions<T>):DocumentBuilder{
     return this.append(s=>{s.table(data,opts);});
+  }
+  tableStyled(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):DocumentBuilder{
+    return this.append(s=>{s.tableStyled(rows,options);});
   }
   row(opts:RowOptions,callback:(r:RowScope)=>void):DocumentBuilder;
   row(callback:(r:RowScope)=>void):DocumentBuilder;

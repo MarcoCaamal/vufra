@@ -13,9 +13,9 @@ use std::{
 };
 use vufra_pdf::{
     BoxAlign, GraphicKind, ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES,
-    PageGeometry, PdfBlock, PdfBox, PdfBoxItem, PdfColumn, PdfDocument, PdfFontFace, PdfGraphic,
-    PdfImage, PdfPageChrome, PdfRow, PdfRowColumn, PdfRowItem, PdfTable, PdfTextRun, RenderOptions,
-    TextStyle,
+    PageGeometry, PdfBlock, PdfBox, PdfBoxItem, PdfBoxTable, PdfColumn, PdfDocument, PdfFontFace,
+    PdfGraphic, PdfImage, PdfPageChrome, PdfRow, PdfRowColumn, PdfRowItem, PdfTable, PdfTextRun,
+    RenderOptions, TextStyle,
 };
 
 #[napi(object)]
@@ -83,6 +83,12 @@ pub struct NodeRow {
     pub columns: Vec<NodeRowColumn>,
 }
 #[napi(object)]
+pub struct NodeBoxTable {
+    pub header: NodeRow,
+    pub rows: Vec<NodeRow>,
+    pub fills: Vec<Vec<Option<String>>>,
+}
+#[napi(object)]
 pub struct NodeBoxItem {
     pub kind: String,
     pub runs: Option<Vec<NodeRichRun>>,
@@ -93,6 +99,7 @@ pub struct NodeBoxItem {
     pub image: Option<NodeImage>,
     pub graphic: Option<NodeGraphic>,
     pub row: Option<NodeRow>,
+    pub table_data: Option<NodeBoxTable>,
 }
 #[napi(object)]
 pub struct NodeBox {
@@ -279,6 +286,29 @@ fn to_box(input: NodeBox) -> napi::Result<PdfBox> {
                     napi::Error::from_reason("box row required")
                 })?)?))
             }
+            "table" => {
+                let table = item
+                    .table_data
+                    .ok_or_else(|| napi::Error::from_reason("boxed table required"))?;
+                Ok(PdfBoxItem::Table(PdfBoxTable {
+                    header: to_row(table.header)?,
+                    rows: table
+                        .rows
+                        .into_iter()
+                        .map(to_row)
+                        .collect::<napi::Result<Vec<_>>>()?,
+                    fills: table
+                        .fills
+                        .into_iter()
+                        .map(|colors| {
+                            colors
+                                .into_iter()
+                                .map(optional_rgb)
+                                .collect::<napi::Result<Vec<_>>>()
+                        })
+                        .collect::<napi::Result<Vec<_>>>()?,
+                }))
+            }
             _ => Err(napi::Error::from_reason("unsupported box item")),
         })
         .collect::<napi::Result<Vec<_>>>()?;
@@ -446,6 +476,12 @@ fn parse_document(
                     }
                     if let Some(row) = &item.row {
                         preflight_row_images(row, &mut count, &mut bytes)?;
+                    }
+                    if let Some(table) = &item.table_data {
+                        preflight_row_images(&table.header, &mut count, &mut bytes)?;
+                        for row in &table.rows {
+                            preflight_row_images(row, &mut count, &mut bytes)?;
+                        }
                     }
                 }
             }
