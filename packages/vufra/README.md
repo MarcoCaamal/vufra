@@ -217,3 +217,15 @@ introducir margen superior accidental. Los `spacer()`
 al inicio o después de `.pageBreak()` siguen siendo explícitos.
 No cambia la API Fluent. Ver ADR-0036 y el ejemplo
 `examples/fluent-page-aware-sections.mjs`.
+
+## Bordes y fondos de cajas en varias páginas
+
+Al anidar `box()` y `table()`, Vufra mantiene los fondos y
+bordes laterales en cada fragmento y dibuja los bordes superior
+e inferior únicamente al comienzo y fin **reales** de cada
+contenedor. Los encabezados repetidos de tablas no cuentan como
+nuevo inicio de caja.
+
+No hay cambios en la sintaxis Fluent ni en los presets.
+Ejemplo: `examples/fluent-nested-box-continuations.mjs`.
+Documentación de diseño: ADR-0037.

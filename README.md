@@ -455,3 +455,34 @@ node examples/fluent-page-aware-sections.mjs REGULAR.ttf BOLD.ttf artifacts/flue
 ```
 El ejemplo empresarial valida 185 transacciones y 11 páginas.
 Ver [ADR-0036](docs/adr/0036-page-aware-soft-separators-and-headings.md).
+
+## Unidad 36: cajas anidadas con bordes correctos entre páginas
+
+Los contenedores decorados pueden envolver tablas largas y seguir
+varias páginas con fondos y bordes laterales continuos. Vufra
+distingue el encabezado de tabla **repetido** de las hojas
+originales del contenido: ya no redibuja por error un borde
+superior cuando una tabla se reanuda en otra página.
+
+```ts
+document.box({preset:'panel'},outer=>{
+  outer.box({preset:'section'},section=>
+    section.table(rows,{columns})
+  );
+  outer.paragraph('Observación final');
+});
+```
+
+Cada caja conserva sus colores y cierra el borde inferior
+**donde termina realmente**, aunque su contenedor exterior
+continúe en otra página. Las regresiones inspeccionan píxeles
+RGB en PDFs reales con hasta tres niveles anidados.
+
+```bash
+node examples/fluent-nested-box-continuations.mjs REGULAR.ttf BOLD.ttf artifacts/fluent-nested-box-continuations.pdf
+```
+
+El ejemplo genera once páginas con 165 registros en orden.
+No cambió la Fluent API ni se añadieron cachés.
+
+Detalles: [ADR-0037](docs/adr/0037-nested-box-borders-and-repeated-headers.md).

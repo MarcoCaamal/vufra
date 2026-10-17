@@ -706,17 +706,22 @@ impl PreparedBox {
         left: f32,
         top: f32,
         leaves: &[usize],
+        original: std::ops::Range<usize>,
         cancel: &AtomicBool,
     ) -> Result<(), RenderError> {
-        if leaves.is_empty() {
-            return Err(RenderError::InvalidInput("empty box fragment"));
+        if leaves.is_empty()
+            || original.start > original.end
+            || original.end > self.item_heights.len()
+        {
+            return Err(RenderError::InvalidInput("invalid box fragment selection"));
         }
         let height = self.selection_height(leaves);
         let x = left + self.x;
-        let first = leaves.first() == Some(&0);
-        let last = leaves
-            .last()
-            .is_some_and(|v| v + 1 == self.item_heights.len());
+        // A replayed table header is painted for context, not part of the
+        // new original content: it cannot restore an enclosing top border.
+        let has_original = original.start < original.end;
+        let first = has_original && original.start == 0;
+        let last = has_original && original.end == self.item_heights.len();
         if let Some(color) = self.background {
             rect(surface, x, top, self.width, height, color)?;
         }
@@ -743,7 +748,7 @@ impl PreparedBox {
                 continue;
             }
             if let PreparedContent::Box(nested, index) = &item.kind {
-                let original = match &source.items[*index] {
+                let source_box = match &source.items[*index] {
                     PdfBoxItem::Box(b) => b,
                     _ => return Err(RenderError::InvalidInput("nested box source mismatch")),
                 };
@@ -751,14 +756,21 @@ impl PreparedBox {
                     .iter()
                     .map(|i| i - item.flat_start)
                     .collect::<Vec<_>>();
+                // Translate real content boundaries independently of replayed
+                // leaves, even when the table is nested several boxes deep.
+                let child_start =
+                    original.start.max(item.flat_start).min(item.flat_end) - item.flat_start;
+                let child_end =
+                    original.end.max(item.flat_start).min(item.flat_end) - item.flat_start;
                 nested.draw_selected(
-                    original,
+                    source_box,
                     surface,
                     font,
                     registry,
                     x + self.padding,
                     y,
                     &translated,
+                    child_start..child_end,
                     cancel,
                 )?;
                 y += nested.selection_height(&translated);
@@ -908,7 +920,15 @@ impl PreparedBox {
             ));
         }
         self.draw_selected(
-            source, surface, font, registry, pos.left, pos.top, &leaves, cancel,
+            source,
+            surface,
+            font,
+            registry,
+            pos.left,
+            pos.top,
+            &leaves,
+            pos.start..pos.end,
+            cancel,
         )
     }
 }
