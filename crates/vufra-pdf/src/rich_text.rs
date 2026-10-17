@@ -17,7 +17,7 @@ pub const MAX_FONT_FACE_BYTES: usize = 12 * 1024 * 1024;
 #[derive(Clone, Debug)]
 pub struct PdfFontFace {
     pub name: String,
-    pub data: Vec<u8>,
+    pub data: Arc<Vec<u8>>,
 }
 #[derive(Clone, Debug)]
 pub struct PdfTextRun {
@@ -60,7 +60,7 @@ impl FontRegistry {
             if total > MAX_EXTRA_FONT_BYTES || extra.data.len() > MAX_FONT_FACE_BYTES {
                 return Err(RenderError::InvalidInput("font byte budget exceeded"));
             }
-            r.add(&extra.name, Arc::new(extra.data))?;
+            r.add(&extra.name, extra.data)?;
         }
         Ok(r)
     }
@@ -297,6 +297,18 @@ pub fn prepare_rich(
 #[cfg(test)]
 mod shared_bytes_tests {
     use super::*;
+    #[test]
+    fn cloned_extra_font_face_keeps_the_exact_source_allocation() {
+        let bytes = Arc::new(vec![9u8; 2 * 1024 * 1024]);
+        let face = PdfFontFace {
+            name: "bold".into(),
+            data: Arc::clone(&bytes),
+        };
+        let cloned = face.clone();
+        assert!(Arc::ptr_eq(&face.data, &cloned.data));
+        assert!(Arc::ptr_eq(&cloned.data, &bytes));
+        assert_eq!(Arc::strong_count(&bytes), 3);
+    }
     #[test]
     fn krilla_data_and_fontique_blob_share_one_arc_byte_buffer() {
         let original = Arc::new(vec![42u8; 1024 * 128]);

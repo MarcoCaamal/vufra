@@ -722,7 +722,7 @@ mod tests {
         let image_bytes = include_bytes!("../../../packages/vufra/tests/fixtures/two-tone.png");
         for fit in [crate::ImageFit::Contain, crate::ImageFit::Cover] {
             let original = PdfImage {
-                data: image_bytes.to_vec(),
+                data: Arc::new(image_bytes.to_vec()),
                 width: 90.0,
                 height: 50.0,
                 fit,
@@ -940,7 +940,7 @@ mod tests {
                     right_align: false,
                     items: vec![
                         PdfRowItem::Image(PdfImage {
-                            data: image_bytes,
+                            data: Arc::new(image_bytes),
                             width: 40.0,
                             height: 40.0,
                             fit: crate::ImageFit::Contain,

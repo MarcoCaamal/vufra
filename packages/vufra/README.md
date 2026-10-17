@@ -136,3 +136,17 @@ la sintaxis pública ni los snapshots y límites de `PdfRenderQueue`.
 El primer paso JS→NAPI sigue copiando los bytes por seguridad:
 no es zero-copy de buffers arbitrarios de Node. Benchmark
 `scripts/benchmark-reused-native-font.mjs` y ADR-0030.
+
+## Assets gráficos y fuentes adicionales inmutables
+
+El factory Fluent reutiliza internamente fuentes bold/fallback
+y contenidos PNG/JPEG registrados en recursos nativos mediante
+`Arc<Vec<u8>>`, sin añadir una nueva sintaxis.
+El caché de imágenes tiene un límite residente por factory
+(256 elementos / 64 MiB), con fallback a contenido inline.
+Los límites por documento, snapshots de cola y cancelación
+siguen aplicándose, incluso con referencias a imágenes idénticas.
+
+Las fuentes extraordinariamente grandes se liberan después
+de la preparación del trabajo para evitar retención del GC.
+Ver `scripts/benchmark-reused-assets.mjs` y ADR-0031.

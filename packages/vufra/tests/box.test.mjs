@@ -164,7 +164,7 @@ test('native binding enforces recursive image count before copying boxed buffers
      kind:'image',image:{data:img,width:80,height:40,fit:'contain'}
    }))
  }};
- assert.throws(()=>native.renderPdfNative('Preflight',[overLimit],new native.NativeFont(font)),/too many images or too much image data/);
+ assert.throws(()=>native.renderPdfNative('Preflight',[overLimit],new native.NativeFont(font),undefined,new native.NativeAssets([])),/too many images or too much image data/);
 });
 test('async and bounded queue render boxed content with binary image snapshots',async()=>{
  const q=new PdfRenderQueue({maxConcurrent:1,maxQueued:1,

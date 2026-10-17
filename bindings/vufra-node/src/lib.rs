@@ -5,8 +5,10 @@ use napi::{
 };
 use napi_derive::napi;
 use std::{
+    collections::{HashMap, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Instant,
@@ -124,7 +126,8 @@ pub struct NodeGraphic {
 }
 #[napi(object)]
 pub struct NodeImage {
-    pub data: Buffer,
+    pub data: Option<Buffer>,
+    pub asset_id: Option<u32>,
     pub width: f64,
     pub height: f64,
     pub fit: String,
@@ -222,10 +225,10 @@ fn to_runs(runs: Vec<NodeRichRun>) -> napi::Result<Vec<PdfTextRun>> {
         })
         .collect()
 }
-fn to_box(input: NodeBox) -> napi::Result<PdfBox> {
-    to_box_depth(input, 0)
+fn to_box(input: NodeBox, assets: &NativeAssets) -> napi::Result<PdfBox> {
+    to_box_depth(input, 0, assets)
 }
-fn to_box_depth(input: NodeBox, depth: usize) -> napi::Result<PdfBox> {
+fn to_box_depth(input: NodeBox, depth: usize, assets: &NativeAssets) -> napi::Result<PdfBox> {
     if depth > 8 {
         return Err(napi::Error::from_reason("nested box depth exceeds 8"));
     }
@@ -266,6 +269,7 @@ fn to_box_depth(input: NodeBox, depth: usize) -> napi::Result<PdfBox> {
             "image" => Ok(PdfBoxItem::Image(to_image(
                 item.image
                     .ok_or_else(|| napi::Error::from_reason("box image required"))?,
+                assets,
             )?)),
             "graphic" => Ok(PdfBoxItem::Graphic(to_graphic(
                 item.graphic
@@ -280,22 +284,24 @@ fn to_box_depth(input: NodeBox, depth: usize) -> napi::Result<PdfBox> {
                 item.row
                     .ok_or_else(|| napi::Error::from_reason("box row required"))?,
                 depth + 1,
+                assets,
             )?)),
             "box" => Ok(PdfBoxItem::Box(Box::new(to_box_depth(
                 item.box_data
                     .ok_or_else(|| napi::Error::from_reason("nested box payload is required"))?,
                 depth + 1,
+                assets,
             )?))),
             "table" => {
                 let table = item
                     .table_data
                     .ok_or_else(|| napi::Error::from_reason("boxed table required"))?;
                 Ok(PdfBoxItem::Table(PdfBoxTable {
-                    header: to_row_depth(table.header, depth + 1)?,
+                    header: to_row_depth(table.header, depth + 1, assets)?,
                     rows: table
                         .rows
                         .into_iter()
-                        .map(|row| to_row_depth(row, depth + 1))
+                        .map(|row| to_row_depth(row, depth + 1, assets))
                         .collect::<napi::Result<Vec<_>>>()?,
                     fills: table
                         .fills
@@ -325,10 +331,10 @@ fn to_box_depth(input: NodeBox, depth: usize) -> napi::Result<PdfBox> {
         items,
     })
 }
-fn to_row(input: NodeRow) -> napi::Result<PdfRow> {
-    to_row_depth(input, 0)
+fn to_row(input: NodeRow, assets: &NativeAssets) -> napi::Result<PdfRow> {
+    to_row_depth(input, 0, assets)
 }
-fn to_row_depth(input: NodeRow, depth: usize) -> napi::Result<PdfRow> {
+fn to_row_depth(input: NodeRow, depth: usize, assets: &NativeAssets) -> napi::Result<PdfRow> {
     if depth > 8 {
         return Err(napi::Error::from_reason("nested layout depth exceeds 8"));
     }
@@ -344,6 +350,7 @@ fn to_row_depth(input: NodeRow, depth: usize) -> napi::Result<PdfRow> {
                         item.box_data
                             .ok_or_else(|| napi::Error::from_reason("row box payload required"))?,
                         depth + 1,
+                        assets,
                     )?))),
                     "text" => Ok(PdfRowItem::Text {
                         text: item
@@ -368,6 +375,7 @@ fn to_row_depth(input: NodeRow, depth: usize) -> napi::Result<PdfRow> {
                     "image" => Ok(PdfRowItem::Image(to_image(
                         item.image
                             .ok_or_else(|| napi::Error::from_reason("row image is required"))?,
+                        assets,
                     )?)),
                     "graphic" => Ok(PdfRowItem::Graphic(to_graphic(
                         item.graphic
@@ -393,8 +401,27 @@ fn to_row_depth(input: NodeRow, depth: usize) -> napi::Result<PdfRow> {
         columns,
     })
 }
-fn to_image(input: NodeImage) -> napi::Result<PdfImage> {
-    if input.data.is_empty() || input.data.len() > MAX_IMAGE_BYTES {
+fn image_bytes(input: &NodeImage, assets: &NativeAssets) -> napi::Result<Arc<Vec<u8>>> {
+    match (&input.data, input.asset_id) {
+        (Some(data), None) => Ok(Arc::new(data.to_vec())),
+        (None, Some(id)) => assets.image_bytes(id),
+        _ => Err(napi::Error::from_reason(
+            "image must specify exactly one source",
+        )),
+    }
+}
+fn image_byte_len(input: &NodeImage, assets: &NativeAssets) -> napi::Result<usize> {
+    match (&input.data, input.asset_id) {
+        (Some(data), None) => Ok(data.len()),
+        (None, Some(id)) => Ok(assets.image_bytes(id)?.len()),
+        _ => Err(napi::Error::from_reason(
+            "image must specify exactly one source",
+        )),
+    }
+}
+fn to_image(input: NodeImage, assets: &NativeAssets) -> napi::Result<PdfImage> {
+    let bytes = image_bytes(&input, assets)?;
+    if bytes.is_empty() || bytes.len() > MAX_IMAGE_BYTES {
         return Err(napi::Error::from_reason(
             "image bytes exceed the 8 MiB limit",
         ));
@@ -409,22 +436,28 @@ fn to_image(input: NodeImage) -> napi::Result<PdfImage> {
         }
     };
     Ok(PdfImage {
-        data: input.data.to_vec(),
+        data: bytes,
         width: input.width as f32,
         height: input.height as f32,
         fit,
     })
 }
 
-fn preflight_image(image: &NodeImage, count: &mut usize, total: &mut usize) -> napi::Result<()> {
-    if image.data.is_empty() || image.data.len() > MAX_IMAGE_BYTES {
+fn preflight_image(
+    image: &NodeImage,
+    count: &mut usize,
+    total: &mut usize,
+    assets: &NativeAssets,
+) -> napi::Result<()> {
+    let len = image_byte_len(image, assets)?;
+    if len == 0 || len > MAX_IMAGE_BYTES {
         return Err(napi::Error::from_reason(
             "image bytes exceed the 8 MiB limit",
         ));
     }
     *count += 1;
     *total = total
-        .checked_add(image.data.len())
+        .checked_add(len)
         .ok_or_else(|| napi::Error::from_reason("too many image bytes"))?;
     if *count > MAX_IMAGE_BLOCKS || *total > MAX_TOTAL_IMAGE_BYTES {
         return Err(napi::Error::from_reason(
@@ -433,14 +466,20 @@ fn preflight_image(image: &NodeImage, count: &mut usize, total: &mut usize) -> n
     }
     Ok(())
 }
-fn preflight_row_images(row: &NodeRow, count: &mut usize, total: &mut usize) -> napi::Result<()> {
-    preflight_row_depth(row, count, total, 0)
+fn preflight_row_images(
+    row: &NodeRow,
+    count: &mut usize,
+    total: &mut usize,
+    assets: &NativeAssets,
+) -> napi::Result<()> {
+    preflight_row_depth(row, count, total, 0, assets)
 }
 fn preflight_row_depth(
     row: &NodeRow,
     count: &mut usize,
     total: &mut usize,
     depth: usize,
+    assets: &NativeAssets,
 ) -> napi::Result<()> {
     if depth > 8 {
         return Err(napi::Error::from_reason("nested layout depth exceeds 8"));
@@ -448,10 +487,10 @@ fn preflight_row_depth(
     for column in &row.columns {
         for item in &column.items {
             if let Some(image) = &item.image {
-                preflight_image(image, count, total)?;
+                preflight_image(image, count, total, assets)?;
             }
             if let Some(boxed) = &item.box_data {
-                preflight_box_images(boxed, count, total, depth + 1)?;
+                preflight_box_images(boxed, count, total, depth + 1, assets)?;
             }
         }
     }
@@ -462,25 +501,26 @@ fn preflight_box_images(
     count: &mut usize,
     bytes: &mut usize,
     depth: usize,
+    assets: &NativeAssets,
 ) -> napi::Result<()> {
     if depth > 8 {
         return Err(napi::Error::from_reason("nested box depth exceeds 8"));
     }
     for item in &boxed.items {
         if let Some(image) = &item.image {
-            preflight_image(image, count, bytes)?;
+            preflight_image(image, count, bytes, assets)?;
         }
         if let Some(row) = &item.row {
-            preflight_row_depth(row, count, bytes, depth + 1)?;
+            preflight_row_depth(row, count, bytes, depth + 1, assets)?;
         }
         if let Some(table) = &item.table_data {
-            preflight_row_depth(&table.header, count, bytes, depth + 1)?;
+            preflight_row_depth(&table.header, count, bytes, depth + 1, assets)?;
             for row in &table.rows {
-                preflight_row_depth(row, count, bytes, depth + 1)?;
+                preflight_row_depth(row, count, bytes, depth + 1, assets)?;
             }
         }
         if let Some(child) = &item.box_data {
-            preflight_box_images(child, count, bytes, depth + 1)?;
+            preflight_box_images(child, count, bytes, depth + 1, assets)?;
         }
     }
     Ok(())
@@ -490,7 +530,7 @@ fn parse_document(
     title: String,
     blocks: Vec<NodeBlock>,
     page: Option<NodePage>,
-    font_faces: Option<Vec<NodeFontFace>>,
+    assets: &NativeAssets,
     chrome: Option<NodePageChrome>,
 ) -> napi::Result<SemanticDocument> {
     // Verify image budgets recursively before copying native input buffers.
@@ -501,13 +541,13 @@ fn parse_document(
     {
         for block in &blocks {
             if let Some(image) = &block.image {
-                preflight_image(image, &mut count, &mut bytes)?;
+                preflight_image(image, &mut count, &mut bytes, assets)?;
             }
             if let Some(row) = &block.row {
-                preflight_row_images(row, &mut count, &mut bytes)?;
+                preflight_row_images(row, &mut count, &mut bytes, assets)?;
             }
             if let Some(boxed) = &block.box_data {
-                preflight_box_images(boxed, &mut count, &mut bytes, 0)?;
+                preflight_box_images(boxed, &mut count, &mut bytes, 0, assets)?;
             }
         }
     }
@@ -516,25 +556,11 @@ fn parse_document(
             .into_iter()
             .flatten()
         {
-            preflight_row_images(row, &mut count, &mut bytes)?;
+            preflight_row_images(row, &mut count, &mut bytes, assets)?;
         }
         if count > MAX_IMAGE_BLOCKS || bytes > MAX_TOTAL_IMAGE_BYTES {
             return Err(napi::Error::from_reason("page bands exceed image budget"));
         }
-    }
-    if font_faces.as_ref().is_some_and(|faces| {
-        faces.len() > 6
-            || faces
-                .iter()
-                .any(|f| f.data.is_empty() || f.data.len() > 12 * 1024 * 1024)
-            || faces
-                .iter()
-                .try_fold(0usize, |sum, f| sum.checked_add(f.data.len()))
-                .is_none_or(|total| total > 30 * 1024 * 1024)
-    }) {
-        return Err(napi::Error::from_reason(
-            "font faces exceed count or byte limits",
-        ));
     }
     let doc = SemanticDocument {
         title,
@@ -542,10 +568,10 @@ fn parse_document(
         chrome: chrome
             .map(|c| {
                 Ok::<PdfPageChrome, napi::Error>(PdfPageChrome {
-                    header: c.header.map(to_row).transpose()?,
-                    footer: c.footer.map(to_row).transpose()?,
-                    first_header: c.first_header.map(to_row).transpose()?,
-                    first_footer: c.first_footer.map(to_row).transpose()?,
+                    header: c.header.map(|r| to_row(r, assets)).transpose()?,
+                    footer: c.footer.map(|r| to_row(r, assets)).transpose()?,
+                    first_header: c.first_header.map(|r| to_row(r, assets)).transpose()?,
+                    first_footer: c.first_footer.map(|r| to_row(r, assets)).transpose()?,
                     hide_header: c.hide_header.unwrap_or(false),
                     hide_footer: c.hide_footer.unwrap_or(false),
                     hide_first_header: c.hide_first_header.unwrap_or(false),
@@ -553,29 +579,24 @@ fn parse_document(
                 })
             })
             .transpose()?,
-        fonts: font_faces
-            .unwrap_or_default()
-            .into_iter()
-            .map(|f| PdfFontFace {
-                name: f.name,
-                data: f.data.to_vec(),
-            })
-            .collect(),
+        fonts: assets.fonts.clone(),
         nodes: blocks
             .into_iter()
             .map(|item| match item.kind.as_str() {
                 "image" if item.image.is_some() && item.text.is_none() => Ok(PdfBlock::Image(
-                    to_image(item.image.expect("image checked"))?,
+                    to_image(item.image.expect("image checked"), assets)?,
                 )),
                 "page-break" if item.row.is_none() && item.text.is_none() => {
                     Ok(PdfBlock::PageBreak)
                 }
-                "box" if item.box_data.is_some() => {
-                    Ok(PdfBlock::Box(to_box(item.box_data.expect("box checked"))?))
-                }
-                "row" if item.row.is_some() => {
-                    Ok(PdfBlock::Row(to_row(item.row.expect("row checked"))?))
-                }
+                "box" if item.box_data.is_some() => Ok(PdfBlock::Box(to_box(
+                    item.box_data.expect("box checked"),
+                    assets,
+                )?)),
+                "row" if item.row.is_some() => Ok(PdfBlock::Row(to_row(
+                    item.row.expect("row checked"),
+                    assets,
+                )?)),
                 "list" if item.items.is_some() && item.image.is_none() => Ok(PdfBlock::List {
                     items: item.items.expect("items checked"),
                     ordered: item.ordered.unwrap_or(false),
@@ -689,6 +710,136 @@ impl NativeFont {
     }
 }
 
+#[derive(Default)]
+struct ImageCache {
+    entries: Vec<Arc<Vec<u8>>>,
+    // Fingerprint limits full byte comparisons to possible hash matches.
+    // Bytes are still compared exactly, so collisions cannot alias assets.
+    by_hash: HashMap<u64, Vec<usize>>,
+    resident_bytes: usize,
+}
+impl ImageCache {
+    fn fingerprint(data: &[u8]) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        data.hash(&mut hasher);
+        hasher.finish()
+    }
+    fn register(&mut self, data: &[u8]) -> i32 {
+        let hash = Self::fingerprint(data);
+        if let Some(positions) = self.by_hash.get(&hash) {
+            for &index in positions {
+                if self.entries[index].as_slice() == data {
+                    return index as i32;
+                }
+            }
+        }
+        if self.entries.len() >= 256
+            || self.resident_bytes.saturating_add(data.len()) > 64 * 1024 * 1024
+        {
+            return -1;
+        }
+        let index = self.entries.len();
+        self.entries.push(Arc::new(data.to_vec()));
+        self.by_hash.entry(hash).or_default().push(index);
+        self.resident_bytes += data.len();
+        index as i32
+    }
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.by_hash.clear();
+        self.resident_bytes = 0;
+    }
+}
+/// Per-factory asset store. Fonts are immutable and images are deduplicated
+/// by exact byte equality (never hash-only), with bounded resident memory.
+#[napi]
+pub struct NativeAssets {
+    fonts: Vec<PdfFontFace>,
+    images: Mutex<ImageCache>,
+}
+#[napi]
+impl NativeAssets {
+    #[napi(constructor)]
+    pub fn new(faces: Vec<NodeFontFace>) -> napi::Result<Self> {
+        if faces.len() > 6 {
+            return Err(napi::Error::from_reason(
+                "font faces exceed count or byte limits",
+            ));
+        }
+        let mut total = 0usize;
+        let mut seen = std::collections::HashSet::new();
+        let fonts = faces
+            .into_iter()
+            .map(|f| {
+                total = total
+                    .checked_add(f.data.len())
+                    .ok_or_else(|| napi::Error::from_reason("font byte overflow"))?;
+                if f.data.is_empty()
+                    || f.data.len() > 12 * 1024 * 1024
+                    || total > 30 * 1024 * 1024
+                    || f.name == "regular"
+                    || f.name.is_empty()
+                    || f.name.len() > 24
+                    || !f
+                        .name
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+                    || !seen.insert(f.name.clone())
+                {
+                    return Err(napi::Error::from_reason(
+                        "invalid font face or font byte budget",
+                    ));
+                }
+                Ok(PdfFontFace {
+                    name: f.name,
+                    data: Arc::new(f.data.to_vec()),
+                })
+            })
+            .collect::<napi::Result<Vec<_>>>()?;
+        Ok(Self {
+            fonts,
+            images: Mutex::new(ImageCache::default()),
+        })
+    }
+
+    /// Drop a temporary bundle after synchronous NAPI parsing. Async tasks
+    /// already own Arc clones and never borrow resources from this object.
+    /// Persistent factory bundles must not call this.
+    #[napi]
+    pub fn release(&mut self) {
+        self.fonts.clear();
+        if let Ok(mut images) = self.images.lock() {
+            images.clear();
+        }
+    }
+
+    /// -1 means the bounded cache is full and the caller should embed inline
+    /// bytes for this one document. Previously registered IDs remain stable.
+    #[napi]
+    pub fn register_image(&self, data: Buffer) -> napi::Result<i32> {
+        if data.is_empty() || data.len() > MAX_IMAGE_BYTES {
+            return Err(napi::Error::from_reason(
+                "image bytes exceed the 8 MiB limit",
+            ));
+        }
+        let mut cache = self
+            .images
+            .lock()
+            .map_err(|_| napi::Error::from_reason("image cache poisoned"))?;
+        Ok(cache.register(data.as_ref()))
+    }
+}
+impl NativeAssets {
+    fn image_bytes(&self, id: u32) -> napi::Result<Arc<Vec<u8>>> {
+        self.images
+            .lock()
+            .map_err(|_| napi::Error::from_reason("image cache poisoned"))?
+            .entries
+            .get(id as usize)
+            .cloned()
+            .ok_or_else(|| napi::Error::from_reason("invalid image asset id"))
+    }
+}
 /// Synchronous render of the canonical authored document.
 #[napi]
 pub fn render_pdf_native(
@@ -696,10 +847,10 @@ pub fn render_pdf_native(
     blocks: Vec<NodeBlock>,
     font_data: &NativeFont,
     page: Option<NodePage>,
-    font_faces: Option<Vec<NodeFontFace>>,
+    assets: &NativeAssets,
     chrome: Option<NodePageChrome>,
 ) -> napi::Result<Buffer> {
-    let doc = parse_document(title, blocks, page, font_faces, chrome)?;
+    let doc = parse_document(title, blocks, page, assets, chrome)?;
     vufra_pdf::render_semantic_pdf(doc, Arc::clone(&font_data.bytes), RenderOptions::default())
         .map(Buffer::from)
         .map_err(|e| napi::Error::from_reason(e.to_string()))
@@ -783,10 +934,10 @@ pub fn render_pdf_async_native(
     font_data: &NativeFont,
     page: Option<NodePage>,
     token: Option<&PdfCancellationToken>,
-    font_faces: Option<Vec<NodeFontFace>>,
+    assets: &NativeAssets,
     chrome: Option<NodePageChrome>,
 ) -> napi::Result<AsyncTask<PdfRenderTask>> {
-    let doc = parse_document(title, blocks, page, font_faces, chrome)?;
+    let doc = parse_document(title, blocks, page, assets, chrome)?;
     Ok(AsyncTask::new(PdfRenderTask {
         doc: Some(doc),
         font_data: Some(Arc::clone(&font_data.bytes)),

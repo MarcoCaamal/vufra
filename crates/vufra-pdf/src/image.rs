@@ -6,6 +6,7 @@ use krilla::{
     paint::FillRule,
     surface::Surface,
 };
+use std::sync::Arc;
 
 pub const MAX_IMAGE_BYTES: usize = 8 * 1024 * 1024;
 pub const MAX_TOTAL_IMAGE_BYTES: usize = 32 * 1024 * 1024;
@@ -21,7 +22,7 @@ pub enum ImageFit {
 
 #[derive(Clone, Debug)]
 pub struct PdfImage {
-    pub data: Vec<u8>,
+    pub data: Arc<Vec<u8>>,
     pub width: f32,
     pub height: f32,
     pub fit: ImageFit,
@@ -161,13 +162,30 @@ mod tests {
 
     fn sample(data: Vec<u8>) -> PdfImage {
         PdfImage {
-            data,
+            data: Arc::new(data),
             width: 150.0,
             height: 100.0,
             fit: ImageFit::Contain,
         }
     }
 
+    #[test]
+    fn repeated_pdf_images_share_encoded_bytes_without_copying() {
+        let bytes = Arc::new(
+            include_bytes!("../../../packages/vufra/tests/fixtures/two-tone.png").to_vec(),
+        );
+        let original = PdfImage {
+            data: Arc::clone(&bytes),
+            width: 60.0,
+            height: 30.0,
+            fit: ImageFit::Cover,
+        };
+        let duplicate = original.clone();
+        assert!(Arc::ptr_eq(&original.data, &duplicate.data));
+        assert!(Arc::ptr_eq(&original.data, &bytes));
+        assert_eq!(original.prepare().unwrap().pixel_count(), 160 * 80);
+        assert_eq!(duplicate.prepare().unwrap().pixel_count(), 160 * 80);
+    }
     #[test]
     fn image_box_must_fit_printable_area() {
         let valid = sample(vec![1]);

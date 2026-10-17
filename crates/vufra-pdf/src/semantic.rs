@@ -573,7 +573,7 @@ mod tests {
         let payload = vec![1, 2, 3, 4, 5];
         let address = payload.as_ptr();
         let input = PdfBlock::Image(PdfImage {
-            data: payload,
+            data: std::sync::Arc::new(payload),
             width: 20.,
             height: 20.,
             fit: crate::ImageFit::Contain,
@@ -587,7 +587,7 @@ mod tests {
     fn deep_box_row_and_styled_table_transfer_image_bytes_without_clone() {
         let make_image = |data: Vec<u8>| {
             ContentNode::Image(PdfImage {
-                data,
+                data: std::sync::Arc::new(data),
                 width: 30.,
                 height: 30.,
                 fit: crate::ImageFit::Contain,
@@ -729,7 +729,9 @@ mod tests {
         use crate::{GraphicKind, ImageFit};
         let style = TextStyle::paragraph();
         let img = PdfImage {
-            data: include_bytes!("../../../packages/vufra/tests/fixtures/two-tone.png").to_vec(),
+            data: std::sync::Arc::new(
+                include_bytes!("../../../packages/vufra/tests/fixtures/two-tone.png").to_vec(),
+            ),
             width: 40.,
             height: 20.,
             fit: ImageFit::Contain,

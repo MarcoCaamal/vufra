@@ -26,7 +26,7 @@ test('NativeFont stores immutable private bytes and rejects empty resources',()=
  assert.equal(resource.byteLength,regular.length);
  assert.throws(()=>new native.NativeFont(Buffer.alloc(0)),/1\.\.12 MiB/);
  const result=native.renderPdfNative('Native font resource',
-  [{kind:'paragraph',text:'NATIVE_HANDLE_OK'}],resource);
+  [{kind:'paragraph',text:'NATIVE_HANDLE_OK'}],resource,undefined,new native.NativeAssets([]));
  assert.match(extract(result),/NATIVE_HANDLE_OK/);
 });
 test('one Fluent factory reuses its immutable native font after caller mutation',async()=>{

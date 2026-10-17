@@ -24,7 +24,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     doc.page = Some(PageGeometry::letter());
     doc.fonts = vec![PdfFontFace {
         name: "bold".into(),
-        data: bold,
+        data: std::sync::Arc::new(bold),
     }];
     let style = TextStyle::paragraph();
     doc.nodes
@@ -40,8 +40,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         },
         vec![
             ContentNode::Image(PdfImage {
-                data: include_bytes!("../../../packages/vufra/tests/fixtures/two-tone.png")
-                    .to_vec(),
+                data: std::sync::Arc::new(
+                    include_bytes!("../../../packages/vufra/tests/fixtures/two-tone.png").to_vec(),
+                ),
                 width: 55.,
                 height: 28.,
                 fit: ImageFit::Contain,

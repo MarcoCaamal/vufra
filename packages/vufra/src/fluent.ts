@@ -5,7 +5,8 @@
  * callback, then sealed; both produce the same low-level AST used by the native
  * renderer. No implicit font lookup or hidden browser.
  */
-import { renderPdf, renderPdfAsync, prepareFont, type NativeFontResource, type PdfAsyncOptions, type PdfBlock,
+import { renderPdf, renderPdfAsync, prepareFont, prepareAssets,
+  type NativeAssetResource, type NativeFontResource, type PdfAsyncOptions, type PdfBlock,
   type PdfDocument, type PdfPageOptions, type PdfBox, type PdfBoxItem, type PdfRow, type PdfRowColumn,
   type PdfRowItem, type PdfRichRun, type PdfTextStyle, type PdfPageChrome, type PdfBoxTable
 } from './renderer';
@@ -244,7 +245,7 @@ function ensureText(text:unknown):asserts text is string{
 }
 
 type BuilderContext = {
-  font?:Uint8Array;nativeFont?:NativeFontResource;
+  font?:Uint8Array;nativeFont?:NativeFontResource;nativeAssets?:NativeAssetResource;
   fonts:Record<string,Uint8Array>;theme?:VufraTheme;
   page:PdfPageOptions;title:string;
 };
@@ -255,6 +256,14 @@ function cloneConfig(config:VufraConfig):VufraConfig{
       [key,data instanceof Uint8Array?Uint8Array.from(data):data])),
     theme:config.theme?structuredClone(config.theme):undefined,
   };
+}
+// Avoid retaining exceptionally large additional faces in two long-lived
+// heaps (JS and Rust). Regular TTFs can be reused while giant faces get a
+// temporary native bundle per render, still with an owned safe snapshot.
+function canRetainFaces(fonts:Record<string,Uint8Array>):boolean {
+  const bytes=Object.values(fonts);
+  return bytes.every(font=>font.byteLength<=2*1024*1024)
+    && bytes.reduce((sum,font)=>sum+font.byteLength,0)<=6*1024*1024;
 }
 function contentWidth(ctx:BuilderContext):number {return area(ctx.page).width;}
 function textBlock(ctx:BuilderContext,text:string,options?:VufraStyle):PdfBlock {
@@ -913,11 +922,11 @@ export class DocumentBuilder {
   }
   async render(options:PdfAsyncOptions={}):Promise<Uint8Array>{
     if(!this.ctx.font)fail('no font configured; use createVufra({font}) or document({font})');
-    return renderPdfAsync(this.renderInput(),this.ctx.nativeFont??this.ctx.font,options);
+    return renderPdfAsync(this.renderInput(),this.ctx.nativeFont??this.ctx.font,options,this.ctx.nativeAssets);
   }
   renderSync():Uint8Array{
     if(!this.ctx.font)fail('no font configured; use createVufra({font}) or document({font})');
-    return renderPdf(this.renderInput(),this.ctx.nativeFont??this.ctx.font);
+    return renderPdf(this.renderInput(),this.ctx.nativeFont??this.ctx.font,this.ctx.nativeAssets);
   }
   enqueue(queue:PdfRenderQueue,options:PdfEnqueueOptions={}):Promise<Uint8Array>{
     if(!this.ctx.font)fail('no font configured; use createVufra({font}) or document({font})');
@@ -927,11 +936,14 @@ export class DocumentBuilder {
 export class Vufra {
   private readonly defaults:VufraConfig;
   private readonly defaultFontResource?:NativeFontResource;
+  private readonly defaultAssets?:NativeAssetResource;
   constructor(defaults:VufraConfig={}) {
     this.defaults=cloneConfig(defaults);
     // One isolated native-owned snapshot per Vufra instance, reused by all
     // documents built with the default font. No mutable caller buffer retained.
     this.defaultFontResource=this.defaults.font?prepareFont(this.defaults.font):undefined;
+    this.defaultAssets=canRetainFaces(this.defaults.fonts??{})
+      ?prepareAssets(this.defaults.fonts??{}):undefined;
   }
   document(options:DocumentOptions={}):DocumentBuilder{
     if(options===null || typeof options!=='object')fail('document options must be an object');
@@ -941,8 +953,12 @@ export class Vufra {
     const fonts={...(this.defaults.fonts??{}),...(override.fonts??{})};
     const font=override.font??this.defaults.font;
     const nativeFont=override.font?prepareFont(override.font):this.defaultFontResource;
+    const nativeAssets=canRetainFaces(fonts)
+      ?(Object.keys(override.fonts??{}).length
+        ?prepareAssets(fonts):this.defaultAssets)
+      :undefined;
     const ctx:BuilderContext={
-      font,nativeFont,fonts,theme:override.theme??this.defaults.theme,
+      font,nativeFont,nativeAssets,fonts,theme:override.theme??this.defaults.theme,
       title:options.title??'Documento Vufra',
       page:pageOptions(options),
     };

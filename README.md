@@ -271,3 +271,34 @@ documentos sucesivos dieron una mediana de maxRSS de
 sintética dirigida a copias de buffers, no una ganancia universal.
 
 Más detalles: [ADR-0030](docs/adr/0030-immutable-native-font-assets.md).
+
+## Unidad 30: recursos nativos compartidos de fonts y PNG/JPEG
+
+Además de la fuente regular, Vufra puede compartir buffers
+inmutables de fuentes bold/fallback y PNG/JPEG entre documentos
+de una misma instancia `createVufra`. `NativeAssets` conserva
+referencias `Arc<Vec<u8>>` con IDs de imagen deduplicados por
+huella **y comparación exacta**.
+
+El caché de imágenes es local a la instancia y está limitado a
+256 imágenes únicas o 64 MiB. Si se llena, el documento usa
+recursos temporales en lugar de retener memoria sin límite.
+Cada uso sigue contando para los límites por PDF.
+
+Las fuentes extra habituales (hasta 2 MiB por archivo y 6 MiB
+acumulados) pueden mantenerse en el factory; los archivos
+excepcionalmente grandes usan bundles temporales liberados
+después de preparar el render. La copia inicial JS→NAPI
+sigue siendo necesaria por seguridad; la Fluent API no cambia.
+
+```bash
+node scripts/benchmark-reused-assets.mjs REGULAR.ttf BOLD.ttf 3 0
+node scripts/benchmark-reused-assets.mjs REGULAR.ttf BOLD.ttf 3 10
+```
+
+Con ocho PDFs y la misma imagen/face, la salida es binariamente
+idéntica entre versiones. **No se observó una reducción estable de
+tiempo o pico RSS** en este benchmark; se optimizaron las copias
+de buffers, el alcance y la vida útil de los recursos.
+
+Consulta [ADR-0031](docs/adr/0031-bounded-shared-font-and-image-assets.md).

@@ -128,7 +128,7 @@ type NativeBlock = {
   level?: number; style?: PdfTextStyle; height?: number;
   keepWithNext?: boolean; items?: string[]; ordered?: boolean;
   graphic?: {kind:string;width:number;height:number;color:string};
-  image?: { data: Uint8Array; width: number; height: number; fit: 'contain' | 'cover' };
+  image?: { data?: Uint8Array; assetId?:number; width: number; height: number; fit: 'contain' | 'cover' };
   boxData?: {width?:number;align:string;padding:number;borderWidth:number;
     borderColor?:string;background?:string;
     keepTogether?:boolean;breakBefore?:boolean;keepWithNext?:boolean;items:Array<{
@@ -138,13 +138,13 @@ type NativeBlock = {
       tableData?:{header:NonNullable<NativeBlock['row']>;rows:NonNullable<NativeBlock['row']>[];
         fills:(string|undefined)[][]};
       boxData?:NonNullable<NativeBlock['boxData']>;
-      image?:{data:Uint8Array;width:number;height:number;fit:'contain'|'cover'};
+      image?:{data?:Uint8Array;assetId?:number;width:number;height:number;fit:'contain'|'cover'};
       graphic?:{kind:string;width:number;height:number;color:string}
     }>};
   row?: {gap:number;columns:Array<{width:number;rightAlign:boolean;items:Array<{
     kind:string;text?:string;style?:PdfTextStyle;height?:number;
     runs?:{text:string;font:string;fontSize?:number;color?:string;fallbackFonts?:string[]}[];
-    image?: {data:Uint8Array;width:number;height:number;fit:'contain'|'cover'};
+    image?: {data?:Uint8Array;assetId?:number;width:number;height:number;fit:'contain'|'cover'};
     boxData?:NonNullable<NativeBlock['boxData']>;
     graphic?: {kind:string;width:number;height:number;color:string}
   }>}>};
@@ -189,6 +189,14 @@ interface NativeToken {
   readonly isCancelled: boolean;
 }
 interface NativeFontFace {name:string;data:Uint8Array}
+export interface NativeAssetResource {
+  registerImage(bytes:Uint8Array):number;
+  release():void;
+}
+export function prepareAssets(fonts:Record<string,Uint8Array>):NativeAssetResource {
+  return new native.NativeAssets(Object.entries(fonts).map(([name,data])=>({name,data})));
+}
+
 /** Opaque native-owned immutable bytes; JS receives no mutable view. */
 export interface NativeFontResource {readonly byteLength:number}
 export function prepareFont(data:Uint8Array):NativeFontResource {
@@ -201,13 +209,14 @@ type FontInput=Uint8Array|NativeFontResource;
 interface NativeBinding {
   PdfCancellationToken: new () => NativeToken;
   NativeFont: new (bytes:Uint8Array) => NativeFontResource;
+  NativeAssets: new (faces:NativeFontFace[]) => NativeAssetResource;
   renderPdfNative(
     title:string,blocks:NativeBlock[],font:NativeFontResource,page?:NativePage,
-    fontFaces?:NativeFontFace[],chrome?:NativeChrome
+    assets?:NativeAssetResource,chrome?:NativeChrome
   ):Uint8Array;
   renderPdfAsyncNative(
     title:string,blocks:NativeBlock[],font:NativeFontResource,page?:NativePage,
-    token?:NativeToken,fontFaces?:NativeFontFace[],chrome?:NativeChrome
+    token?:NativeToken,assets?:NativeAssetResource,chrome?:NativeChrome
   ):Promise<{pdf:Uint8Array;renderMs:number}>;
 }
 declare const require: (path: string) => NativeBinding;
@@ -258,11 +267,11 @@ function normalizeStyle(style: Partial<PdfTextStyle>): PdfTextStyle {
 
 type NativeArguments=[
   title:string,blocks:NativeBlock[],font:NativeFontResource,
-  page?:NativePage,fontFaces?:NativeFontFace[],chrome?:NativeChrome
+  page?:NativePage,assets?:NativeAssetResource,chrome?:NativeChrome
 ];
 
 /** Shared preflight/normalization for both the synchronous and asynchronous API. */
-function normalizePdf(document: PdfDocument, font: FontInput): NativeArguments {
+function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:NativeAssetResource): NativeArguments {
   if (!document || typeof document.title !== 'string' || !document.title.trim()) {
     throw new TypeError('Vufra requires a nonempty document.title');
   }
@@ -286,6 +295,11 @@ function normalizePdf(document: PdfDocument, font: FontInput): NativeArguments {
     if(totalFontBytes>30*1024*1024)throw new TypeError('fontFaces exceed 30 MiB total');
     return {name,data};
   });
+  const assets=preparedAssets??new native.NativeAssets(fontFaces);
+  const encodeImage=(data:Uint8Array,width:number,height:number,fit:'contain'|'cover')=>{
+    const id=assets.registerImage(data);
+    return id>=0?{assetId:id,width,height,fit}:{data,width,height,fit};
+  };
   let normalizedChrome: NativeChrome | undefined;
   let blocks:NativeBlock[];
   {
@@ -348,8 +362,8 @@ function normalizePdf(document: PdfDocument, font: FontInput): NativeArguments {
               if(imageCount>64 || imageBytes>32*1024*1024) {
                 throw new TypeError('too many images or image bytes in document');
               }
-              return {kind:'image',image:{data:item.data,width:item.width,
-                height:item.height,fit:item.fit??'contain'}};
+              return {kind:'image',image:encodeImage(item.data,item.width,
+                item.height,item.fit??'contain')};
             }
             if(item?.type==='rule' || item?.type==='rectangle'){
               const color=item.color??'#333333';
@@ -449,8 +463,8 @@ function normalizePdf(document: PdfDocument, font: FontInput): NativeArguments {
             if(imageCount>64||imageBytes>32*1024*1024){
               throw new TypeError('too many images or image bytes in document');
             }
-            return {kind:'image',image:{data:item.data,width:item.width,
-              height:item.height,fit:item.fit??'contain'}};
+            return {kind:'image',image:encodeImage(item.data,item.width,
+              item.height,item.fit??'contain')};
           }
           if(item?.type==='rule'||item?.type==='rectangle'){
             if(!Number.isFinite(item.width)||!Number.isFinite(item.height)||
@@ -561,8 +575,8 @@ function normalizePdf(document: PdfDocument, font: FontInput): NativeArguments {
         if (imageCount > 64 || imageBytes > 32 * 1024 * 1024) {
           throw new TypeError('too many images or image bytes in document');
         }
-        return {kind:'image', image:{data:image.data, width:image.width,
-          height:image.height, fit:image.fit ?? 'contain'}};
+        return {kind:'image', image:encodeImage(image.data,image.width,
+          image.height,image.fit ?? 'contain')};
       }
       if(block?.type==='box'){
         const w=page?page.width-page.marginLeft-page.marginRight:497;
@@ -609,12 +623,14 @@ function normalizePdf(document: PdfDocument, font: FontInput): NativeArguments {
   }
   return [document.title,blocks,
     font instanceof native.NativeFont?font:prepareFont(font),
-    page,fontFaces,normalizedChrome];
+    page,assets,normalizedChrome];
 }
 
 /** Synchronous native render. Blocks the Node.js event loop until the PDF is ready. */
-export function renderPdf(document: PdfDocument, font: FontInput): Uint8Array {
-  return native.renderPdfNative(...normalizePdf(document, font));
+export function renderPdf(document: PdfDocument, font: FontInput, assets?:NativeAssetResource): Uint8Array {
+  const args=normalizePdf(document,font,assets);
+  try{return native.renderPdfNative(...args);}
+  finally{if(!assets)args[4]?.release();}
 }
 
 /**
@@ -623,9 +639,9 @@ export function renderPdf(document: PdfDocument, font: FontInput): Uint8Array {
  * No force-killing of a thread; one third-party shaping call cannot be preempted.
  */
 export async function renderPdfAsyncMeasured(
-  document: PdfDocument, font: FontInput, options: PdfAsyncOptions = {},
+  document: PdfDocument, font: FontInput, options: PdfAsyncOptions = {}, assets?:NativeAssetResource,
 ): Promise<PdfRenderMeasurement> {
-  const args = normalizePdf(document, font);
+  const args = normalizePdf(document, font,assets);
   const token = new native.PdfCancellationToken();
   const signal = options.signal;
   if (signal?.aborted) throw new PdfRenderCancelledError();
@@ -634,9 +650,17 @@ export async function renderPdfAsyncMeasured(
   try {
     if (signal?.aborted) token.cancel();
     const [title,blocks,regular,page,faces,chrome]=args;
-    const result=await native.renderPdfAsyncNative(
-      title,blocks,regular,page,token,faces,chrome
-    );
+    let nativePromise:Promise<{pdf:Uint8Array;renderMs:number}>;
+    try {
+      nativePromise=native.renderPdfAsyncNative(
+        title,blocks,regular,page,token,faces,chrome
+      );
+    } finally {
+      // NAPI snapshots image/font Arcs synchronously before returning AsyncTask.
+      // The temporary registry need not wait for V8's GC or the worker.
+      if(!assets)faces?.release();
+    }
+    const result=await nativePromise;
     if (!Number.isFinite(result.renderMs) || result.renderMs < 0) {
       throw new Error('Invalid native render time');
     }
@@ -653,7 +677,7 @@ export async function renderPdfAsyncMeasured(
 
 /** Same PDF as renderPdf(), with native cooperative cancellation support. */
 export async function renderPdfAsync(
-  document: PdfDocument, font: FontInput, options: PdfAsyncOptions = {},
+  document: PdfDocument, font: FontInput, options: PdfAsyncOptions = {}, assets?:NativeAssetResource,
 ): Promise<Uint8Array> {
   const result = await renderPdfAsyncMeasured(document, font, options);
   return result.pdf;
