@@ -189,3 +189,17 @@ componentes `.add()` y texto de header/footer.
 
 Ejemplo completo: `examples/fluent-style-presets.mjs`.
 Más contexto en ADR-0034.
+
+## Grid automático por ancho mínimo
+
+Además de `grid({columns:3})` y pistas explícitas,
+`GridOptions.columns` acepta `AutoGridColumns`:
+`{minWidth:150,maxColumns:3}`. El número de columnas
+se calcula según el ancho real de página o caja.
+Usa `rowGap` para espaciar filas de distintas alturas
+sin establecer posiciones o alturas manualmente.
+
+Es la misma API Fluent y también funciona con
+nodos reutilizables `grid(...)` en `.add(...)`.
+Ejemplo completo: `examples/fluent-auto-flow.mjs`;
+diseño: ADR-0035.

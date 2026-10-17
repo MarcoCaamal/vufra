@@ -86,10 +86,19 @@ export interface RowOptions { gap?: number }
 export interface ColumnOptions { width?: number | `${number}%` | '*'; align?: 'left' | 'right' }
 /** A grid track: fixed points, percent of usable width, or flexible fr units. */
 export type GridTrack = number | '*' | `${number}%` | `${number}fr`;
+/** Fit as many equal-width columns as the container can hold, up to six. */
+export interface AutoGridColumns {
+  /** Hard minimum width of every column in PDF points. */
+  minWidth: number;
+  /** Maximum number of columns, defaults to six. */
+  maxColumns?: number;
+}
 export interface GridOptions {
-  /** A column count for equal tracks, or an explicit CSS-inspired track list. */
-  columns: number | readonly GridTrack[];
+  /** Fixed count, explicit tracks, or automatic minimum-width columns. */
+  columns: number | readonly GridTrack[] | AutoGridColumns;
   gap?: number;
+  /** Extra vertical spacing between grid rows, never after the last row. */
+  rowGap?: number;
 }
 export interface ImageOptions { width:number; height:number; fit?: 'contain'|'cover' }
 export interface DividerOptions {height?:number;color?:string;width?:number}
@@ -354,15 +363,36 @@ function asRowItemText(ctx:BuilderContext,text:string,style:VufraStyle={},baseSi
  * Fractional tracks share whatever remains after fixed points and percents.
  */
 function resolveGridTracks(options:GridOptions, width:number):number[] {
-  const gap=options.gap??12;
+  const gap=options.gap??12,rowGap=options.rowGap??0;
   if(!validNumber(width)||width<=0||!validNumber(gap)||gap<0||gap>80)
     fail('grid requires positive width and gap between 0 and 80pt');
+  if(!validNumber(rowGap)||rowGap<0||rowGap>80)
+    fail('grid.rowGap must be between 0 and 80pt');
   const {columns}=options;
-  const tracks:readonly GridTrack[]=typeof columns==='number'
-    ? (Number.isInteger(columns)&&columns>=1&&columns<=6
-      ? Array.from({length:columns},()=>'*' as const)
-      : fail('grid.columns must be 1..6 tracks'))
-    : columns;
+  let tracks:readonly GridTrack[];
+  if(typeof columns==='number'){
+    if(!Number.isInteger(columns)||columns<1||columns>6)
+      fail('grid.columns must be 1..6 tracks');
+    tracks=Array.from({length:columns},()=>'*' as const);
+  }else if(Array.isArray(columns)){
+    tracks=columns;
+  }else if(plainObject(columns)){
+    if(Object.keys(columns).some(key=>key!=='minWidth'&&key!=='maxColumns'))
+      fail('grid auto columns only accept minWidth and maxColumns');
+    const {minWidth,maxColumns=6}=columns;
+    if(!validNumber(minWidth)||minWidth<60)
+      fail('grid auto minWidth must be at least 60pt');
+    if(!Number.isInteger(maxColumns)||!validNumber(maxColumns)||
+       maxColumns<1||maxColumns>6)
+      fail('grid auto maxColumns must be an integer between 1 and 6');
+    if(width<minWidth)
+      fail('grid auto minWidth exceeds available width');
+    const count=Math.min(maxColumns,
+      Math.floor((width+gap)/(minWidth+gap)));
+    tracks=Array.from({length:count},()=>'*' as const);
+  }else{
+    fail('grid.columns requires a count, track list or auto minWidth');
+  }
   if(!Array.isArray(tracks)||tracks.length<1||tracks.length>6)
     fail('grid.columns must be 1..6 tracks');
   const usable=width-gap*(tracks.length-1);
@@ -619,6 +649,7 @@ export class PageBandScope {
   grid(options:GridOptions,callback:(grid:GridScope)=>void):this{
     if(!this.active)fail('page band scope is closed');
     const widths=resolveGridTracks(options,contentWidth(this.ctx));
+    if((options.rowGap??0)>0)fail('page band grid has only one row; rowGap is not supported');
     const grid=new GridScope(this.ctx);
     try{requireSyncResult(callback(grid));}finally{grid.close();}
     if(grid.cells.length!==widths.length)
@@ -872,11 +903,12 @@ export class ContentBuilder {
   }
   grid(options:GridOptions,callback:(grid:GridScope)=>void):this{
     const widths=resolveGridTracks(options,this.width);
-    const n=widths.length,gap=options.gap??12;
+    const n=widths.length,gap=options.gap??12,rowGap=options.rowGap??0;
     const grid=new GridScope(this.ctx);
     try{requireSyncResult(callback(grid));}finally{grid.close();}
     if(grid.cells.length===0)fail('grid needs at least one cell');
     for(let i=0;i<grid.cells.length;i+=n){
+      if(i>0&&rowGap>0)this.append({type:'spacer',height:rowGap});
       const cells=grid.cells.slice(i,i+n);
       const cols=widths.map((width,j)=>({
         width,items:compileColumnItems(this.ctx,width,cells[j]??[]),

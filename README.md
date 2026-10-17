@@ -390,3 +390,39 @@ node examples/fluent-style-presets.mjs REGULAR.ttf BOLD.ttf artifacts/fluent-sty
 El ejemplo empresarial real genera diez páginas y 175 registros
 con tarjetas y paneles estilizados. Ver
 [ADR-0034](docs/adr/0034-fluent-named-visual-presets.md).
+
+## Unidad 34: grids automáticos con alturas naturales
+
+Ya no necesitas contar manualmente cuántas tarjetas caben
+en cada fila. Indica un ancho mínimo en puntos:
+
+```ts
+report.grid({
+  columns:{minWidth:150,maxColumns:3},
+  gap:12,rowGap:16
+},grid=>{
+  for(const item of metrics)
+    grid.cell(c=>c.box({preset:'card'},b=>
+      b.paragraph(item.label).paragraph(item.value)));
+});
+```
+
+El mismo grid utiliza tres columnas en un ancho grande, dos
+en un panel estrecho y una si solo cabe una. Cada fila conserva
+la altura natural de su tarjeta más alta y puede paginarse
+sin posiciones calculadas por el desarrollador.
+
+`rowGap` es separación vertical entre filas; no se añade
+al terminar la última fila. Vufra valida el ancho mínimo
+(al menos 60pt), el máximo (1–6 columnas) y los gaps (0–80pt)
+antes de renderizar. Sigue siendo la **misma Fluent API**.
+
+```bash
+node examples/fluent-auto-flow.mjs REGULAR.ttf BOLD.ttf artifacts/fluent-auto-flow.pdf
+```
+
+El ejemplo incluye 37 tarjetas de altura variable y
+175 transacciones en una tabla paginada, generando
+un PDF de 13 páginas sin pérdida de IDs.
+
+Consulta [ADR-0035](docs/adr/0035-automatic-grid-minimum-width-and-row-gap.md).
