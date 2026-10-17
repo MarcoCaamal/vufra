@@ -34,7 +34,7 @@ struct FontSlot {
     font: Font,
     family: String,
     fonts: FontContext,
-    source: Vec<u8>,
+    source: Arc<Vec<u8>>,
 }
 pub struct FontRegistry {
     slots: Vec<FontSlot>,
@@ -42,7 +42,7 @@ pub struct FontRegistry {
     glyph_cache: HashMap<(usize, char), bool>,
 }
 impl FontRegistry {
-    pub fn new(default: &[u8], extras: &[PdfFontFace]) -> Result<Self, RenderError> {
+    pub fn new(default: Arc<Vec<u8>>, extras: Vec<PdfFontFace>) -> Result<Self, RenderError> {
         if extras.len() > MAX_EXTRA_FONTS {
             return Err(RenderError::InvalidInput("too many font faces"));
         }
@@ -60,11 +60,11 @@ impl FontRegistry {
             if total > MAX_EXTRA_FONT_BYTES || extra.data.len() > MAX_FONT_FACE_BYTES {
                 return Err(RenderError::InvalidInput("font byte budget exceeded"));
             }
-            r.add(&extra.name, &extra.data)?;
+            r.add(&extra.name, Arc::new(extra.data))?;
         }
         Ok(r)
     }
-    fn add(&mut self, name: &str, bytes: &[u8]) -> Result<(), RenderError> {
+    fn add(&mut self, name: &str, bytes: Arc<Vec<u8>>) -> Result<(), RenderError> {
         if name.is_empty()
             || name.len() > 24
             || !name
@@ -76,7 +76,7 @@ impl FontRegistry {
                 "font face name must be unique ASCII identifier",
             ));
         }
-        let font = Font::new(bytes.to_vec().into(), 0).ok_or(RenderError::InvalidFont)?;
+        let font = Font::new(bytes.clone().into(), 0).ok_or(RenderError::InvalidFont)?;
         let mut fonts = FontContext {
             collection: Collection::new(CollectionOptions {
                 shared: false,
@@ -86,7 +86,7 @@ impl FontRegistry {
         };
         let registered = fonts
             .collection
-            .register_fonts(Blob::new(Arc::new(bytes.to_vec())), None);
+            .register_fonts(Blob::new(bytes.clone()), None);
         let id = registered.first().ok_or(RenderError::InvalidFont)?.0;
         let family = fonts
             .collection
@@ -98,7 +98,7 @@ impl FontRegistry {
             font,
             family,
             fonts,
-            source: bytes.to_vec(),
+            source: bytes,
         });
         Ok(())
     }
@@ -292,4 +292,19 @@ pub fn prepare_rich(
         return Err(RenderError::InvalidInput("too many rich lines"));
     }
     Ok(lines)
+}
+
+#[cfg(test)]
+mod shared_bytes_tests {
+    use super::*;
+    #[test]
+    fn krilla_data_and_fontique_blob_share_one_arc_byte_buffer() {
+        let original = Arc::new(vec![42u8; 1024 * 128]);
+        let address = original.as_ptr();
+        let krilla_data: krilla::Data = original.clone().into();
+        let fontique_blob = Blob::new(original.clone());
+        assert_eq!(krilla_data.as_ref().as_ptr(), address);
+        assert_eq!(fontique_blob.as_ref().as_ptr(), address);
+        assert_eq!(Arc::strong_count(&original), 3);
+    }
 }

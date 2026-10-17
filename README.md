@@ -174,3 +174,21 @@ Medición local: la mediana de RSS máxima pasó de **150,67 a
 139,91 MiB** (−10,76 MiB, −7,1 %). No mide el allocator Rust aislado
 ni garantiza este porcentaje en otras máquinas o cargas.
 Detalles: [ADR-0025](docs/adr/0025-owned-render-memory-profile.md).
+
+## Unidad 25: buffers de fuentes y filas fragmentables
+
+Los bytes de cada fuente se comparten mediante `Arc<Vec<u8>>` entre
+Krilla, Fontique y el verificador de glifos; las fuentes adicionales
+se transfieren por valor. Al fragmentar filas largas, Vufra mueve
+los ítems ya medidos hacia cada segmento, evitando una copia extra
+de imágenes y rich text. La sintaxis Fluent pública no cambia.
+
+```bash
+node scripts/benchmark-font-rows.mjs REGULAR.ttf BOLD.ttf 3
+```
+
+En la muestra local de 2640 identificadores y 13 páginas, la mediana
+de RSS máximo de tres procesos Node bajó de **93,39 a 89,64 MiB**.
+Es un resultado de esta máquina/carga; no hay garantía global de
+velocidad ni un pipeline completamente zero-copy.
+Detalles: [ADR-0026](docs/adr/0026-shared-font-buffers-and-owned-row-fragments.md).

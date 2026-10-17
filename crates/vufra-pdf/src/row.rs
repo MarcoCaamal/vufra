@@ -12,8 +12,8 @@ use krilla::{
     text::{Font, TextDirection},
 };
 use parley::{FontContext, FontFamily, FontFamilyName, Layout, LayoutContext, StyleProperty};
-use std::borrow::Cow;
 use std::sync::atomic::AtomicBool;
+use std::{borrow::Cow, collections::VecDeque};
 
 /// Internal shaped fragment: the original caller can never manufacture
 /// cached font indices or skip the native rich-text input preflight.
@@ -172,23 +172,37 @@ impl PdfRow {
                 items: expanded,
             });
         }
-        let len = columns.iter().map(|col| col.items.len()).max().unwrap_or(0);
+        Ok(Self::assemble_fragment_columns(self.gap, columns))
+    }
+
+    /// The synchronized rows own their fragments: never clone prepared rich
+    /// lines or image payloads a second time after expanding a tall row.
+    fn assemble_fragment_columns(gap: f32, columns: Vec<PdfRowColumn>) -> PdfBox {
+        let mut queues = columns
+            .into_iter()
+            .map(|col| (col.width, col.right_align, VecDeque::from(col.items)))
+            .collect::<Vec<_>>();
+        let len = queues
+            .iter()
+            .map(|(_, _, items)| items.len())
+            .max()
+            .unwrap_or(0);
         let items = (0..len)
-            .map(|i| {
+            .map(|_| {
                 PdfBoxItem::Row(PdfRow {
-                    gap: self.gap,
-                    columns: columns
-                        .iter()
-                        .map(|col| PdfRowColumn {
-                            width: col.width,
-                            right_align: col.right_align,
-                            items: col.items.get(i).cloned().into_iter().collect(),
+                    gap,
+                    columns: queues
+                        .iter_mut()
+                        .map(|(width, right_align, items)| PdfRowColumn {
+                            width: *width,
+                            right_align: *right_align,
+                            items: items.pop_front().into_iter().collect(),
                         })
                         .collect(),
                 })
             })
             .collect();
-        Ok(PdfBox {
+        PdfBox {
             width: None,
             align: BoxAlign::Left,
             padding: 0.0,
@@ -199,7 +213,7 @@ impl PdfRow {
             break_before: false,
             keep_with_next: false,
             items,
-        })
+        }
     }
     pub(crate) fn is_tall_row_error(error: &RenderError) -> bool {
         matches!(
@@ -604,6 +618,75 @@ fn line_width(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn synchronized_fragments_move_images_and_rich_runs_without_cloning() {
+        let image_bytes = vec![4u8; 96 * 1024];
+        let image_address = image_bytes.as_ptr();
+        let rich_text = "SHAPED_BOLD_FRAGMENT".repeat(2000);
+        let rich_address = rich_text.as_ptr();
+        let rich = PdfRowItem::MeasuredRichLine(PreparedRichFragment {
+            line: vec![crate::rich_text::PositionedRun {
+                text: rich_text,
+                x: 12.0,
+                font_index: 1,
+                font_size: 13.0,
+                color: Some([17, 34, 51]),
+            }],
+            style: TextStyle::paragraph(),
+            line_height: 18.0,
+        });
+        let fragments = PdfRow::assemble_fragment_columns(
+            9.0,
+            vec![
+                PdfRowColumn {
+                    width: 190.0,
+                    right_align: false,
+                    items: vec![
+                        PdfRowItem::Image(PdfImage {
+                            data: image_bytes,
+                            width: 40.0,
+                            height: 40.0,
+                            fit: crate::ImageFit::Contain,
+                        }),
+                        rich,
+                        PdfRowItem::Spacer(7.0),
+                    ],
+                },
+                PdfRowColumn {
+                    width: 170.0,
+                    right_align: true,
+                    items: vec![PdfRowItem::Spacer(5.0)],
+                },
+            ],
+        );
+        assert_eq!(fragments.items.len(), 3);
+        let PdfBoxItem::Row(first) = &fragments.items[0] else {
+            panic!("first synchronized row");
+        };
+        assert_eq!(first.gap, 9.0);
+        assert!(first.columns[1].right_align);
+        let PdfRowItem::Image(image) = &first.columns[0].items[0] else {
+            panic!("image must remain first");
+        };
+        assert_eq!(image.data.as_ptr(), image_address);
+        let PdfBoxItem::Row(second) = &fragments.items[1] else {
+            panic!("second synchronized row");
+        };
+        assert!(second.columns[1].items.is_empty());
+        let PdfRowItem::MeasuredRichLine(shaped) = &second.columns[0].items[0] else {
+            panic!("measured rich line must remain second");
+        };
+        assert_eq!(shaped.line[0].text.as_ptr(), rich_address);
+        assert_eq!(shaped.line[0].font_index, 1);
+        assert_eq!(shaped.line[0].color, Some([17, 34, 51]));
+        let PdfBoxItem::Row(last) = &fragments.items[2] else {
+            panic!("third synchronized row");
+        };
+        assert!(matches!(
+            last.columns[0].items.as_slice(),
+            [PdfRowItem::Spacer(7.0)]
+        ));
+    }
     #[test]
     fn columns_validate_width_and_page_constraints() {
         let row = PdfRow {

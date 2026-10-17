@@ -143,7 +143,7 @@ pub(crate) fn render_semantic_flow(
     font_bytes: &[u8],
     options: RenderOptions,
     geometry: PageGeometry,
-    extra_fonts: &[PdfFontFace],
+    extra_fonts: Vec<PdfFontFace>,
     chrome: Option<&PdfPageChrome>,
     cancel: &AtomicBool,
 ) -> Result<Vec<u8>, RenderError> {
@@ -176,11 +176,13 @@ fn render_writer_flow(
     font_bytes: &[u8],
     options: RenderOptions,
     mut geometry: PageGeometry,
-    extra_fonts: &[PdfFontFace],
+    extra_fonts: Vec<PdfFontFace>,
     chrome: Option<&PdfPageChrome>,
     cancel: &AtomicBool,
 ) -> Result<Vec<u8>, RenderError> {
-    let font = Font::new(font_bytes.to_vec().into(), 0).ok_or(RenderError::InvalidFont)?;
+    // One font payload is shared between Krilla, Parley and glyph coverage.
+    let regular_bytes = Arc::new(font_bytes.to_vec());
+    let font = Font::new(regular_bytes.clone().into(), 0).ok_or(RenderError::InvalidFont)?;
     let mut fonts = FontContext {
         collection: Collection::new(CollectionOptions {
             shared: false,
@@ -218,7 +220,7 @@ fn render_writer_flow(
                 PdfBlock::RichParagraph { .. } | PdfBlock::Box(_) | PdfBlock::Row(_)
             )
         }) {
-        Some(FontRegistry::new(font_bytes, extra_fonts)?)
+        Some(FontRegistry::new(regular_bytes, extra_fonts)?)
     } else {
         None
     };

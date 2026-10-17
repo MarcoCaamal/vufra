@@ -157,7 +157,7 @@ pub fn render_semantic_pdf_with_cancel(
         font_bytes,
         options,
         page.unwrap_or_default(),
-        &fonts,
+        fonts,
         chrome.as_ref(),
         cancel,
     )

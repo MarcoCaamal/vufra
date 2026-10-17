@@ -87,3 +87,11 @@ La API Rust `render_semantic_pdf` recibe el documento owned por valor.
 El AST se consume hacia el pintor sin clonación completa; no existe
 zero-copy universal entre TypeScript, NAPI, Rust y Krilla.
 Benchmark reproducible: `scripts/benchmark-native-memory.mjs`.
+
+## Optimización de buffers de fuentes
+
+Unidad 25: comparte bytes de fuentes entre Krilla/Fontique/Rust
+mediante `Arc<Vec<u8>>` y mueve fragmentos de filas sin volver
+a clonar imágenes/rich text durante el ensamblaje. Los snapshots
+de la cola y la API Fluent siguen intactos. El benchmark:
+`scripts/benchmark-font-rows.mjs`; documentación ADR-0026.
