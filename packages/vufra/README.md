@@ -95,3 +95,12 @@ mediante `Arc<Vec<u8>>` y mueve fragmentos de filas sin volver
 a clonar imágenes/rich text durante el ensamblaje. Los snapshots
 de la cola y la API Fluent siguen intactos. El benchmark:
 `scripts/benchmark-font-rows.mjs`; documentación ADR-0026.
+
+## Filas grandes sin repetir el shaping
+
+Al fragmentar una fila que excede la altura imprimible, el motor
+reutiliza las líneas y offsets obtenidos del primer paso de medición.
+Funciona en filas raíz, boxes y cuerpos de tablas enriquecidas,
+preservando estilos, colores, alineación y encabezados. La sintaxis
+Fluent no cambia. Consultar ADR-0027 y el benchmark
+`scripts/benchmark-font-rows.mjs`.

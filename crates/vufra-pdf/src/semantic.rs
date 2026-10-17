@@ -5,7 +5,7 @@
 use crate::{
     BoxAlign, MAX_IMAGE_BLOCKS, MAX_TOTAL_IMAGE_BYTES, PdfBlock, PdfBox, PdfBoxItem, PdfBoxTable,
     PdfGraphic, PdfImage, PdfRow, PdfRowColumn, PdfRowItem, PdfTextRun, RenderError, TextStyle,
-    row::PreparedRichFragment,
+    row::{PreparedRichFragment, PreparedTextFragment},
 };
 
 #[derive(Clone, Debug)]
@@ -120,6 +120,8 @@ pub enum ContentNode {
     /// Non-constructible source data: only the renderer creates real shaped lines.
     #[doc(hidden)]
     PreparedRichLine(PreparedRichFragment),
+    #[doc(hidden)]
+    PreparedTextLine(PreparedTextFragment),
 }
 impl ContentNode {
     pub fn paragraph(text: impl Into<String>) -> Self {
@@ -248,6 +250,7 @@ impl From<PdfRowItem> for ContentNode {
             PdfRowItem::Box(boxed) => Self::from(*boxed),
             PdfRowItem::Spacer(h) => Self::Spacer(h),
             PdfRowItem::MeasuredRichLine(line) => Self::PreparedRichLine(line),
+            PdfRowItem::MeasuredTextLine(line) => Self::PreparedTextLine(line),
         }
     }
 }
@@ -448,6 +451,7 @@ impl TryFrom<ContentNode> for PdfRowItem {
                 Ok(Self::Box(Box::new(box_from_parts(frame, children)?)))
             }
             ContentNode::PreparedRichLine(f) => Ok(Self::MeasuredRichLine(f)),
+            ContentNode::PreparedTextLine(f) => Ok(Self::MeasuredTextLine(f)),
             _ => Err(not_allowed()),
         }
     }

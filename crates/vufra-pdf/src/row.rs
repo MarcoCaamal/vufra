@@ -17,11 +17,22 @@ use std::{borrow::Cow, collections::VecDeque};
 
 /// Internal shaped fragment: the original caller can never manufacture
 /// cached font indices or skip the native rich-text input preflight.
+/// Cached, Parley-measured plain text line; private fields prevent callers
+/// from forging offsets or skipping native shaping.
+#[derive(Debug, Clone)]
+pub struct PreparedTextFragment {
+    text: String,
+    style: TextStyle,
+    offset: f32,
+}
+
 #[derive(Debug, Clone)]
 pub struct PreparedRichFragment {
     line: RichLine,
     style: TextStyle,
     line_height: f32,
+    // Original Parley-measured alignment; prevents another width pass.
+    offset: Option<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -38,6 +49,8 @@ pub enum PdfRowItem {
     /// Retains exact real font indices, sizes, colors and horizontal positions.
     #[doc(hidden)]
     MeasuredRichLine(PreparedRichFragment),
+    #[doc(hidden)]
+    MeasuredTextLine(PreparedTextFragment),
     Image(PdfImage),
     Box(Box<PdfBox>),
     Graphic(PdfGraphic),
@@ -88,77 +101,62 @@ pub struct PreparedRow {
 }
 
 impl PdfRow {
-    /// Divide a tall independently stacked row at synchronized item boundaries.
-    /// Each segment keeps all column widths; longer columns continue on later
-    /// pages while exhausted columns are empty. Plain text may split into lines.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn as_fragmentable_box(
+    /// Fragment from the *already shaped* row, rather than repeating Parley
+    /// and prepare_rich on the original long paragraph/rich runs.
+    pub(crate) fn fragments_from_prepared(
         &self,
-        family: &str,
-        fonts: &mut FontContext,
-        context: &mut LayoutContext<()>,
-        registry: &mut FontRegistry,
-        cancel: &AtomicBool,
+        prepared: PreparedRow,
     ) -> Result<PdfBox, RenderError> {
-        // Shape ordinary text with the same Parley width used by the painter.
-        // A long paragraph becomes independently page-breakable measured lines.
-        // Mixed-font rich runs remain indivisible until line-range rich fragments
-        // can preserve exact glyph/font registry information.
-        let mut columns = Vec::new();
-        for col in &self.columns {
+        let mut columns = Vec::with_capacity(self.columns.len());
+        for (source_col, prepared_col) in self.columns.iter().zip(prepared.columns) {
             let mut expanded = Vec::new();
-            for item in &col.items {
-                check_cancel(cancel)?;
-                match item {
-                    PdfRowItem::Text { text, style } => {
-                        let lines = measure_text_lines(
-                            text,
-                            col.width,
-                            family,
-                            fonts,
-                            context,
-                            style.font_size,
-                            cancel,
-                        )?;
+            for (source_item, prepared_item) in source_col.items.iter().zip(prepared_col.items) {
+                match prepared_item.kind {
+                    PreparedItemKind::Text {
+                        lines,
+                        offsets,
+                        style,
+                    } => {
                         let len = lines.len();
-                        for (idx, line) in lines.into_iter().enumerate() {
-                            let mut style = *style;
-                            if idx > 0 {
-                                style.space_before = 0.0;
+                        for (index, (text, offset)) in lines.into_iter().zip(offsets).enumerate() {
+                            let mut fragment_style = style;
+                            if index > 0 {
+                                fragment_style.space_before = 0.0;
                             }
-                            if idx + 1 < len {
-                                style.space_after = 0.0;
+                            if index + 1 < len {
+                                fragment_style.space_after = 0.0;
                             }
-                            expanded.push(PdfRowItem::Text { text: line, style });
-                        }
-                    }
-                    PdfRowItem::RichText { runs, style } => {
-                        // Preserve the actual shaped faces and baseline metrics.
-                        // Reconstructing PdfTextRun from lines would lose fallback
-                        // glyph selection and color/font positioning.
-                        let lines = prepare_rich(runs, *style, col.width, registry, cancel)?;
-                        let largest = runs
-                            .iter()
-                            .map(|r| r.font_size.unwrap_or(style.font_size))
-                            .fold(style.font_size, f32::max);
-                        let line_height = style.line_height.max(largest * 1.35);
-                        let len = lines.len();
-                        for (idx, line) in lines.into_iter().enumerate() {
-                            let mut part = *style;
-                            if idx > 0 {
-                                part.space_before = 0.0;
-                            }
-                            if idx + 1 < len {
-                                part.space_after = 0.0;
-                            }
-                            expanded.push(PdfRowItem::MeasuredRichLine(PreparedRichFragment {
-                                line,
-                                style: part,
-                                line_height,
+                            expanded.push(PdfRowItem::MeasuredTextLine(PreparedTextFragment {
+                                text,
+                                style: fragment_style,
+                                offset,
                             }));
                         }
                     }
-                    other => expanded.push(other.clone()),
+                    PreparedItemKind::Rich {
+                        lines,
+                        style,
+                        line_height,
+                        offsets,
+                    } => {
+                        let len = lines.len();
+                        for (index, (line, offset)) in lines.into_iter().zip(offsets).enumerate() {
+                            let mut fragment_style = style;
+                            if index > 0 {
+                                fragment_style.space_before = 0.0;
+                            }
+                            if index + 1 < len {
+                                fragment_style.space_after = 0.0;
+                            }
+                            expanded.push(PdfRowItem::MeasuredRichLine(PreparedRichFragment {
+                                line,
+                                style: fragment_style,
+                                line_height,
+                                offset: Some(offset),
+                            }));
+                        }
+                    }
+                    _ => expanded.push(source_item.clone()),
                 }
                 if expanded.len() > 500 {
                     return Err(RenderError::InvalidInput(
@@ -167,8 +165,8 @@ impl PdfRow {
                 }
             }
             columns.push(PdfRowColumn {
-                width: col.width,
-                right_align: col.right_align,
+                width: source_col.width,
+                right_align: source_col.right_align,
                 items: expanded,
             });
         }
@@ -214,14 +212,6 @@ impl PdfRow {
             keep_with_next: false,
             items,
         }
-    }
-    pub(crate) fn is_tall_row_error(error: &RenderError) -> bool {
-        matches!(
-            error,
-            RenderError::InvalidInput(
-                "row height exceeds printable page; split content into multiple rows"
-            )
-        )
     }
     pub fn validate_structure(
         &self,
@@ -270,12 +260,32 @@ impl PdfRow {
                             return Err(RenderError::InvalidInput("invalid row rich text runs"));
                         }
                     }
+                    PdfRowItem::MeasuredTextLine(PreparedTextFragment {
+                        text,
+                        style,
+                        offset,
+                    }) => {
+                        style.validate(page_height)?;
+                        if text.contains('\0')
+                            || !offset.is_finite()
+                            || *offset < 0.0
+                            || *offset > col.width + 0.02
+                        {
+                            return Err(RenderError::InvalidInput("invalid measured text line"));
+                        }
+                    }
                     PdfRowItem::MeasuredRichLine(PreparedRichFragment {
                         line,
                         style,
                         line_height,
+                        offset,
                     }) => {
                         style.validate(page_height)?;
+                        if offset.is_some_and(|value| {
+                            !value.is_finite() || value < 0.0 || value > col.width + 0.02
+                        }) {
+                            return Err(RenderError::InvalidInput("invalid measured rich offset"));
+                        }
                         if line.is_empty()
                             || !line_height.is_finite()
                             || *line_height <= 0.0
@@ -316,6 +326,34 @@ impl PdfRow {
     }
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_depth(
+        &self,
+        printable_area: (f32, f32),
+        family: &str,
+        fonts: &mut FontContext,
+        context: &mut LayoutContext<()>,
+        registry: &mut FontRegistry,
+        cancel: &AtomicBool,
+        depth: usize,
+    ) -> Result<PreparedRow, RenderError> {
+        let result = self.prepare_allow_overflow_depth(
+            printable_area,
+            family,
+            fonts,
+            context,
+            registry,
+            cancel,
+            depth,
+        )?;
+        if result.height > printable_area.1 + 0.001 {
+            return Err(RenderError::InvalidInput(
+                "row height exceeds printable page; split content into multiple rows",
+            ));
+        }
+        Ok(result)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_allow_overflow_depth(
         &self,
         printable_area: (f32, f32),
         family: &str,
@@ -401,12 +439,27 @@ impl PdfRow {
                             },
                         )
                     }
+                    PdfRowItem::MeasuredTextLine(PreparedTextFragment {
+                        text,
+                        style,
+                        offset,
+                    }) => (
+                        style.space_before + style.line_height + style.space_after,
+                        PreparedItemKind::Text {
+                            lines: vec![text.clone()],
+                            offsets: vec![*offset],
+                            style: *style,
+                        },
+                    ),
                     PdfRowItem::MeasuredRichLine(PreparedRichFragment {
                         line,
                         style,
                         line_height,
+                        offset,
                     }) => {
-                        let offset = if col.right_align {
+                        let offset = if let Some(saved) = offset {
+                            *saved
+                        } else if col.right_align {
                             (col.width - registry.line_width(line)?).max(0.0)
                         } else {
                             0.0
@@ -445,11 +498,6 @@ impl PdfRow {
                 };
                 items.push(PreparedItem { top: y, kind });
                 y += height;
-                if y > printable_height + 0.001 {
-                    return Err(RenderError::InvalidInput(
-                        "row height exceeds printable page; split content into multiple rows",
-                    ));
-                }
             }
             total_height = total_height.max(y);
             result.push(PreparedColumn {
@@ -619,6 +667,114 @@ fn line_width(
 mod tests {
     use super::*;
     #[test]
+    fn prepared_long_row_reuses_parley_lines_and_styled_font_offsets() {
+        let style = TextStyle::paragraph();
+        let first = "CACHED_TEXT_ONE".repeat(200);
+        let second = "CACHED_TEXT_TWO".repeat(200);
+        let rich = "CACHED_RICH_BOLD".repeat(100);
+        let first_ptr = first.as_ptr();
+        let second_ptr = second.as_ptr();
+        let rich_ptr = rich.as_ptr();
+        let source = PdfRow {
+            gap: 12.0,
+            columns: vec![
+                PdfRowColumn {
+                    width: 180.0,
+                    right_align: true,
+                    items: vec![PdfRowItem::Text {
+                        text: "source text".into(),
+                        style,
+                    }],
+                },
+                PdfRowColumn {
+                    width: 180.0,
+                    right_align: true,
+                    items: vec![PdfRowItem::RichText {
+                        runs: vec![PdfTextRun {
+                            text: "source rich".into(),
+                            font: "bold".into(),
+                            font_size: Some(11.),
+                            color: Some([80, 30, 90]),
+                            fallback_fonts: vec![],
+                        }],
+                        style,
+                    }],
+                },
+            ],
+        };
+        let prepared = PreparedRow {
+            height: 1000.,
+            image_pixels: 0,
+            columns: vec![
+                PreparedColumn {
+                    x: 0.,
+                    width: 180.,
+                    right_align: true,
+                    items: vec![PreparedItem {
+                        top: 0.,
+                        kind: PreparedItemKind::Text {
+                            lines: vec![first, second],
+                            offsets: vec![9.5, 14.25],
+                            style,
+                        },
+                    }],
+                },
+                PreparedColumn {
+                    x: 192.,
+                    width: 180.,
+                    right_align: true,
+                    items: vec![PreparedItem {
+                        top: 0.,
+                        kind: PreparedItemKind::Rich {
+                            lines: vec![vec![crate::rich_text::PositionedRun {
+                                text: rich,
+                                x: 3.25,
+                                font_index: 1,
+                                font_size: 11.,
+                                color: Some([80, 30, 90]),
+                            }]],
+                            style,
+                            line_height: 17.5,
+                            offsets: vec![26.0],
+                        },
+                    }],
+                },
+            ],
+        };
+        let fragments = source.fragments_from_prepared(prepared).unwrap();
+        assert_eq!(fragments.items.len(), 2);
+        let PdfBoxItem::Row(first_row) = &fragments.items[0] else {
+            panic!("first row must be available");
+        };
+        let PdfRowItem::MeasuredTextLine(a) = &first_row.columns[0].items[0] else {
+            panic!("first line cached");
+        };
+        assert_eq!(a.text.as_ptr(), first_ptr);
+        assert_eq!(a.offset, 9.5);
+        assert_eq!(a.style.space_before, style.space_before);
+        assert_eq!(a.style.space_after, 0.0);
+        let PdfRowItem::MeasuredRichLine(c) = &first_row.columns[1].items[0] else {
+            panic!("original rich run reused");
+        };
+        assert_eq!(c.line[0].text.as_ptr(), rich_ptr);
+        assert_eq!(c.offset, Some(26.0));
+        assert_eq!(c.line[0].x, 3.25);
+        assert_eq!(c.line[0].font_index, 1);
+        assert_eq!(c.line[0].color, Some([80, 30, 90]));
+        let PdfBoxItem::Row(second_row) = &fragments.items[1] else {
+            panic!("second row must be available");
+        };
+        let PdfRowItem::MeasuredTextLine(b) = &second_row.columns[0].items[0] else {
+            panic!("second line cached");
+        };
+        assert_eq!(b.text.as_ptr(), second_ptr);
+        assert_eq!(b.offset, 14.25);
+        assert_eq!(b.style.space_before, 0.0);
+        assert_eq!(b.style.space_after, style.space_after);
+        assert!(second_row.columns[1].items.is_empty());
+    }
+
+    #[test]
     fn synchronized_fragments_move_images_and_rich_runs_without_cloning() {
         let image_bytes = vec![4u8; 96 * 1024];
         let image_address = image_bytes.as_ptr();
@@ -634,6 +790,7 @@ mod tests {
             }],
             style: TextStyle::paragraph(),
             line_height: 18.0,
+            offset: None,
         });
         let fragments = PdfRow::assemble_fragment_columns(
             9.0,

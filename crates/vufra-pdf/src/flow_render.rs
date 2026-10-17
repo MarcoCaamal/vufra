@@ -388,7 +388,7 @@ fn render_writer_flow(
                 prepared.push(PreparedBlock::List { lines, style });
             }
             PdfBlock::Row(row) => {
-                let result = row.prepare(
+                let result = row.prepare_allow_overflow_depth(
                     (geometry.content_width(), geometry.content_height()),
                     &family,
                     &mut fonts,
@@ -397,9 +397,12 @@ fn render_writer_flow(
                         .as_mut()
                         .expect("nested content has font registry"),
                     cancel,
+                    0,
                 );
                 match result {
-                    Ok(prepared_row) => {
+                    Ok(prepared_row)
+                        if prepared_row.height <= geometry.content_height() + 0.001 =>
+                    {
                         total_image_pixels =
                             total_image_pixels.saturating_add(prepared_row.image_pixels);
                         measurements.push(FlowBlock::Graphic {
@@ -407,16 +410,8 @@ fn render_writer_flow(
                         });
                         prepared.push(PreparedBlock::Row(prepared_row));
                     }
-                    Err(error) if super::PdfRow::is_tall_row_error(&error) => {
-                        let source = row.as_fragmentable_box(
-                            &family,
-                            &mut fonts,
-                            &mut context,
-                            font_registry
-                                .as_mut()
-                                .expect("rich row needs font registry"),
-                            cancel,
-                        )?;
+                    Ok(prepared_row) => {
+                        let source = row.fragments_from_prepared(prepared_row)?;
                         let prepared_box = source.prepare(
                             (geometry.content_width(), geometry.content_height()),
                             &family,

@@ -392,7 +392,7 @@ impl PdfBox {
                     kind: PreparedContent::Graphic(idx),
                 }),
                 PdfBoxItem::Row(r) => {
-                    match r.prepare_depth(
+                    match r.prepare_allow_overflow_depth(
                         (inner, page_height - 2.0 * self.padding),
                         family,
                         fonts,
@@ -401,7 +401,9 @@ impl PdfBox {
                         cancel,
                         depth + 1,
                     ) {
-                        Ok(prepared) => {
+                        Ok(prepared)
+                            if prepared.height <= page_height - 2.0 * self.padding + 0.001 =>
+                        {
                             pixels = pixels.saturating_add(prepared.image_pixels);
                             items.push(PreparedItem {
                                 flat_start: 0,
@@ -410,11 +412,8 @@ impl PdfBox {
                                 kind: PreparedContent::Row(prepared, idx),
                             });
                         }
-                        Err(error) if PdfRow::is_tall_row_error(&error) => {
-                            for segment in r
-                                .as_fragmentable_box(family, fonts, context, registry, cancel)?
-                                .items
-                            {
+                        Ok(prepared) => {
+                            for segment in r.fragments_from_prepared(prepared)?.items {
                                 let PdfBoxItem::Row(source_row) = segment else {
                                     unreachable!("split row contains only rows");
                                 };
@@ -446,7 +445,7 @@ impl PdfBox {
                         .enumerate()
                     {
                         check_cancel(cancel)?;
-                        match row.prepare_depth(
+                        match row.prepare_allow_overflow_depth(
                             (inner, page_height - 2.0 * self.padding),
                             family,
                             fonts,
@@ -455,7 +454,9 @@ impl PdfBox {
                             cancel,
                             depth + 1,
                         ) {
-                            Ok(prepared) => {
+                            Ok(prepared)
+                                if prepared.height <= page_height - 2.0 * self.padding + 0.001 =>
+                            {
                                 pixels = pixels.saturating_add(prepared.image_pixels);
                                 items.push(PreparedItem {
                                     flat_start: 0,
@@ -464,12 +465,10 @@ impl PdfBox {
                                     kind: PreparedContent::TableRow(prepared, idx, row_idx),
                                 });
                             }
-                            Err(error) if row_idx > 0 && PdfRow::is_tall_row_error(&error) => {
-                                // Keep the original table-row fill index for
-                                // all fragments; fragment only the row cells.
-                                let fragments = row.as_fragmentable_box(
-                                    family, fonts, context, registry, cancel,
-                                )?;
+                            Ok(prepared) if row_idx > 0 => {
+                                // Preserve the source table-row fill and repeat only
+                                // the body fragments; reuse measured lines/font faces.
+                                let fragments = row.fragments_from_prepared(prepared)?;
                                 for source in fragments.items {
                                     let PdfBoxItem::Row(fragment) = source else {
                                         unreachable!("row fragment contains only rows")
@@ -493,6 +492,11 @@ impl PdfBox {
                                         ),
                                     });
                                 }
+                            }
+                            Ok(_) => {
+                                return Err(RenderError::InvalidInput(
+                                    "row height exceeds printable page; split content into multiple rows",
+                                ));
                             }
                             Err(error) => return Err(error),
                         }

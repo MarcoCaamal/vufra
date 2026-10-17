@@ -192,3 +192,17 @@ de RSS máximo de tres procesos Node bajó de **93,39 a 89,64 MiB**.
 Es un resultado de esta máquina/carga; no hay garantía global de
 velocidad ni un pipeline completamente zero-copy.
 Detalles: [ADR-0026](docs/adr/0026-shared-font-buffers-and-owned-row-fragments.md).
+
+## Unidad 26: medir filas largas una sola vez
+
+Al paginar una fila que excede la página, Rust reutiliza las líneas
+y offsets de Parley ya medidos y las líneas `RichLine` con color y
+fuentes reales. Los fragmentos `MeasuredTextLine` y
+`MeasuredRichLine` son internos: la Fluent API no cambia.
+
+El benchmark repetible `scripts/benchmark-font-rows.mjs` produjo
+para ocho filas enriquecidas, 2.640 identificadores y 13 páginas
+una mediana de **127,48 → 85,63 ms** de render en tres procesos
+por versión. Es un resultado para esta carga, no un speedup general.
+El pico de RSS fue prácticamente igual. Ver
+[ADR-0027](docs/adr/0027-reuse-prepared-row-lines-for-pagination.md).
