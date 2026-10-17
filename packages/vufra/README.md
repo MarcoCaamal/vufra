@@ -177,3 +177,15 @@ Se usa el mismo builder Fluent y un único resolver.
 
 Ejemplo completo: `examples/fluent-grid-tracks.mjs`.
 Ver ADR-0033.
+
+## Presets reutilizables de texto y caja
+
+Configura `theme.presets.text` y `theme.presets.box` y referencia
+cada estilo desde `paragraph('Texto',{preset:'label'})` o
+`box({preset:'card'},callback)`. Las opciones explícitas tienen
+prioridad y los presets son planos, sin herencia recursiva.
+También funcionan en headings, rich text, cajas anidadas,
+componentes `.add()` y texto de header/footer.
+
+Ejemplo completo: `examples/fluent-style-presets.mjs`.
+Más contexto en ADR-0034.

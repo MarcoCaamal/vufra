@@ -356,3 +356,37 @@ paginada. El objetivo es **facilidad de autoría y layouts robustos**,
 no sumar cachés o subsistemas de concurrencia.
 
 Detalles: [ADR-0033](docs/adr/0033-fluent-grid-fractional-tracks.md).
+
+## Unidad 33: presets visuales de texto y cajas
+
+Define la apariencia de tarjetas, títulos y etiquetas una sola vez
+en el tema y reutilízala con la Fluent API existente:
+
+```ts
+const report = createVufra({font,fonts:{bold},theme:{
+  colors:{primary:'#173D78',paper:'#EDF4FC'},
+  presets:{
+    text:{label:{bold:true,color:'primary',fontSize:11}},
+    box:{card:{padding:12,background:'paper'}}
+  }
+}}).document();
+
+report.box({preset:'card'},b=>
+  b.paragraph('RESUMEN',{preset:'label'})
+);
+```
+
+Las opciones explícitas sobrescriben el preset (incluyendo
+propiedades individuales del borde), pero no modifican su
+definición. El mismo mecanismo funciona con nodos reutilizables
+de `.add()`, columnas, encabezados y cajas anidadas.
+Los presets desconocidos o recursivos fallan con mensajes claros
+antes de renderizar. No hay parser CSS ni otra sintaxis paralela.
+
+```bash
+node examples/fluent-style-presets.mjs REGULAR.ttf BOLD.ttf artifacts/fluent-style-presets.pdf
+```
+
+El ejemplo empresarial real genera diez páginas y 175 registros
+con tarjetas y paneles estilizados. Ver
+[ADR-0034](docs/adr/0034-fluent-named-visual-presets.md).

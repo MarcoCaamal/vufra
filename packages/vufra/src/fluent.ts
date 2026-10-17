@@ -15,6 +15,8 @@ declare const structuredClone: <T>(value:T)=>T;
 
 export type Color = string;
 export interface VufraStyle {
+  /** Named text style from theme.presets.text, local options override. */
+  preset?: string;
   fontSize?: number;
   lineHeight?: number;
   color?: Color;
@@ -29,6 +31,10 @@ export interface VufraTheme {
   h1?: VufraStyle;
   h2?: VufraStyle;
   h3?: VufraStyle;
+  presets?: {
+    text?: Record<string,Omit<VufraStyle,'preset'>>;
+    box?: Record<string,Omit<BoxOptions,'preset'>>;
+  };
 }
 export interface VufraConfig {
   font?: Uint8Array;
@@ -88,6 +94,8 @@ export interface GridOptions {
 export interface ImageOptions { width:number; height:number; fit?: 'contain'|'cover' }
 export interface DividerOptions {height?:number;color?:string;width?:number}
 export interface BoxOptions {
+  /** Named box style from theme.presets.box, local options override. */
+  preset?:string;
   width?:number;
   align?:'left'|'center'|'right';
   padding?:number;
@@ -228,9 +236,35 @@ function colorHex(value:string | undefined, theme:VufraTheme|undefined):string|u
   }
   return resolved;
 }
+/** Presets are flat, intentionally without inheritance or recursive lookups. */
+function resolveTextLayer(theme:VufraTheme|undefined,layer:VufraStyle|undefined):VufraStyle {
+  if(!layer)return {};
+  const {preset,...own}=layer;
+  if(preset===undefined)return own;
+  if(typeof preset!=='string'||!preset.trim()||
+      !Object.prototype.hasOwnProperty.call(theme?.presets?.text??{},preset))
+    fail('unknown text preset "'+String(preset)+'"');
+  const definition=theme!.presets!.text![preset];
+  if(!plainObject(definition)||Object.prototype.hasOwnProperty.call(definition,'preset'))
+    fail('text presets must be flat style objects');
+  return {...definition,...own};
+}
 function mergeStyle(theme:VufraTheme|undefined,base:VufraStyle|undefined,
   extra:VufraStyle|undefined):VufraStyle{
-  return {...theme?.text,...base,...extra};
+  return {...resolveTextLayer(theme,theme?.text),...resolveTextLayer(theme,base),
+    ...resolveTextLayer(theme,extra)};
+}
+function resolveBoxOptions(theme:VufraTheme|undefined, options:BoxOptions):BoxOptions {
+  const {preset,...own}=options;
+  if(preset===undefined)return own;
+  if(typeof preset!=='string'||!preset.trim()||
+      !Object.prototype.hasOwnProperty.call(theme?.presets?.box??{},preset))
+    fail('unknown box preset "'+String(preset)+'"');
+  const definition=theme!.presets!.box![preset];
+  if(!plainObject(definition)||Object.prototype.hasOwnProperty.call(definition,'preset'))
+    fail('box presets must be flat style objects');
+  return {...definition,...own,
+    ...(own.border?{border:{...definition.border,...own.border}}:{})};
 }
 function faceFor(style:VufraStyle,fonts:Record<string,Uint8Array>):string {
   if(style.bold && style.font && style.font!=='bold') fail('use either font or bold, not both');
@@ -445,9 +479,13 @@ class ColumnScope {
   }
   heading(text:string,opts:HeadingOptions={}):this{
     this.assertActive();
-    const size=opts.fontSize??[0,21,17,14][opts.level??2];
-    this.items.push(asRowItemText(this.ctx,text,{...opts,fontSize:size,
-      lineHeight:opts.lineHeight??size*1.4,spaceBefore:opts.spaceBefore??7,spaceAfter:opts.spaceAfter??6},size));
+    const level=opts.level??2;
+    const base=level===1?this.ctx.theme?.h1:level===2?this.ctx.theme?.h2:this.ctx.theme?.h3;
+    const resolved=mergeStyle(this.ctx.theme,base,opts);
+    const size=resolved.fontSize??[0,21,17,14][level];
+    this.items.push(asRowItemText(this.ctx,text,{...resolved,fontSize:size,
+      lineHeight:resolved.lineHeight??size*1.4,
+      spaceBefore:resolved.spaceBefore??7,spaceAfter:resolved.spaceAfter??6},size));
     return this;
   }
   richText(callback:(text:{add(value:string,style?:VufraStyle):void})=>void,
@@ -551,10 +589,11 @@ export class PageBandScope {
     if(!this.active)fail('page band scope is closed');
     const text=typeof value==='function'?value({page:'{{page}}',total:'{{total}}'}):value;
     ensureText(text);
-    const fontSize=style.fontSize??10;
+    const resolved=mergeStyle(this.ctx.theme,undefined,style);
+    const fontSize=resolved.fontSize??10;
     const item=asRowItemText(this.ctx,text,{
-      fontSize,lineHeight:style.lineHeight??Math.max(15,fontSize*1.35),
-      spaceBefore:0,spaceAfter:0,...style
+      ...resolved,fontSize,lineHeight:resolved.lineHeight??Math.max(15,fontSize*1.35),
+      spaceBefore:resolved.spaceBefore??0,spaceAfter:resolved.spaceAfter??0
     },10);
     return this.add({gap:0,columns:[{width:contentWidth(this.ctx),items:[item]}]});
   }
@@ -792,9 +831,10 @@ export class ContentBuilder {
   box(callback:(box:ContentBuilder)=>void):this;
   box(optionsOrCb:BoxOptions|((box:ContentBuilder)=>void),
     callback?:(box:ContentBuilder)=>void):this{
-    const opts=typeof optionsOrCb==='function'?{}:optionsOrCb;
+    const provided=typeof optionsOrCb==='function'?{}:optionsOrCb;
     const cb=typeof optionsOrCb==='function'?optionsOrCb:callback;
     if(typeof cb!=='function')fail('box requires a synchronous callback');
+    const opts=resolveBoxOptions(this.ctx.theme,provided);
     const padding=opts.padding??12;
     const innerWidth=(opts.width??this.width)-2*padding;
     if(!Number.isFinite(innerWidth)||innerWidth<60)fail('box content width must be at least 60pt');
