@@ -320,10 +320,45 @@ node examples/fluent-report.mjs "$FONT" artifacts/fluent-report.pdf
 node examples/fluent-panels.mjs \
   "$(fc-match 'Noto Sans' -f '%{file}')" \
   "$(fc-match 'Noto Sans:style=Bold' -f '%{file}')" artifacts/fluent-panels.pdf
+node examples/fluent-page-templates.mjs \
+  "$(fc-match 'Noto Sans' -f '%{file}')" \
+  "$(fc-match 'Noto Sans:style=Bold' -f '%{file}')" artifacts/fluent-page-templates.pdf
 pdfinfo artifacts/sdk-first.pdf
 ```
 
 El archivo generado es `artifacts/sdk-first.pdf`; se ignora en Git. **La fuente la proporciona el usuario**; no empaquetamos ni redistribuimos fuentes externas.
+
+### Nuevo: plantillas de página y numeración dinámica (Unidad 17)
+
+Las bandas corporativas se construyen con la misma API de filas que el contenido,
+sin navegador. La primera página admite una variante de portada, y los márgenes
+se ajustan antes de paginar para que el encabezado y pie no invadan el cuerpo.
+
+~~~typescript
+const report = createVufra({font:regularBytes,fonts:{bold:boldBytes}})
+  .document({title:'Reporte anual',page:'Letter'})
+  .header(h=>h.row(row=>{
+    row.column({width:'40%'},c=>c.image(logoBytes,{width:72,height:36}));
+    row.column({width:'60%',align:'right'},c=>
+      c.paragraph('ACME Corp',{bold:true}));
+  }))
+  .firstHeader(h=>h.text('Portada corporativa',{bold:true}))
+  .footer(f=>f.text(({page,total})=>'Página '+page+' de '+total))
+  .firstFooter(null)
+  .paragraph('Mi reporte empresarial multipágina');
+
+const pdf = await report.render();
+~~~
+
+**Importante:** las funciones de texto de banda se ejecutan solo al crear la
+plantilla y reciben page y total como *tokens de cadena*, no como números
+reales de la página. Rust resuelve {{page}} y {{total}} cuando ya conoce el
+total. header(null)/footer(null) ocultan la banda histórica correspondiente.
+Cada banda admite una fila, un grid de una fila, un texto o una imagen; los
+layouts largos que dejarían menos de 100pt de cuerpo devuelven error.
+
+Ejemplo real: examples/fluent-page-templates.mjs. ADR-0018 detalla la
+precedencia y los límites de las plantillas.
 
 ## Hitos
 
@@ -345,6 +380,8 @@ El archivo generado es `artifacts/sdk-first.pdf`; se ignora en Git. **La fuente 
 | 13 | Color y tamaño por run, coalescencia para ligaduras y fallback opt-in | Prototipo funcional |
 | 14 | Fluent API, callbacks de layout, columnas horizontales reales y pageBreak | Prototipo funcional |
 | 15 | `box()` con padding, fondo, bordes y fragmentación entre páginas | Prototipo funcional |
+| 16 | Tipografía real y filas/grids anidados dentro de cajas; reglas de salto | Prototipo funcional |
+| 17 | Plantillas de página, portada distinta, logos y numeración tardía | Prototipo funcional |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -402,6 +439,8 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 13 — Estilos inline y fallback](docs/experiments/14-inline-style-milestone.md)
 - [Unidad 14 — Fluent API y filas](docs/experiments/15-fluent-api-milestone.md)
 - [Unidad 15 — Cajas decoradas fragmentables](docs/experiments/16-decorated-boxes-milestone.md)
+- [Unidad 16 — Layouts anidados](docs/experiments/17-nested-layouts-milestone.md)
+- [Unidad 17 — Plantillas de página](docs/experiments/18-page-templates-milestone.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
@@ -418,6 +457,8 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [ADR-0014 Estilos inline y fallback explícito](docs/adr/0014-inline-styles-and-explicit-fallback.md)
 - [ADR-0015 Builders Fluent y filas](docs/adr/0015-fluent-builders-and-atomic-rows.md)
 - [ADR-0016 Cajas fragmentables](docs/adr/0016-decorated-boxes-page-fragments.md)
+- [ADR-0017 Layouts anidados](docs/adr/0017-nested-layouts-and-page-policies.md)
+- [ADR-0018 Plantillas de página](docs/adr/0018-page-templates-and-running-bands.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

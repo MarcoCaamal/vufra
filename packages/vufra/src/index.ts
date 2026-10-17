@@ -1,5 +1,5 @@
 export {vufra, createVufra, Vufra, DocumentBuilder} from './fluent';
-export type {VufraStyle,VufraTheme,VufraConfig,DocumentOptions,HeadingOptions,TableColumn,TableOptions,RowOptions,ColumnOptions,GridOptions,ImageOptions,BoxOptions} from './fluent';
+export type {VufraStyle,VufraTheme,VufraConfig,DocumentOptions,HeadingOptions,TableColumn,TableOptions,RowOptions,ColumnOptions,GridOptions,ImageOptions,BoxOptions,PageBandScope,PageNumberTokens} from './fluent';
 
 /**
  * Vufra v0.1 — experimental native Rust PDF SDK for Node.js.
@@ -106,6 +106,17 @@ export type PdfBlock =
   | { type: 'box'; box: PdfBox }
   | { type: 'page-break' };
 
+/** Repeating page bands. Text may contain {{page}} and {{total}} placeholders. */
+export interface PdfPageChrome {
+  header?: PdfRow;
+  footer?: PdfRow;
+  firstHeader?: PdfRow;
+  firstFooter?: PdfRow;
+  hideHeader?: boolean;
+  hideFooter?: boolean;
+  hideFirstHeader?: boolean;
+  hideFirstFooter?: boolean;
+}
 export interface PdfDocument {
   /** Shown in the running header. Required, nonempty. */
   title: string;
@@ -121,6 +132,8 @@ export interface PdfDocument {
   page?: PdfPageOptions;
   /** Named TTF/OTF font bytes for rich text; reserved name: regular. Max 6 extra fonts. */
   fontFaces?: Record<string, Uint8Array>;
+  /** Flow-only optional page headers and footers. */
+  pageChrome?: PdfPageChrome;
 }
 
 type NativeBlock = {
@@ -146,6 +159,16 @@ type NativeBlock = {
     graphic?: {kind:string;width:number;height:number;color:string}
   }>}>};
 };
+interface NativeChrome {
+  header?: NonNullable<NativeBlock['row']>;
+  footer?: NonNullable<NativeBlock['row']>;
+  firstHeader?: NonNullable<NativeBlock['row']>;
+  firstFooter?: NonNullable<NativeBlock['row']>;
+  hideHeader?: boolean;
+  hideFooter?: boolean;
+  hideFirstHeader?: boolean;
+  hideFirstFooter?: boolean;
+}
 interface NativePage {
   width: number; height: number; marginTop: number;
   marginBottom: number; marginLeft: number; marginRight: number;
@@ -180,11 +203,13 @@ interface NativeBinding {
   PdfCancellationToken: new () => NativeToken;
   renderPdfNative(
     title: string, paragraphs: string[], rows: string[], font: Uint8Array,
-    table?: PdfTable, blocks?: NativeBlock[], page?: NativePage, fontFaces?: NativeFontFace[]
+    table?: PdfTable, blocks?: NativeBlock[], page?: NativePage, fontFaces?: NativeFontFace[],
+    chrome?: NativeChrome
   ): Uint8Array;
   renderPdfAsyncNative(
     title: string, paragraphs: string[], rows: string[], font: Uint8Array,
-    table?: PdfTable, blocks?: NativeBlock[], page?: NativePage, token?: NativeToken, fontFaces?: NativeFontFace[]
+    table?: PdfTable, blocks?: NativeBlock[], page?: NativePage, token?: NativeToken, fontFaces?: NativeFontFace[],
+    chrome?: NativeChrome
   ): Promise<{ pdf: Uint8Array; renderMs: number }>;
 }
 declare const require: (path: string) => NativeBinding;
@@ -252,6 +277,7 @@ function normalizeStyle(style: Partial<PdfTextStyle>): PdfTextStyle {
 type NativeArguments = [
   title: string, paragraphs: string[], rows: string[], font: Uint8Array,
   table?: PdfTable, blocks?: NativeBlock[], page?: NativePage, fontFaces?: NativeFontFace[],
+  chrome?: NativeChrome,
 ];
 
 /** Shared preflight/normalization for both the synchronous and asynchronous API. */
@@ -293,6 +319,10 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
   if (page !== undefined && document.blocks === undefined) {
     throw new TypeError('page geometry requires blocks mode');
   }
+  if (document.pageChrome !== undefined && document.blocks === undefined) {
+    throw new TypeError('pageChrome requires blocks mode');
+  }
+  let normalizedChrome: NativeChrome | undefined;
   let blocks: NativeBlock[] | undefined;
   if (document.blocks !== undefined) {
     if (!Array.isArray(document.blocks)) throw new TypeError('document.blocks must be an array');
@@ -560,8 +590,37 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
       }
       throw new TypeError('invalid flow block type or payload');
     });
+    if (document.pageChrome !== undefined) {
+      const chrome = document.pageChrome;
+      if (!chrome || typeof chrome !== 'object' || Array.isArray(chrome)) {
+        throw new TypeError('pageChrome must be an object');
+      }
+      const keys = ['header','footer','firstHeader','firstFooter'] as const;
+      const flags = ['hideHeader','hideFooter','hideFirstHeader','hideFirstFooter'] as const;
+      normalizedChrome = {};
+      for (const name of keys) {
+        if (chrome[name] !== undefined) {
+          normalizedChrome[name] = normalizeRow(chrome[name]!,
+            page ? page.width-page.marginLeft-page.marginRight : 497,
+            page ? page.height-24 : 818);
+        }
+      }
+      for (const flag of flags) {
+        if (chrome[flag] !== undefined) {
+          if (typeof chrome[flag] !== 'boolean') {
+            throw new TypeError('pageChrome hide flags must be boolean');
+          }
+          normalizedChrome[flag] = chrome[flag];
+        }
+      }
+      if ((chrome.header && chrome.hideHeader) || (chrome.footer && chrome.hideFooter) ||
+          (chrome.firstHeader && chrome.hideFirstHeader) ||
+          (chrome.firstFooter && chrome.hideFirstFooter)) {
+        throw new TypeError('pageChrome cannot both hide and define the same band');
+      }
+    }
   }
-  return [document.title, paragraphs, rows, font, table, blocks, page, fontFaces];
+  return [document.title, paragraphs, rows, font, table, blocks, page, fontFaces, normalizedChrome];
 }
 
 /** Synchronous native render. Blocks the Node.js event loop until the PDF is ready. */
@@ -585,9 +644,9 @@ export async function renderPdfAsyncMeasured(
   signal?.addEventListener('abort', cancel, { once: true });
   try {
     if (signal?.aborted) token.cancel();
-    const [title, paragraphs, rows, regular, table, blocks, page, faces]=args;
+    const [title, paragraphs, rows, regular, table, blocks, page, faces, chrome]=args;
     const result = await native.renderPdfAsyncNative(
-      title,paragraphs,rows,regular,table,blocks,page,token,faces
+      title,paragraphs,rows,regular,table,blocks,page,token,faces,chrome
     );
     if (!Number.isFinite(result.renderMs) || result.renderMs < 0) {
       throw new Error('Invalid native render time');

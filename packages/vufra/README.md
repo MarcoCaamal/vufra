@@ -348,3 +348,25 @@ Line heights grow to fit the largest inline size across a paragraph (currently c
 - Explicit embedded font faces and Latin rich paragraphs with real bold/italic/alternate families
 
 **Limitations:** a bounded in-process queue and cooperative native cancellation are available, but streaming, cross-process quotas, RSS/output limits, complex bidi, automatic grapheme-cluster fallback, vector images/SVG, merged cells, rich styles inside tables and custom themes are not implemented. Multi-column table rows split across pages; long paragraphs only split in the new `blocks` flow mode. Unbreakable words wider than the line/cell still fail. The legacy standalone `table` always starts on a fresh page. No prebuilt platform packages; Linux x86_64 only.
+
+
+## Encabezados y pies corporativos (Unidad 17)
+
+La API Fluent incluye header, footer, firstHeader y firstFooter.
+Cada banda acepta text, image, row o grid de una fila. Usa la misma
+medición Rust que las columnas del cuerpo, con fuentes TTF/OTF incrustadas.
+
+~~~ts
+const pdf = await createVufra({font,fonts:{bold}}).document({page:'Letter'})
+  .header(h => h.text('Mi empresa', {bold:true}))
+  .footer(f => f.text(({page,total}) => 'Página '+page+' de '+total))
+  .firstHeader(null)
+  .paragraph('Informe')
+  .render();
+~~~
+
+page y total son marcadores de cadena que se resuelven al paginar en Rust.
+null desactiva una banda (también la original). Los márgenes se reservan
+automáticamente según el alto máximo de las variantes, sin superponer cuerpo y
+bandas. Una banda contiene una sola fila/texto/imagen/grid y, por ahora, no
+admite apilar varios bloques ni páginas pares/impares distintas.

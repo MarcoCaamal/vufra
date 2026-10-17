@@ -7,7 +7,7 @@
  */
 import { renderPdf, renderPdfAsync, type PdfAsyncOptions, type PdfBlock,
   type PdfDocument, type PdfPageOptions, type PdfBox, type PdfBoxItem, type PdfRow, type PdfRowColumn,
-  type PdfRowItem, type PdfRichRun, type PdfTable, type PdfTextStyle
+  type PdfRowItem, type PdfRichRun, type PdfTable, type PdfTextStyle, type PdfPageChrome
 } from './index';
 import { PdfRenderQueue, type PdfEnqueueOptions } from './queue';
 declare const structuredClone: <T>(value:T)=>T;
@@ -55,6 +55,9 @@ export interface TableOptions<T> {
   striped?: boolean;
   repeatHeader?: boolean;
 }
+/** Tokens resolved by Rust once the final page count is known; not JS per-page callbacks. */
+export interface PageNumberTokens { page: string; total: string }
+export type PageBandText = string | ((tokens:PageNumberTokens)=>string);
 export interface RowOptions { gap?: number }
 export interface ColumnOptions { width?: number | `${number}%` | '*'; align?: 'left' | 'right' }
 export interface GridOptions { columns: number; gap?: number }
@@ -331,6 +334,65 @@ class GridScope {
   close():void{this.active=false;}
 }
 
+/** Content painted in a margin of every page, using Vufra's native row layout. */
+export class PageBandScope {
+  private active=true;
+  private band?:PdfRow;
+  constructor(private readonly ctx:BuilderContext){}
+  close():void{this.active=false;}
+  private add(row:PdfRow):this{
+    if(!this.active)fail('page band callback scope is closed');
+    if(this.band)fail('one page band supports one text, image, row or grid layout');
+    this.band=row;return this;
+  }
+  /** Callback is invoked ONCE with string placeholders resolved natively after pagination. */
+  text(value:PageBandText,style:VufraStyle={}):this{
+    if(!this.active)fail('page band scope is closed');
+    const text=typeof value==='function'?value({page:'{{page}}',total:'{{total}}'}):value;
+    ensureText(text);
+    const fontSize=style.fontSize??10;
+    const item=asRowItemText(this.ctx,text,{
+      fontSize,lineHeight:style.lineHeight??Math.max(15,fontSize*1.35),
+      spaceBefore:0,spaceAfter:0,...style
+    },10);
+    return this.add({gap:0,columns:[{width:contentWidth(this.ctx),items:[item]}]});
+  }
+  image(data:Uint8Array,options:ImageOptions):this{
+    if(!(data instanceof Uint8Array))fail('page band image requires Uint8Array');
+    return this.add({gap:0,columns:[{width:contentWidth(this.ctx),items:[
+      {type:'image',data,...options}
+    ]}]});
+  }
+  row(options:RowOptions,callback:(row:RowScope)=>void):this;
+  row(callback:(row:RowScope)=>void):this;
+  row(optsOrCb:RowOptions|((row:RowScope)=>void),callback?:(row:RowScope)=>void):this{
+    if(!this.active)fail('page band scope is closed');
+    const options=typeof optsOrCb==='function'?{}:optsOrCb;
+    const cb=typeof optsOrCb==='function'?optsOrCb:callback;
+    if(typeof cb!=='function')fail('page band row requires a callback');
+    const row=new RowScope(this.ctx);
+    let result:PdfRow;
+    try{requireSyncResult(cb(row));result=row.finish(contentWidth(this.ctx),options.gap??12);}
+    finally{row.close();}
+    return this.add(result);
+  }
+  grid(options:GridOptions,callback:(grid:GridScope)=>void):this{
+    if(!this.active)fail('page band scope is closed');
+    const n=options.columns,gap=options.gap??12;
+    if(!Number.isInteger(n)||n<1||n>6||!validNumber(gap)||gap<0||gap>80)
+      fail('page band grid requires 1..6 columns and gap 0..80');
+    const grid=new GridScope(this.ctx);
+    try{requireSyncResult(callback(grid));}finally{grid.close();}
+    if(grid.cells.length!==n)fail('page band grid needs exactly one row of cells');
+    const width=(contentWidth(this.ctx)-gap*(n-1))/n;
+    return this.add({gap,columns:grid.cells.map(items=>({width,items}))});
+  }
+  finish():PdfRow{
+    if(!this.band)fail('page band must have visible content');
+    return this.band;
+  }
+}
+
 /** One visually decorated, page-fragmentable vertical flow. */
 class BoxScope {
   private active=true;
@@ -551,13 +613,48 @@ class ContentScope {
 
 export class DocumentBuilder {
   private constructor(private readonly ctx:BuilderContext,
-    private readonly blocks:readonly PdfBlock[]){}
+    private readonly blocks:readonly PdfBlock[],
+    private readonly chrome:PdfPageChrome={}){}
   static create(config:BuilderContext):DocumentBuilder{return new DocumentBuilder(config,[]);}
   private append(f:(scope:ContentScope)=>void):DocumentBuilder{
     const scope=new ContentScope(this.ctx);
     try{requireSyncResult(f(scope));}
     finally {scope.close();}
-    return new DocumentBuilder(this.ctx,[...this.blocks,...structuredClone(scope.blocks)]);
+    return new DocumentBuilder(this.ctx,[...this.blocks,...structuredClone(scope.blocks)],
+      this.chrome);
+  }
+  private withBand(
+    name:'header'|'footer'|'firstHeader'|'firstFooter',
+    callback:((scope:PageBandScope)=>void)|null
+  ):DocumentBuilder {
+    const chrome:PdfPageChrome=structuredClone(this.chrome);
+    const hideName=({header:'hideHeader',footer:'hideFooter',
+      firstHeader:'hideFirstHeader',firstFooter:'hideFirstFooter'} as const)[name];
+    if(callback===null){
+      delete chrome[name];
+      chrome[hideName]=true;
+    }else{
+      if(typeof callback!=='function')fail('page band requires a callback or null');
+      const scope=new PageBandScope(this.ctx);
+      try{requireSyncResult(callback(scope)); chrome[name]=structuredClone(scope.finish());}
+      finally{scope.close();}
+      chrome[hideName]=false;
+    }
+    return new DocumentBuilder(this.ctx,this.blocks,chrome);
+  }
+  /** Define a repeating header, or pass null to hide the default header. */
+  header(callback:((scope:PageBandScope)=>void)|null):DocumentBuilder{
+    return this.withBand('header',callback);
+  }
+  footer(callback:((scope:PageBandScope)=>void)|null):DocumentBuilder{
+    return this.withBand('footer',callback);
+  }
+  /** Override the first-page header; null suppresses it on the first page only. */
+  firstHeader(callback:((scope:PageBandScope)=>void)|null):DocumentBuilder{
+    return this.withBand('firstHeader',callback);
+  }
+  firstFooter(callback:((scope:PageBandScope)=>void)|null):DocumentBuilder{
+    return this.withBand('firstFooter',callback);
   }
   heading(text:string,options:HeadingOptions={}):DocumentBuilder{
     return this.append(s=>{s.heading(text,options);});
@@ -608,7 +705,8 @@ export class DocumentBuilder {
   /** Inspect the exact AST passed to the existing renderer; copy to isolate inputs. */
   toDocument():PdfDocument{
     return structuredClone({title:this.ctx.title,blocks:[...this.blocks],
-      page:this.ctx.page,fontFaces:this.ctx.fonts});
+      page:this.ctx.page,fontFaces:this.ctx.fonts,
+      ...(Object.keys(this.chrome).length ? {pageChrome:this.chrome} : {})});
   }
   async render(options:PdfAsyncOptions={}):Promise<Uint8Array>{
     if(!this.ctx.font)fail('no font configured; use createVufra({font}) or document({font})');

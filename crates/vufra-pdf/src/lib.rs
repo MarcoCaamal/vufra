@@ -34,10 +34,12 @@ mod box_layout;
 mod flow_render;
 mod graphic;
 mod image;
+mod page_chrome;
 mod rich_text;
 mod row;
 pub use box_layout::{BoxAlign, PdfBox, PdfBoxItem};
 pub use graphic::{GraphicKind, PdfGraphic};
+pub use page_chrome::PdfPageChrome;
 pub use rich_text::{PdfFontFace, PdfTextRun};
 pub use row::{PdfRow, PdfRowColumn, PdfRowItem};
 mod style;
@@ -108,6 +110,8 @@ pub struct PdfDocument {
     pub page: Option<PageGeometry>,
     /// Additional named fonts for rich text blocks; regular font is supplied separately.
     pub fonts: Vec<PdfFontFace>,
+    /// Optional reusable page bands; absent retains historical heading/footer.
+    pub chrome: Option<PdfPageChrome>,
 }
 
 /// Render settings. Defaults are chosen for an A4 document.
@@ -212,6 +216,11 @@ pub fn render_pdf_with_cancel(
 ) -> Result<Vec<u8>, RenderError> {
     check_cancel(cancel)?;
     validate(document, font_bytes, options)?;
+    if document.chrome.is_some() && document.blocks.is_none() {
+        return Err(RenderError::InvalidInput(
+            "page chrome requires blocks mode",
+        ));
+    }
     if document.blocks.is_none() && document.page.is_some() {
         return Err(RenderError::InvalidInput(
             "page geometry requires blocks mode",
@@ -231,6 +240,7 @@ pub fn render_pdf_with_cancel(
             options,
             document.page.unwrap_or_default(),
             &document.fonts,
+            document.chrome.as_ref(),
             cancel,
         );
     }
@@ -560,6 +570,7 @@ mod tests {
             blocks: None,
             page: None,
             fonts: vec![],
+            chrome: None,
         };
         assert!(matches!(
             render_pdf(&doc, &[1], RenderOptions::default()),

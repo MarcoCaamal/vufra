@@ -14,7 +14,8 @@ use std::{
 use vufra_pdf::{
     BoxAlign, GraphicKind, ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES,
     PageGeometry, PdfBlock, PdfBox, PdfBoxItem, PdfColumn, PdfDocument, PdfFontFace, PdfGraphic,
-    PdfImage, PdfRow, PdfRowColumn, PdfRowItem, PdfTable, PdfTextRun, RenderOptions, TextStyle,
+    PdfImage, PdfPageChrome, PdfRow, PdfRowColumn, PdfRowItem, PdfTable, PdfTextRun, RenderOptions,
+    TextStyle,
 };
 
 #[napi(object)]
@@ -106,6 +107,18 @@ pub struct NodeBox {
     pub keep_with_next: Option<bool>,
     pub items: Vec<NodeBoxItem>,
 }
+#[napi(object)]
+pub struct NodePageChrome {
+    pub header: Option<NodeRow>,
+    pub footer: Option<NodeRow>,
+    pub first_header: Option<NodeRow>,
+    pub first_footer: Option<NodeRow>,
+    pub hide_header: Option<bool>,
+    pub hide_footer: Option<bool>,
+    pub hide_first_header: Option<bool>,
+    pub hide_first_footer: Option<bool>,
+}
+
 #[napi(object)]
 pub struct NodeGraphic {
     pub kind: String,
@@ -402,6 +415,7 @@ fn preflight_row_images(row: &NodeRow, count: &mut usize, total: &mut usize) -> 
     }
     Ok(())
 }
+#[allow(clippy::too_many_arguments)]
 fn parse_document(
     title: String,
     paragraphs: Vec<String>,
@@ -410,13 +424,14 @@ fn parse_document(
     blocks: Option<Vec<NodeBlock>>,
     page: Option<NodePage>,
     font_faces: Option<Vec<NodeFontFace>>,
+    chrome: Option<NodePageChrome>,
 ) -> napi::Result<PdfDocument> {
     // Verify image budgets recursively before copying native input buffers.
     // Covers regular images, rows, and decorated boxes (including row items
     // within a boxed content block).
+    let mut count = 0usize;
+    let mut bytes = 0usize;
     if let Some(items) = &blocks {
-        let mut count = 0usize;
-        let mut bytes = 0usize;
         for block in items {
             if let Some(image) = &block.image {
                 preflight_image(image, &mut count, &mut bytes)?;
@@ -434,6 +449,17 @@ fn parse_document(
                     }
                 }
             }
+        }
+    }
+    if let Some(c) = &chrome {
+        for row in [&c.header, &c.footer, &c.first_header, &c.first_footer]
+            .into_iter()
+            .flatten()
+        {
+            preflight_row_images(row, &mut count, &mut bytes)?;
+        }
+        if count > MAX_IMAGE_BLOCKS || bytes > MAX_TOTAL_IMAGE_BYTES {
+            return Err(napi::Error::from_reason("page bands exceed image budget"));
         }
     }
     if font_faces.as_ref().is_some_and(|faces| {
@@ -456,6 +482,20 @@ fn parse_document(
         rows,
         table: table.map(to_table),
         page: page.map(Into::into),
+        chrome: chrome
+            .map(|c| {
+                Ok::<PdfPageChrome, napi::Error>(PdfPageChrome {
+                    header: c.header.map(to_row).transpose()?,
+                    footer: c.footer.map(to_row).transpose()?,
+                    first_header: c.first_header.map(to_row).transpose()?,
+                    first_footer: c.first_footer.map(to_row).transpose()?,
+                    hide_header: c.hide_header.unwrap_or(false),
+                    hide_footer: c.hide_footer.unwrap_or(false),
+                    hide_first_header: c.hide_first_header.unwrap_or(false),
+                    hide_first_footer: c.hide_first_footer.unwrap_or(false),
+                })
+            })
+            .transpose()?,
         fonts: font_faces
             .unwrap_or_default()
             .into_iter()
@@ -614,8 +654,11 @@ pub fn render_pdf_native(
     blocks: Option<Vec<NodeBlock>>,
     page: Option<NodePage>,
     font_faces: Option<Vec<NodeFontFace>>,
+    chrome: Option<NodePageChrome>,
 ) -> napi::Result<Buffer> {
-    let doc = parse_document(title, paragraphs, rows, table, blocks, page, font_faces)?;
+    let doc = parse_document(
+        title, paragraphs, rows, table, blocks, page, font_faces, chrome,
+    )?;
     vufra_pdf::render_pdf(&doc, font_data.as_ref(), RenderOptions::default())
         .map(Buffer::from)
         .map_err(|error| napi::Error::from_reason(error.to_string()))
@@ -699,8 +742,11 @@ pub fn render_pdf_async_native(
     page: Option<NodePage>,
     token: Option<&PdfCancellationToken>,
     font_faces: Option<Vec<NodeFontFace>>,
+    chrome: Option<NodePageChrome>,
 ) -> napi::Result<AsyncTask<PdfRenderTask>> {
-    let doc = parse_document(title, paragraphs, rows, table, blocks, page, font_faces)?;
+    let doc = parse_document(
+        title, paragraphs, rows, table, blocks, page, font_faces, chrome,
+    )?;
     Ok(AsyncTask::new(PdfRenderTask {
         doc,
         font_data: font_data.to_vec(),

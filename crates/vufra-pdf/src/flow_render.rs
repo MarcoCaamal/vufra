@@ -1,8 +1,8 @@
 //! Rendering of ordered, styled blocks with configurable page geometry.
 use super::check_cancel;
 use super::{
-    MAX_FONT_BYTES, MAX_TOTAL_TEXT_BYTES, PageGeometry, PdfBlock, RenderError, RenderOptions,
-    TextStyle, draw_table_fragment,
+    MAX_FONT_BYTES, MAX_TOTAL_TEXT_BYTES, PageGeometry, PdfBlock, PdfPageChrome, RenderError,
+    RenderOptions, TextStyle, draw_table_fragment,
     image::{MAX_IMAGE_BLOCKS, MAX_TOTAL_IMAGE_BYTES, MAX_TOTAL_IMAGE_PIXELS, PreparedImage},
     measure_text_lines, prepare_table,
     rich_text::{FontRegistry, PdfFontFace, RichLine, prepare_rich},
@@ -46,7 +46,12 @@ enum PreparedBlock {
     },
 }
 
-fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), RenderError> {
+fn validate_flow(
+    title: &str,
+    blocks: &[PdfBlock],
+    font: &[u8],
+    chrome: Option<&PdfPageChrome>,
+) -> Result<(), RenderError> {
     if title.trim().is_empty() || title.contains('\0') {
         return Err(RenderError::InvalidInput(
             "title must be nonempty and contain no nulls",
@@ -228,21 +233,68 @@ fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), Re
             return Err(RenderError::InvalidInput("too many rows or too much text"));
         }
     }
+    if let Some(chrome) = chrome {
+        for row in [
+            &chrome.header,
+            &chrome.footer,
+            &chrome.first_header,
+            &chrome.first_footer,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            for col in &row.columns {
+                for item in &col.items {
+                    match item {
+                        super::row::PdfRowItem::Text { text, .. } => {
+                            total = total
+                                .checked_add(text.len())
+                                .ok_or(RenderError::InvalidInput("text too large"))?;
+                        }
+                        super::row::PdfRowItem::RichText { runs, .. } => {
+                            for run in runs {
+                                total = total
+                                    .checked_add(run.text.len())
+                                    .ok_or(RenderError::InvalidInput("text too large"))?;
+                            }
+                        }
+                        super::row::PdfRowItem::Image(img) => {
+                            image_count += 1;
+                            image_bytes = image_bytes
+                                .checked_add(img.data.len())
+                                .ok_or(RenderError::InvalidInput("too much image data"))?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    if total > MAX_TOTAL_TEXT_BYTES
+        || image_count > MAX_IMAGE_BLOCKS
+        || image_bytes > MAX_TOTAL_IMAGE_BYTES
+    {
+        return Err(RenderError::InvalidInput(
+            "page bands exceed document budgets",
+        ));
+    }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn render_flow(
     title: &str,
     blocks: &[PdfBlock],
     font_bytes: &[u8],
     options: RenderOptions,
-    geometry: PageGeometry,
+    mut geometry: PageGeometry,
     extra_fonts: &[PdfFontFace],
+    chrome: Option<&PdfPageChrome>,
     cancel: &AtomicBool,
 ) -> Result<Vec<u8>, RenderError> {
     check_cancel(cancel)?;
     geometry.validate()?;
-    validate_flow(title, blocks, font_bytes)?;
+    validate_flow(title, blocks, font_bytes, chrome)?;
     let font = Font::new(font_bytes.to_vec().into(), 0).ok_or(RenderError::InvalidFont)?;
     let mut fonts = FontContext {
         collection: Collection::new(CollectionOptions {
@@ -273,7 +325,8 @@ pub(super) fn render_flow(
     }
 
     // Do not allocate duplicate font contexts for documents without rich text.
-    let mut font_registry = if !extra_fonts.is_empty()
+    let mut font_registry = if chrome.is_some()
+        || !extra_fonts.is_empty()
         || blocks.iter().any(|b| {
             matches!(
                 b,
@@ -284,9 +337,39 @@ pub(super) fn render_flow(
     } else {
         None
     };
+    if let Some(chrome) = chrome {
+        geometry = chrome.reserve(
+            geometry,
+            &family,
+            &mut fonts,
+            &mut context,
+            font_registry.as_mut().expect("chrome needs font registry"),
+            cancel,
+        )?;
+    }
     let mut prepared = Vec::with_capacity(blocks.len());
     let mut measurements = Vec::with_capacity(blocks.len());
     let mut total_image_pixels = 0u64;
+    if let Some(c) = chrome {
+        for row in [&c.header, &c.footer, &c.first_header, &c.first_footer]
+            .into_iter()
+            .flatten()
+        {
+            for col in &row.columns {
+                for item in &col.items {
+                    if let super::row::PdfRowItem::Image(image) = item {
+                        total_image_pixels =
+                            total_image_pixels.saturating_add(image.prepare()?.pixel_count());
+                    }
+                }
+            }
+        }
+        if total_image_pixels > MAX_TOTAL_IMAGE_PIXELS {
+            return Err(RenderError::InvalidInput(
+                "page bands exceed image pixel budget",
+            ));
+        }
+    }
     for block in blocks {
         check_cancel(cancel)?;
         match block {
@@ -512,30 +595,48 @@ pub(super) fn render_flow(
         let mut page = output.start_page_with(settings);
         let mut surface = page.surface();
         let left = geometry.margin_left;
-        surface.draw_text(
-            Point::from_xy(left, geometry.margin_top - 69.0),
-            font.clone(),
-            18.0,
-            title,
-            false,
-            TextDirection::Auto,
-        );
-        surface.draw_text(
-            Point::from_xy(left, geometry.margin_top - 33.0),
-            font.clone(),
-            10.0,
-            "Vufra • Documento generado desde Rust",
-            false,
-            TextDirection::Auto,
-        );
-        surface.draw_text(
-            Point::from_xy(left, geometry.height - geometry.margin_bottom * 0.4),
-            font.clone(),
-            10.0,
-            &format!("Página {} / {}", index + 1, pages.len()),
-            false,
-            TextDirection::Auto,
-        );
+        if chrome.is_none_or(|c| c.should_draw_legacy_header(index)) {
+            surface.draw_text(
+                Point::from_xy(left, geometry.margin_top - 69.0),
+                font.clone(),
+                18.0,
+                title,
+                false,
+                TextDirection::Auto,
+            );
+            surface.draw_text(
+                Point::from_xy(left, geometry.margin_top - 33.0),
+                font.clone(),
+                10.0,
+                "Vufra • Documento generado desde Rust",
+                false,
+                TextDirection::Auto,
+            );
+        }
+        if chrome.is_none_or(|c| c.should_draw_legacy_footer(index)) {
+            surface.draw_text(
+                Point::from_xy(left, geometry.height - geometry.margin_bottom * 0.4),
+                font.clone(),
+                10.0,
+                &format!("Página {} / {}", index + 1, pages.len()),
+                false,
+                TextDirection::Auto,
+            );
+        }
+        if let Some(chrome) = chrome {
+            chrome.draw(
+                index,
+                pages.len(),
+                geometry,
+                &mut surface,
+                &font,
+                &family,
+                &mut fonts,
+                &mut context,
+                font_registry.as_mut().expect("chrome needs font registry"),
+                cancel,
+            )?;
+        }
         let mut y = geometry.margin_top;
         for fragment in &plan.fragments {
             check_cancel(cancel)?;
