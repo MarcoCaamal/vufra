@@ -37,6 +37,7 @@ pub enum PdfBoxItem {
     Graphic(PdfGraphic),
     Row(PdfRow),
     Table(PdfBoxTable),
+    Box(Box<PdfBox>),
     Spacer(f32),
 }
 #[derive(Debug, Clone)]
@@ -62,7 +63,7 @@ pub struct PdfBoxTable {
     pub fills: Vec<Vec<Option<[u8; 3]>>>,
 }
 impl PdfBoxTable {
-    fn validate(&self, width: f32, height: f32) -> Result<(), RenderError> {
+    fn validate(&self, width: f32, height: f32, depth: usize) -> Result<(), RenderError> {
         if self.rows.is_empty()
             || self.rows.len() > 1_000
             || self.fills.len() != self.rows.len() + 1
@@ -77,9 +78,9 @@ impl PdfBoxTable {
                 "styled table requires 1..6 contiguous columns",
             ));
         }
-        self.header.validate_structure(width, height)?;
+        self.header.validate_depth(width, height, depth + 1)?;
         for (i, row) in std::iter::once(&self.header).chain(&self.rows).enumerate() {
-            row.validate_structure(width, height)?;
+            row.validate_depth(width, height, depth + 1)?;
             if row.columns.len() != cols
                 || row.gap != 0.0
                 || self.fills[i].len() != cols
@@ -114,6 +115,7 @@ enum PreparedContent {
     Graphic(usize),
     Row(PreparedRow, usize),
     TableRow(PreparedRow, usize, usize),
+    Box(Box<PreparedBox>, usize),
     Spacer,
 }
 struct PreparedItem {
@@ -135,6 +137,17 @@ pub struct PreparedBox {
 
 impl PdfBox {
     pub fn validate(&self, width: f32, page_height: f32) -> Result<(), RenderError> {
+        self.validate_depth(width, page_height, 0)
+    }
+    pub(crate) fn validate_depth(
+        &self,
+        width: f32,
+        page_height: f32,
+        depth: usize,
+    ) -> Result<(), RenderError> {
+        if depth > 8 {
+            return Err(RenderError::InvalidInput("nested box depth exceeds 8"));
+        }
         let w = self.width.unwrap_or(width);
         if !w.is_finite()
             || w < 100.0
@@ -173,12 +186,21 @@ impl PdfBox {
                 PdfBoxItem::Graphic(g) => {
                     g.validate(w - 2.0 * self.padding, page_height - 2.0 * self.padding)?
                 }
-                PdfBoxItem::Row(r) => {
-                    r.validate_structure(w - 2.0 * self.padding, page_height - 2.0 * self.padding)?
-                }
-                PdfBoxItem::Table(t) => {
-                    t.validate(w - 2.0 * self.padding, page_height - 2.0 * self.padding)?
-                }
+                PdfBoxItem::Row(r) => r.validate_depth(
+                    w - 2.0 * self.padding,
+                    page_height - 2.0 * self.padding,
+                    depth + 1,
+                )?,
+                PdfBoxItem::Table(t) => t.validate(
+                    w - 2.0 * self.padding,
+                    page_height - 2.0 * self.padding,
+                    depth + 1,
+                )?,
+                PdfBoxItem::Box(boxed) => boxed.validate_depth(
+                    w - 2.0 * self.padding,
+                    page_height - 2.0 * self.padding,
+                    depth + 1,
+                )?,
                 PdfBoxItem::Spacer(h)
                     if !h.is_finite() || *h <= 0.0 || *h + 2.0 * self.padding > page_height =>
                 {
@@ -198,8 +220,21 @@ impl PdfBox {
         registry: &mut FontRegistry,
         cancel: &AtomicBool,
     ) -> Result<PreparedBox, RenderError> {
+        self.prepare_depth(page, family, fonts, context, registry, cancel, 0)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_depth(
+        &self,
+        page: (f32, f32),
+        family: &str,
+        fonts: &mut FontContext,
+        context: &mut LayoutContext<()>,
+        registry: &mut FontRegistry,
+        cancel: &AtomicBool,
+        depth: usize,
+    ) -> Result<PreparedBox, RenderError> {
         let (page_width, page_height) = page;
-        self.validate(page_width, page_height)?;
+        self.validate_depth(page_width, page_height, depth)?;
         let width = self.width.unwrap_or(page_width);
         let inner = width - 2.0 * self.padding;
         let x = match self.align {
@@ -289,13 +324,14 @@ impl PdfBox {
                     kind: PreparedContent::Graphic(idx),
                 }),
                 PdfBoxItem::Row(r) => {
-                    let prepared = r.prepare(
+                    let prepared = r.prepare_depth(
                         (inner, page_height - 2.0 * self.padding),
                         family,
                         fonts,
                         context,
                         registry,
                         cancel,
+                        depth + 1,
                     )?;
                     pixels = pixels.saturating_add(prepared.image_pixels);
                     items.push(PreparedItem {
@@ -304,20 +340,21 @@ impl PdfBox {
                     });
                 }
                 PdfBoxItem::Table(table) => {
-                    table.validate(inner, page_height - 2.0 * self.padding)?;
+                    table.validate(inner, page_height - 2.0 * self.padding, depth + 1)?;
                     let header_item = items.len();
                     for (row_idx, row) in std::iter::once(&table.header)
                         .chain(table.rows.iter())
                         .enumerate()
                     {
                         check_cancel(cancel)?;
-                        let prepared = row.prepare(
+                        let prepared = row.prepare_depth(
                             (inner, page_height - 2.0 * self.padding),
                             family,
                             fonts,
                             context,
                             registry,
                             cancel,
+                            depth + 1,
                         )?;
                         pixels = pixels.saturating_add(prepared.image_pixels);
                         items.push(PreparedItem {
@@ -328,6 +365,28 @@ impl PdfBox {
                     repeat_headers.push(BoxRepeatSpan {
                         header_item,
                         end_item: items.len(),
+                    });
+                }
+                PdfBoxItem::Box(boxed) => {
+                    let nested = boxed.prepare_depth(
+                        (inner, page_height - 2.0 * self.padding),
+                        family,
+                        fonts,
+                        context,
+                        registry,
+                        cancel,
+                        depth + 1,
+                    )?;
+                    pixels = pixels.saturating_add(nested.image_pixels);
+                    let nested_height = nested.total_height();
+                    if nested_height + 2.0 * self.padding > page_height + 0.001 {
+                        return Err(RenderError::InvalidInput(
+                            "nested box exceeds printable page; atomic nesting cannot split",
+                        ));
+                    }
+                    items.push(PreparedItem {
+                        height: nested_height,
+                        kind: PreparedContent::Box(Box::new(nested), idx),
                     });
                 }
                 PdfBoxItem::Spacer(h) => items.push(PreparedItem {
@@ -384,6 +443,9 @@ pub struct BoxFragmentPosition {
     pub height: f32,
 }
 impl PreparedBox {
+    pub(crate) fn total_height(&self) -> f32 {
+        self.item_heights.iter().sum::<f32>() + 2.0 * self.padding
+    }
     #[allow(clippy::too_many_arguments)]
     fn draw_table_row(
         &self,
@@ -590,6 +652,29 @@ impl PreparedBox {
                         cancel,
                     )?;
                 }
+                PreparedContent::Box(nested, index) => {
+                    let original = match &source.items[*index] {
+                        PdfBoxItem::Box(boxed) => boxed,
+                        _ => return Err(RenderError::InvalidInput("nested box source mismatch")),
+                    };
+                    nested.draw(
+                        original,
+                        surface,
+                        font,
+                        registry,
+                        BoxFragmentPosition {
+                            left: x + self.padding,
+                            top: y,
+                            start: 0,
+                            end: nested.items.len(),
+                            repeat_header: None,
+                            first: true,
+                            last: true,
+                            height: nested.total_height(),
+                        },
+                        cancel,
+                    )?;
+                }
                 PreparedContent::Spacer => {}
             }
             y += item.height;
@@ -617,6 +702,64 @@ mod tests {
                 color: None,
             }],
         }
+    }
+    #[test]
+    fn bounded_nested_boxes_allow_eight_levels_and_reject_ninth() {
+        let base = box_example();
+        let mut current = base.clone();
+        for depth in 0..10 {
+            current = PdfBox {
+                width: None,
+                align: BoxAlign::Left,
+                padding: 0.0,
+                border_width: 0.0,
+                border_color: None,
+                background: None,
+                keep_together: false,
+                break_before: false,
+                keep_with_next: false,
+                items: vec![PdfBoxItem::Box(Box::new(current))],
+            };
+            let result = current.validate(497.0, 650.0);
+            if depth <= 7 {
+                assert!(result.is_ok(), "nested depth {depth}: {result:?}");
+            } else {
+                assert!(result.is_err(), "nested depth {depth} should reject");
+            }
+        }
+    }
+    #[test]
+    fn alternating_box_row_layout_obeys_same_depth_limit() {
+        fn wrapper(child: PdfBox) -> PdfBox {
+            PdfBox {
+                width: None,
+                align: BoxAlign::Left,
+                padding: 0.0,
+                border_width: 0.0,
+                border_color: None,
+                background: None,
+                keep_together: false,
+                break_before: false,
+                keep_with_next: false,
+                items: vec![PdfBoxItem::Row(PdfRow {
+                    gap: 0.0,
+                    columns: vec![crate::PdfRowColumn {
+                        width: 200.0,
+                        right_align: false,
+                        items: vec![crate::PdfRowItem::Box(Box::new(child))],
+                    }],
+                })],
+            }
+        }
+        let mut value = box_example();
+        for _ in 0..3 {
+            value = wrapper(value);
+        }
+        assert!(value.validate(497.0, 650.0).is_ok());
+        for _ in 0..2 {
+            value = wrapper(value);
+        }
+        assert!(value.validate(497.0, 650.0).is_err());
     }
     #[test]
     fn bad_geometry_is_rejected() {

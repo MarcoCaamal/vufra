@@ -394,3 +394,30 @@ const pdf = await engine.document({title:'Resumen'})
 Las filas enriquecidas son indivisibles verticalmente. Si una fila no cabe
 en una página vacía, se rechaza. table() clásico sigue fragmentando por líneas.
 Los encabezados anidados se repiten; no hay colspan ni rowspan.
+
+
+## Composición funcional + Fluent compartida (Unidad 19)
+
+La API encadenada sigue vigente. Usa .add(node) o .add([node1,node2])
+para insertar componentes reusables con las funciones exportadas:
+paragraph(), heading(), image(), box(), grid(), row(), column(), table() y flow().
+
+~~~ts
+function Card(label:string,value:string){
+  return box({padding:12,background:'#E8F2FC'},[
+    paragraph(label), paragraph(value,{bold:true})
+  ]);
+}
+const pdf=await engine.document({title:'Factura'})
+  .heading('Resumen')
+  .add(Card('Total','$1,200'))
+  .render();
+~~~
+
+El mismo ContentBuilder se usa en callbacks de box() y secciones del
+documento; soporta composición jerárquica y la API encadenada.
+Las cajas pueden anidarse hasta ocho niveles con padding/bordes reales.
+Una caja anidada demasiado alta se rechaza explícitamente.
+El motor sigue utilizando ASTs nativos especializados detrás de la capa
+de nodos lógicos, y no admite aún Box/Table dentro de celdas Row/Grid.
+Más información: ADR-0020 y examples/fluent-composition.mjs.

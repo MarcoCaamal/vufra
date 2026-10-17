@@ -1,5 +1,6 @@
 //! Side-by-side row with text/image/graphics in independently measured columns.
 //! Unit 14: deliberately atomic across pages, unlike paginated main-flow tables.
+use crate::box_layout::{BoxFragmentPosition, PdfBox, PreparedBox};
 use crate::image::PreparedImage;
 use crate::rich_text::{FontRegistry, RichLine, prepare_rich};
 use crate::{
@@ -25,6 +26,7 @@ pub enum PdfRowItem {
         style: TextStyle,
     },
     Image(PdfImage),
+    Box(Box<PdfBox>),
     Graphic(PdfGraphic),
     Spacer(f32),
 }
@@ -52,6 +54,7 @@ enum PreparedItemKind {
         offsets: Vec<f32>,
     },
     Image(PreparedImage),
+    Box(Box<PreparedBox>),
     Graphic,
     Spacer,
 }
@@ -77,6 +80,17 @@ impl PdfRow {
         content_width: f32,
         page_height: f32,
     ) -> Result<(), RenderError> {
+        self.validate_depth(content_width, page_height, 0)
+    }
+    pub(crate) fn validate_depth(
+        &self,
+        content_width: f32,
+        page_height: f32,
+        depth: usize,
+    ) -> Result<(), RenderError> {
+        if depth > 8 {
+            return Err(RenderError::InvalidInput("nested layout depth exceeds 8"));
+        }
         if self.columns.is_empty()
             || self.columns.len() > 6
             || !self.gap.is_finite()
@@ -109,6 +123,9 @@ impl PdfRow {
                         }
                     }
                     PdfRowItem::Image(img) => img.validate_box(col.width, page_height)?,
+                    PdfRowItem::Box(boxed) => {
+                        boxed.validate_depth(col.width, page_height, depth + 1)?
+                    }
                     PdfRowItem::Graphic(g) => g.validate(col.width, page_height)?,
                     PdfRowItem::Spacer(h) if !h.is_finite() || *h <= 0.0 || *h > page_height => {
                         return Err(RenderError::InvalidInput("invalid row spacer"));
@@ -133,8 +150,21 @@ impl PdfRow {
         registry: &mut FontRegistry,
         cancel: &AtomicBool,
     ) -> Result<PreparedRow, RenderError> {
+        self.prepare_depth(printable_area, family, fonts, context, registry, cancel, 0)
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_depth(
+        &self,
+        printable_area: (f32, f32),
+        family: &str,
+        fonts: &mut FontContext,
+        context: &mut LayoutContext<()>,
+        registry: &mut FontRegistry,
+        cancel: &AtomicBool,
+        depth: usize,
+    ) -> Result<PreparedRow, RenderError> {
         let (printable_width, printable_height) = printable_area;
-        self.validate_structure(printable_width, printable_height)?;
+        self.validate_depth(printable_width, printable_height, depth)?;
         let mut result = Vec::new();
         let mut x = 0.0;
         let mut total_height = 0.0_f32;
@@ -213,6 +243,20 @@ impl PdfRow {
                         let bitmap = image.prepare()?;
                         image_pixels = image_pixels.saturating_add(bitmap.pixel_count());
                         (image.height, PreparedItemKind::Image(bitmap))
+                    }
+                    PdfRowItem::Box(boxed) => {
+                        let prepared = boxed.prepare_depth(
+                            (col.width, printable_height),
+                            family,
+                            fonts,
+                            context,
+                            registry,
+                            cancel,
+                            depth + 1,
+                        )?;
+                        let height = prepared.total_height();
+                        image_pixels = image_pixels.saturating_add(prepared.image_pixels);
+                        (height, PreparedItemKind::Box(Box::new(prepared)))
                     }
                     PdfRowItem::Graphic(g) => (g.height, PreparedItemKind::Graphic),
                     PdfRowItem::Spacer(h) => (*h, PreparedItemKind::Spacer),
@@ -328,6 +372,27 @@ impl PreparedRow {
                                 left + col.x
                             };
                             prepared.draw(surface, source, x, position_y)?;
+                        }
+                    }
+                    PreparedItemKind::Box(prepared) => {
+                        if let PdfRowItem::Box(original) = &row.columns[col_idx].items[item_idx] {
+                            prepared.draw(
+                                original,
+                                surface,
+                                font,
+                                registry,
+                                BoxFragmentPosition {
+                                    left: left + col.x,
+                                    top: position_y,
+                                    start: 0,
+                                    end: prepared.item_heights.len(),
+                                    repeat_header: None,
+                                    first: true,
+                                    last: true,
+                                    height: prepared.total_height(),
+                                },
+                                cancel,
+                            )?;
                         }
                     }
                     PreparedItemKind::Graphic => {

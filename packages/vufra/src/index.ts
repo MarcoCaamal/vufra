@@ -1,5 +1,5 @@
-export {vufra, createVufra, Vufra, DocumentBuilder} from './fluent';
-export type {VufraStyle,VufraTheme,VufraConfig,DocumentOptions,HeadingOptions,TableColumn,TableOptions,RowOptions,ColumnOptions,GridOptions,ImageOptions,BoxOptions,StyledTableCell,StyledTableColumn,StyledTableOptions,PageBandScope,PageNumberTokens} from './fluent';
+export {vufra, createVufra, Vufra, DocumentBuilder, ContentBuilder, paragraph, heading, image, box, flow, table, column, row, grid} from './fluent';
+export type {VufraStyle,VufraTheme,VufraConfig,DocumentOptions,HeadingOptions,TableColumn,TableOptions,RowOptions,ColumnOptions,GridOptions,ImageOptions,BoxOptions,StyledTableCell,StyledTableColumn,StyledTableOptions,PageBandScope,PageNumberTokens,VufraNode,VufraChildren,VufraColumnNode} from './fluent';
 
 /**
  * Vufra v0.1 — experimental native Rust PDF SDK for Node.js.
@@ -49,6 +49,7 @@ export type PdfRowItem =
   | { type: 'text'; text: string; style?: Partial<PdfTextStyle> }
   | { type: 'rich'; runs: PdfRichRun[]; style?: Partial<PdfTextStyle> }
   | { type: 'image'; data: Uint8Array; width: number; height: number; fit?: 'contain' | 'cover' }
+  | { type: 'box'; box: PdfBox }
   | { type: 'rule' | 'rectangle'; width: number; height: number; color?: string }
   | { type: 'spacer'; height: number };
 export interface PdfRowColumn {
@@ -71,6 +72,7 @@ export type PdfBoxItem =
   | {type:'text';text:string;style?:Partial<PdfTextStyle>;color?:string}
   | {type:'rich';runs:PdfRichRun[];style?:Partial<PdfTextStyle>}
   | {type:'row';row:PdfRow}
+  | {type:'box';box:PdfBox}
   | {type:'table';table:PdfBoxTable}
   | {type:'image';data:Uint8Array;width:number;height:number;fit?:'contain'|'cover'}
   | {type:'rule'|'rectangle';width:number;height:number;color?:string}
@@ -159,6 +161,7 @@ type NativeBlock = {
       row?:NativeBlock['row'];
       tableData?:{header:NonNullable<NativeBlock['row']>;rows:NonNullable<NativeBlock['row']>[];
         fills:(string|undefined)[][]};
+      boxData?:NonNullable<NativeBlock['boxData']>;
       image?:{data:Uint8Array;width:number;height:number;fit:'contain'|'cover'};
       graphic?:{kind:string;width:number;height:number;color:string}
     }>};
@@ -166,6 +169,7 @@ type NativeBlock = {
     kind:string;text?:string;style?:PdfTextStyle;height?:number;
     runs?:{text:string;font:string;fontSize?:number;color?:string;fallbackFonts?:string[]}[];
     image?: {data:Uint8Array;width:number;height:number;fit:'contain'|'cover'};
+    boxData?:NonNullable<NativeBlock['boxData']>;
     graphic?: {kind:string;width:number;height:number;color:string}
   }>}>};
 };
@@ -357,7 +361,8 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
       });
       return {runs:normalized,style:normalizeStyle(style??{spaceBefore:4,spaceAfter:3})};
     };
-    const normalizeRow=(row:PdfRow,printableWidth:number,printableHeight:number):NonNullable<NativeBlock['row']>=>{
+    const normalizeRow=(row:PdfRow,printableWidth:number,printableHeight:number,
+      depth=0):NonNullable<NativeBlock['row']>=>{
     if (!row || !Array.isArray(row.columns) ||
           row.columns.length<1 || row.columns.length>6 ||
           !Number.isFinite(row.gap ?? 0) || (row.gap ?? 0)<0 || (row.gap ?? 0)>80) {
@@ -372,6 +377,9 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
           }
           totalWidth+=col.width;
           const items=col.items.map(item=>{
+            if(item?.type==='box'){
+              return {kind:'box',boxData:normalizeBox(item.box,col.width,printableHeight,depth+1)};
+            }
             if(item?.type==='rich'){
               const nested=normalizeNestedRich(item.runs,item.style);
               return {kind:'rich',...nested};
@@ -416,6 +424,106 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
           throw new TypeError('row columns exceed printable width');
         }
         return {gap:row.gap??0,columns};
+    };
+    const normalizeBox=(boxed:PdfBox,printableWidth:number,
+      printableHeight:number,depth=0):NonNullable<NativeBlock['boxData']>=>{
+      if(depth>8)throw new TypeError('nested box depth exceeds 8');
+        const innerWidth=(boxed?.width ?? printableWidth)-2*(boxed?.padding??12);
+        const padding=boxed?.padding??12;
+        const borderWidth=boxed?.border?.width??0;
+        if (!boxed || !Array.isArray(boxed.items) || boxed.items.length<1 ||
+            boxed.items.length>500 ||
+            !Number.isFinite(padding) || padding<0 || padding>60 ||
+            !Number.isFinite(borderWidth) || borderWidth<0 || borderWidth>6 ||
+            borderWidth>padding ||
+            !Number.isFinite(boxed.width??printableWidth) ||
+            (boxed.width??printableWidth)<100 ||
+            (boxed.width??printableWidth)>printableWidth ||
+            innerWidth<60 ||
+            (boxed.align!==undefined&&!['left','center','right'].includes(boxed.align))) {
+          throw new TypeError('invalid box geometry, padding, border, alignment or item count');
+        }
+        const rgb=(value:string|undefined):string|undefined=>{
+          if(value!==undefined && !/^#[0-9a-fA-F]{6}$/.test(value))
+            throw new TypeError('box colors must be #RRGGBB');
+          return value;
+        };
+        if([boxed.keepTogether,boxed.breakBefore,boxed.keepWithNext].some(x=>x!==undefined && typeof x!=='boolean')){
+          throw new TypeError('box page policies must be boolean');
+        }
+        const items=boxed.items.map(item=>{
+          if(item?.type==='rich'){
+            return {kind:'rich',...normalizeNestedRich(item.runs,item.style)};
+          }
+          if(item?.type==='box'){
+            return {kind:'box',boxData:normalizeBox(item.box,innerWidth,
+              printableHeight-2*padding,depth+1)};
+          }
+          if(item?.type==='row'){
+            return {kind:'row',row:normalizeRow(item.row,innerWidth,printableHeight-2*padding,depth+1)};
+          }
+          if(item?.type==='table'){
+            const t=item.table;
+            if(!t || !Array.isArray(t.rows) || !t.rows.length || t.rows.length>1000 ||
+               !Array.isArray(t.fills) || t.fills.length!==t.rows.length+1) {
+              throw new TypeError('boxed table requires 1..1000 rows and fills');
+            }
+            const header=normalizeRow(t.header,innerWidth,printableHeight-2*padding,depth+1);
+            const rows=t.rows.map(r=>normalizeRow(r,innerWidth,printableHeight-2*padding,depth+1));
+            if(header.gap!==0 || header.columns.length>6 || rows.some(r=>
+              r.gap!==0 || r.columns.length!==header.columns.length ||
+              r.columns.some((c,i)=>Math.abs(c.width-header.columns[i].width)>0.01))) {
+              throw new TypeError('boxed table must share contiguous 1..6 column widths');
+            }
+            const fills=t.fills.map(f=>{
+              if(!Array.isArray(f) || f.length!==header.columns.length)
+                throw new TypeError('boxed table fills must match column count');
+              return f.map(rgb);
+            });
+            return {kind:'table',tableData:{header,rows,fills}};
+          }
+          if(item?.type==='text' && typeof item.text==='string'){
+            return {kind:'text',text:item.text,style:normalizeStyle(
+              item.style??{spaceBefore:4,spaceAfter:3}),color:rgb(item.color)};
+          }
+          if(item?.type==='spacer' && Number.isFinite(item.height) &&
+            item.height>0 && item.height+padding*2<=printableHeight) {
+            return {kind:'spacer',height:item.height};
+          }
+          if(item?.type==='image') {
+            if (!(item.data instanceof Uint8Array)||item.data.byteLength<1 ||
+                item.data.byteLength>8*1024*1024 ||
+                !Number.isFinite(item.width)||!Number.isFinite(item.height) ||
+                item.width<=0||item.height<=0||
+                item.width>innerWidth||item.height+padding*2>printableHeight ||
+                !['contain','cover',undefined].includes(item.fit)) {
+              throw new TypeError('invalid box image or image exceeds content size');
+            }
+            imageCount++;imageBytes+=item.data.byteLength;
+            if(imageCount>64||imageBytes>32*1024*1024){
+              throw new TypeError('too many images or image bytes in document');
+            }
+            return {kind:'image',image:{data:item.data,width:item.width,
+              height:item.height,fit:item.fit??'contain'}};
+          }
+          if(item?.type==='rule'||item?.type==='rectangle'){
+            if(!Number.isFinite(item.width)||!Number.isFinite(item.height)||
+              item.width<=0||item.height<=0||item.width>innerWidth||
+              item.height+padding*2>printableHeight||
+              (item.type==='rule'&&item.height>8)) {
+              throw new TypeError('invalid box graphic dimensions');
+            }
+            return {kind:'graphic',graphic:{kind:item.type,width:item.width,
+              height:item.height,color:rgb(item.color)??'#333333'}};
+          }
+          throw new TypeError('unsupported or invalid box item');
+        });
+        return {
+          width:boxed.width,align:boxed.align??'left',padding,
+          borderWidth,borderColor:rgb(boxed.border?.color),
+          background:rgb(boxed.background),keepTogether:boxed.keepTogether,
+          breakBefore:boxed.breakBefore,keepWithNext:boxed.keepWithNext,items
+        };
     };
     blocks = document.blocks.map((block): NativeBlock => {
       if (block?.type === 'paragraph' && typeof block.text === 'string') {
@@ -510,103 +618,10 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
         return {kind:'image', image:{data:image.data, width:image.width,
           height:image.height, fit:image.fit ?? 'contain'}};
       }
-      if (block?.type === 'box') {
-        const boxed=block.box;
-        const innerWidth=(boxed?.width ?? (page ? page.width-page.marginLeft-page.marginRight : 497))
-          -2*(boxed?.padding??12);
-        const printableWidth=page ? page.width-page.marginLeft-page.marginRight : 497;
-        const printableHeight=page ? page.height-page.marginTop-page.marginBottom : 650;
-        const padding=boxed?.padding??12;
-        const borderWidth=boxed?.border?.width??0;
-        if (!boxed || !Array.isArray(boxed.items) || boxed.items.length<1 ||
-            boxed.items.length>500 ||
-            !Number.isFinite(padding) || padding<0 || padding>60 ||
-            !Number.isFinite(borderWidth) || borderWidth<0 || borderWidth>6 ||
-            borderWidth>padding ||
-            !Number.isFinite(boxed.width??printableWidth) ||
-            (boxed.width??printableWidth)<100 ||
-            (boxed.width??printableWidth)>printableWidth ||
-            innerWidth<60 ||
-            (boxed.align!==undefined&&!['left','center','right'].includes(boxed.align))) {
-          throw new TypeError('invalid box geometry, padding, border, alignment or item count');
-        }
-        const rgb=(value:string|undefined):string|undefined=>{
-          if(value!==undefined && !/^#[0-9a-fA-F]{6}$/.test(value))
-            throw new TypeError('box colors must be #RRGGBB');
-          return value;
-        };
-        if([boxed.keepTogether,boxed.breakBefore,boxed.keepWithNext].some(x=>x!==undefined && typeof x!=='boolean')){
-          throw new TypeError('box page policies must be boolean');
-        }
-        const items=boxed.items.map(item=>{
-          if(item?.type==='rich'){
-            return {kind:'rich',...normalizeNestedRich(item.runs,item.style)};
-          }
-          if(item?.type==='row'){
-            return {kind:'row',row:normalizeRow(item.row,innerWidth,printableHeight-2*padding)};
-          }
-          if(item?.type==='table'){
-            const t=item.table;
-            if(!t || !Array.isArray(t.rows) || !t.rows.length || t.rows.length>1000 ||
-               !Array.isArray(t.fills) || t.fills.length!==t.rows.length+1) {
-              throw new TypeError('boxed table requires 1..1000 rows and fills');
-            }
-            const header=normalizeRow(t.header,innerWidth,printableHeight-2*padding);
-            const rows=t.rows.map(r=>normalizeRow(r,innerWidth,printableHeight-2*padding));
-            if(header.gap!==0 || header.columns.length>6 || rows.some(r=>
-              r.gap!==0 || r.columns.length!==header.columns.length ||
-              r.columns.some((c,i)=>Math.abs(c.width-header.columns[i].width)>0.01))) {
-              throw new TypeError('boxed table must share contiguous 1..6 column widths');
-            }
-            const fills=t.fills.map(f=>{
-              if(!Array.isArray(f) || f.length!==header.columns.length)
-                throw new TypeError('boxed table fills must match column count');
-              return f.map(rgb);
-            });
-            return {kind:'table',tableData:{header,rows,fills}};
-          }
-          if(item?.type==='text' && typeof item.text==='string'){
-            return {kind:'text',text:item.text,style:normalizeStyle(
-              item.style??{spaceBefore:4,spaceAfter:3}),color:rgb(item.color)};
-          }
-          if(item?.type==='spacer' && Number.isFinite(item.height) &&
-            item.height>0 && item.height+padding*2<=printableHeight) {
-            return {kind:'spacer',height:item.height};
-          }
-          if(item?.type==='image') {
-            if (!(item.data instanceof Uint8Array)||item.data.byteLength<1 ||
-                item.data.byteLength>8*1024*1024 ||
-                !Number.isFinite(item.width)||!Number.isFinite(item.height) ||
-                item.width<=0||item.height<=0||
-                item.width>innerWidth||item.height+padding*2>printableHeight ||
-                !['contain','cover',undefined].includes(item.fit)) {
-              throw new TypeError('invalid box image or image exceeds content size');
-            }
-            imageCount++;imageBytes+=item.data.byteLength;
-            if(imageCount>64||imageBytes>32*1024*1024){
-              throw new TypeError('too many images or image bytes in document');
-            }
-            return {kind:'image',image:{data:item.data,width:item.width,
-              height:item.height,fit:item.fit??'contain'}};
-          }
-          if(item?.type==='rule'||item?.type==='rectangle'){
-            if(!Number.isFinite(item.width)||!Number.isFinite(item.height)||
-              item.width<=0||item.height<=0||item.width>innerWidth||
-              item.height+padding*2>printableHeight||
-              (item.type==='rule'&&item.height>8)) {
-              throw new TypeError('invalid box graphic dimensions');
-            }
-            return {kind:'graphic',graphic:{kind:item.type,width:item.width,
-              height:item.height,color:rgb(item.color)??'#333333'}};
-          }
-          throw new TypeError('unsupported or invalid box item');
-        });
-        return {kind:'box',boxData:{
-          width:boxed.width,align:boxed.align??'left',padding,
-          borderWidth,borderColor:rgb(boxed.border?.color),
-          background:rgb(boxed.background),keepTogether:boxed.keepTogether,
-          breakBefore:boxed.breakBefore,keepWithNext:boxed.keepWithNext,items
-        }};
+      if(block?.type==='box'){
+        const w=page?page.width-page.marginLeft-page.marginRight:497;
+        const h=page?page.height-page.marginTop-page.marginBottom:650;
+        return {kind:'box',boxData:normalizeBox(block.box,w,h)};
       }
       if (block?.type === 'page-break') return {kind:'page-break'};
       if(block?.type==='row'){

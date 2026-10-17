@@ -41,7 +41,7 @@ const invoice = vufra.document({title:'Factura',page:'Letter'})
 
 Las filas se dibujan en **columnas reales** medidas por Parley; las tablas extensas siguen repitiendo su encabezado y paginándose en Rust. Los callbacks de composición son síncronos. Además tienes `.section()`, `.grid()`, `.richText()`, `.image()`, `.list()`, `.divider()` y `.pageBreak()`. `toDocument()` permite inspeccionar el AST; `renderSync()` y `enqueue(queue)` reutilizan el mismo motor.
 
-**Alcance actual:** las filas y grids siguen siendo indivisibles; las tablas y el contenido de texto de `.box()` pueden continuar entre páginas. La API todavía no ofrece `.footer()` personalizable, `.chart()` ni `.fromPdf()` para completar PDFs existentes. El motor sigue reservando su encabezado y pie predeterminados (márgenes verticales mínimos 110/50 pt). El API de bajo nivel `renderPdf(document,font)` se mantiene compatible.
+**Alcance actual:** las filas y grids siguen siendo indivisibles; las tablas y el contenido de texto de `.box()` pueden continuar entre páginas. La API todavía no ofrece `.chart()` ni `.fromPdf()` para completar PDFs existentes. El motor sigue reservando su encabezado y pie predeterminados (márgenes verticales mínimos 110/50 pt). El API de bajo nivel `renderPdf(document,font)` se mantiene compatible.
 
 La API Rust subyacente vive en `crates/vufra-pdf`: `render_pdf(&PdfDocument, &[u8], RenderOptions)`.
 
@@ -326,6 +326,9 @@ node examples/fluent-page-templates.mjs \
 node examples/fluent-styled-tables.mjs \
   "$(fc-match 'Noto Sans' -f '%{file}')" \
   "$(fc-match 'Noto Sans:style=Bold' -f '%{file}')" artifacts/fluent-styled-tables.pdf
+node examples/fluent-composition.mjs \
+  "$(fc-match 'Noto Sans' -f '%{file}')" \
+  "$(fc-match 'Noto Sans:style=Bold' -f '%{file}')" artifacts/fluent-composition.pdf
 pdfinfo artifacts/sdk-first.pdf
 ```
 
@@ -393,6 +396,45 @@ A diferencia de table() clásica, las filas enriquecidas son ATÓMICAS: pueden
 moverse a otra página y el encabezado se repetirá, pero una fila más alta que
 una página imprimible da error. No hay colspan, rowspan ni tablas recursivas.
 
+### API Fluent componible (Unidad 19)
+
+La sintaxis Fluent sigue siendo principal: las cadenas de llamadas
+.heading().paragraph().box().table().render() no desaparecen. Ahora
+.add() permite insertar componentes funcionales reutilizables, construidos
+con box, paragraph, heading, image, grid, row, column, table y flow.
+El documento y box reciben el mismo ContentBuilder con las mismas operaciones.
+
+~~~typescript
+const MetricCard = (title:string,value:string) =>
+  box({padding:12,background:'#E8F2FC'},[
+    paragraph(title),
+    paragraph(value,{bold:true})
+  ]);
+
+const pdf = await engine.document({title:'Reporte'})
+  .heading('Resultados')
+  .box({padding:16},content => content
+    .paragraph('Resumen del trimestre')
+    .grid({columns:2},grid => grid
+      .cell(col=>col.paragraph('Ventas'))
+      .cell(col=>col.paragraph('Costos'))
+    )
+  )
+  .add(MetricCard('Total','$125,000'))
+  .render();
+~~~
+
+Una caja permite un nodo o arreglo de nodos; varios hijos se apilan.
+Las cajas dentro de cajas miden y dibujan verdaderos fondos, bordes,
+imágenes y fuentes, hasta ocho niveles.
+
+LIMITES: cajas anidadas y filas de Row/Grid son atómicas al paginar.
+Las columnas sí admiten Box/Table/Grid, pero una fila demasiado alta
+no puede fragmentarse entre páginas.
+El árbol funcional es un AST lógico TypeScript que se baja al AST especializado
+existente en Rust; la unificación total de la medición Rust queda pendiente
+(ADR-0020).
+
 ## Hitos
 
 | Unidad | Hito | Estado |
@@ -416,6 +458,7 @@ una página imprimible da error. No hay colspan, rowspan ni tablas recursivas.
 | 16 | Tipografía real y filas/grids anidados dentro de cajas; reglas de salto | Prototipo funcional |
 | 17 | Plantillas de página, portada distinta, logos y numeración tardía | Prototipo funcional |
 | 18 | Tablas enriquecidas y encabezados repetidos dentro de cajas | Prototipo funcional |
+| 19 | Composición funcional + Fluent compartida, cajas anidadas nativas | Refactor incremental |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -476,6 +519,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 16 — Layouts anidados](docs/experiments/17-nested-layouts-milestone.md)
 - [Unidad 17 — Plantillas de página](docs/experiments/18-page-templates-milestone.md)
 - [Unidad 18 — Tablas enriquecidas](docs/experiments/19-styled-tables-milestone.md)
+- [Unidad 19 — Fluent componible](docs/experiments/20-composable-nodes-milestone.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
@@ -495,6 +539,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [ADR-0017 Layouts anidados](docs/adr/0017-nested-layouts-and-page-policies.md)
 - [ADR-0018 Plantillas de página](docs/adr/0018-page-templates-and-running-bands.md)
 - [ADR-0019 Tablas enriquecidas en cajas](docs/adr/0019-styled-tables-in-boxes.md)
+- [ADR-0020 Fluent componible y nodos](docs/adr/0020-composable-fluent-and-unified-nodes.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

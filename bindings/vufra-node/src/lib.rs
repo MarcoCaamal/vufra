@@ -64,6 +64,7 @@ pub struct NodeFontFace {
 #[napi(object)]
 pub struct NodeRowItem {
     pub kind: String,
+    pub box_data: Option<NodeBox>,
     pub runs: Option<Vec<NodeRichRun>>,
     pub text: Option<String>,
     pub style: Option<NodeTextStyle>,
@@ -100,6 +101,7 @@ pub struct NodeBoxItem {
     pub graphic: Option<NodeGraphic>,
     pub row: Option<NodeRow>,
     pub table_data: Option<NodeBoxTable>,
+    pub box_data: Option<NodeBox>,
 }
 #[napi(object)]
 pub struct NodeBox {
@@ -234,6 +236,12 @@ fn to_runs(runs: Vec<NodeRichRun>) -> napi::Result<Vec<PdfTextRun>> {
         .collect()
 }
 fn to_box(input: NodeBox) -> napi::Result<PdfBox> {
+    to_box_depth(input, 0)
+}
+fn to_box_depth(input: NodeBox, depth: usize) -> napi::Result<PdfBox> {
+    if depth > 8 {
+        return Err(napi::Error::from_reason("nested box depth exceeds 8"));
+    }
     let align = match input.align.as_str() {
         "left" => BoxAlign::Left,
         "center" => BoxAlign::Center,
@@ -281,21 +289,26 @@ fn to_box(input: NodeBox) -> napi::Result<PdfBox> {
                     .ok_or_else(|| napi::Error::from_reason("box spacer required"))?
                     as f32,
             )),
-            "row" => {
-                Ok(PdfBoxItem::Row(to_row(item.row.ok_or_else(|| {
-                    napi::Error::from_reason("box row required")
-                })?)?))
-            }
+            "row" => Ok(PdfBoxItem::Row(to_row_depth(
+                item.row
+                    .ok_or_else(|| napi::Error::from_reason("box row required"))?,
+                depth + 1,
+            )?)),
+            "box" => Ok(PdfBoxItem::Box(Box::new(to_box_depth(
+                item.box_data
+                    .ok_or_else(|| napi::Error::from_reason("nested box payload is required"))?,
+                depth + 1,
+            )?))),
             "table" => {
                 let table = item
                     .table_data
                     .ok_or_else(|| napi::Error::from_reason("boxed table required"))?;
                 Ok(PdfBoxItem::Table(PdfBoxTable {
-                    header: to_row(table.header)?,
+                    header: to_row_depth(table.header, depth + 1)?,
                     rows: table
                         .rows
                         .into_iter()
-                        .map(to_row)
+                        .map(|row| to_row_depth(row, depth + 1))
                         .collect::<napi::Result<Vec<_>>>()?,
                     fills: table
                         .fills
@@ -326,6 +339,12 @@ fn to_box(input: NodeBox) -> napi::Result<PdfBox> {
     })
 }
 fn to_row(input: NodeRow) -> napi::Result<PdfRow> {
+    to_row_depth(input, 0)
+}
+fn to_row_depth(input: NodeRow, depth: usize) -> napi::Result<PdfRow> {
+    if depth > 8 {
+        return Err(napi::Error::from_reason("nested layout depth exceeds 8"));
+    }
     let columns = input
         .columns
         .into_iter()
@@ -334,6 +353,11 @@ fn to_row(input: NodeRow) -> napi::Result<PdfRow> {
                 .items
                 .into_iter()
                 .map(|item| match item.kind.as_str() {
+                    "box" => Ok(PdfRowItem::Box(Box::new(to_box_depth(
+                        item.box_data
+                            .ok_or_else(|| napi::Error::from_reason("row box payload required"))?,
+                        depth + 1,
+                    )?))),
                     "text" => Ok(PdfRowItem::Text {
                         text: item
                             .text
@@ -436,11 +460,53 @@ fn preflight_image(image: &NodeImage, count: &mut usize, total: &mut usize) -> n
     Ok(())
 }
 fn preflight_row_images(row: &NodeRow, count: &mut usize, total: &mut usize) -> napi::Result<()> {
+    preflight_row_depth(row, count, total, 0)
+}
+fn preflight_row_depth(
+    row: &NodeRow,
+    count: &mut usize,
+    total: &mut usize,
+    depth: usize,
+) -> napi::Result<()> {
+    if depth > 8 {
+        return Err(napi::Error::from_reason("nested layout depth exceeds 8"));
+    }
     for column in &row.columns {
         for item in &column.items {
             if let Some(image) = &item.image {
                 preflight_image(image, count, total)?;
             }
+            if let Some(boxed) = &item.box_data {
+                preflight_box_images(boxed, count, total, depth + 1)?;
+            }
+        }
+    }
+    Ok(())
+}
+fn preflight_box_images(
+    boxed: &NodeBox,
+    count: &mut usize,
+    bytes: &mut usize,
+    depth: usize,
+) -> napi::Result<()> {
+    if depth > 8 {
+        return Err(napi::Error::from_reason("nested box depth exceeds 8"));
+    }
+    for item in &boxed.items {
+        if let Some(image) = &item.image {
+            preflight_image(image, count, bytes)?;
+        }
+        if let Some(row) = &item.row {
+            preflight_row_depth(row, count, bytes, depth + 1)?;
+        }
+        if let Some(table) = &item.table_data {
+            preflight_row_depth(&table.header, count, bytes, depth + 1)?;
+            for row in &table.rows {
+                preflight_row_depth(row, count, bytes, depth + 1)?;
+            }
+        }
+        if let Some(child) = &item.box_data {
+            preflight_box_images(child, count, bytes, depth + 1)?;
         }
     }
     Ok(())
@@ -470,20 +536,7 @@ fn parse_document(
                 preflight_row_images(row, &mut count, &mut bytes)?;
             }
             if let Some(boxed) = &block.box_data {
-                for item in &boxed.items {
-                    if let Some(image) = &item.image {
-                        preflight_image(image, &mut count, &mut bytes)?;
-                    }
-                    if let Some(row) = &item.row {
-                        preflight_row_images(row, &mut count, &mut bytes)?;
-                    }
-                    if let Some(table) = &item.table_data {
-                        preflight_row_images(&table.header, &mut count, &mut bytes)?;
-                        for row in &table.rows {
-                            preflight_row_images(row, &mut count, &mut bytes)?;
-                        }
-                    }
-                }
+                preflight_box_images(boxed, &mut count, &mut bytes, 0)?;
             }
         }
     }

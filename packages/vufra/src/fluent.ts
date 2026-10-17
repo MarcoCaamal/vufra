@@ -105,6 +105,90 @@ export interface BoxOptions {
   keepWithNext?:boolean;
 }
 
+/**
+ * One portable declarative component. Fluent is still the primary interface;
+ * these nodes can be assembled in ordinary TypeScript functions and inserted
+ * with .add(), independently of the eventual container width.
+ */
+export type VufraNode =
+  | {kind:'paragraph';text:string;style?:VufraStyle}
+  | {kind:'heading';text:string;options?:HeadingOptions}
+  | {kind:'image';data:Uint8Array;options:ImageOptions}
+  | {kind:'box';options:BoxOptions;children:readonly VufraNode[]}
+  | {kind:'flow';children:readonly VufraNode[]}
+  | {kind:'table';rows:readonly (readonly StyledTableCell[])[];options:StyledTableOptions}
+  | {kind:'grid';options:GridOptions;cells:readonly (readonly VufraNode[])[]}
+  | {kind:'row';options:RowOptions;columns:readonly VufraColumnNode[]};
+export type VufraChildren=VufraNode|readonly VufraNode[];
+export interface VufraColumnNode {
+  options:ColumnOptions;
+  children:readonly VufraNode[];
+}
+function nodes(children:VufraChildren):readonly VufraNode[]{
+  return Array.isArray(children)?children:[children as VufraNode];
+}
+/** Catch cycles and unbounded component trees before mutating any builder. */
+function validateNodes(children:VufraChildren):void {
+  const parents=new Set<object>();
+  let count=0;
+  const walk=(values:VufraChildren,depth:number):void=>{
+    if(depth>32)fail('component tree depth exceeds 32');
+    const entries=nodes(values);
+    if(entries.length>10_000)fail('component node budget exceeded');
+    for(const node of entries){
+      if(!node||typeof node!=='object'||!('kind' in node))
+        fail('invalid content component');
+      if(parents.has(node))fail('circular component tree');
+      if(++count>10_000)fail('component node budget exceeded');
+      parents.add(node);
+      switch(node.kind){
+        case 'paragraph':case 'heading':case 'image':case 'table':break;
+        case 'flow':case 'box':walk(node.children,depth+1);break;
+        case 'grid':
+          for(const cell of node.cells)walk(cell,depth+1);
+          break;
+        case 'row':
+          for(const col of node.columns)walk(col.children,depth+1);
+          break;
+        default: fail('unsupported content node');
+      }
+      parents.delete(node);
+    }
+  };
+  walk(children,0);
+}
+
+export function paragraph(text:string,style?:VufraStyle):VufraNode{
+  return {kind:'paragraph',text,style};
+}
+export function heading(text:string,options?:HeadingOptions):VufraNode{
+  return {kind:'heading',text,options};
+}
+export function image(data:Uint8Array,options:ImageOptions):VufraNode{
+  return {kind:'image',data,options};
+}
+export function box(options:BoxOptions,children:VufraChildren):VufraNode{
+  return {kind:'box',options,children:nodes(children)};
+}
+export function flow(children:VufraChildren):VufraNode{
+  return {kind:'flow',children:nodes(children)};
+}
+export function table(
+  rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions
+):VufraNode{
+  return {kind:'table',rows,options};
+}
+export function column(children:VufraChildren,options:ColumnOptions={}):VufraColumnNode{
+  return {options,children:nodes(children)};
+}
+export function row(options:RowOptions,columns:readonly VufraColumnNode[]):VufraNode{
+  return {kind:'row',options,columns};
+}
+export function grid(options:GridOptions,
+  cells:readonly VufraChildren[]):VufraNode{
+  return {kind:'grid',options,cells:cells.map(nodes)};
+}
+
 function fail(message:string): never { throw new TypeError('Vufra: '+message); }
 function plainObject(value:unknown): value is Record<string,unknown> {
   return value!==null && typeof value==='object' && !Array.isArray(value);
@@ -262,12 +346,76 @@ function buildColumnWidth(value:ColumnOptions['width'],total:number):number|null
   fail('column.width must be a point number, percent or "*"');
 }
 
+type DeferredColumnNode =
+  | {readonly __vufraNode:VufraNode}
+  | {readonly __vufraBuild:(content:ContentBuilder)=>void};
+type ColumnItem=PdfRowItem|DeferredColumnNode;
+function compileColumnItems(ctx:BuilderContext,width:number,items:readonly ColumnItem[]):PdfRowItem[]{
+  return items.map(item=>{
+    if(!('__vufraNode' in item) && !('__vufraBuild' in item))return item;
+    const inner=new ContentBuilder(ctx,width,true);
+    try{
+      if('__vufraNode' in item)inner.add(item.__vufraNode);
+      else requireSyncResult(item.__vufraBuild(inner));
+    }finally{inner.close();}
+    if(inner.items.length===1 && inner.items[0].type==='box'){
+      return {type:'box',box:inner.items[0].box};
+    }
+    return {type:'box',box:{
+      align:'left',padding:0,items:inner.items
+    }};
+  });
+}
 class ColumnScope {
   constructor(private readonly ctx:BuilderContext){}
   private active=true;
-  readonly items:PdfRowItem[]=[];
+  readonly items:ColumnItem[]=[];
   private assertActive():void{if(!this.active)fail('column callback scope is closed');}
   close():void{this.active=false;}
+  /** A column accepts text, images and flat flows; unsupported nesting fails explicitly. */
+  add(children:VufraChildren):this {
+    this.assertActive();
+    validateNodes(children);
+    for(const node of nodes(children)){
+      if(!node || typeof node!=='object')fail('invalid column component');
+      switch(node.kind){
+        case 'paragraph': this.paragraph(node.text,node.style);break;
+        case 'heading': this.heading(node.text,node.options);break;
+        case 'image': this.image(node.data,node.options);break;
+        case 'flow': this.add(node.children);break;
+        case 'box': case 'table': case 'grid': case 'row':
+          this.items.push({__vufraNode:node});break;
+        default: fail('unsupported row/grid column component');
+      }
+    }
+    return this;
+  }
+  /** Nested layouts are deferred until the column's actual width is calculated. */
+  box(options:BoxOptions,callback:(content:ContentBuilder)=>void):this{
+    this.assertActive();
+    this.items.push({__vufraBuild:content=>{content.box(options,callback);}});
+    return this;
+  }
+  table(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):this{
+    this.assertActive();
+    this.items.push({__vufraBuild:content=>{content.tableStyled(rows,options);}});
+    return this;
+  }
+  row(options:RowOptions,callback:(row:RowScope)=>void):this;
+  row(callback:(row:RowScope)=>void):this;
+  row(optsOrCb:RowOptions|((row:RowScope)=>void),cb?:(row:RowScope)=>void):this{
+    this.assertActive();
+    this.items.push({__vufraBuild:content=>{
+      if(typeof optsOrCb==='function')content.row(optsOrCb);
+      else content.row(optsOrCb,cb!);
+    }});
+    return this;
+  }
+  grid(options:GridOptions,callback:(grid:GridScope)=>void):this{
+    this.assertActive();
+    this.items.push({__vufraBuild:content=>{content.grid(options,callback);}});
+    return this;
+  }
   paragraph(text:string,style?:VufraStyle):this{
     this.assertActive();this.items.push(asRowItemText(this.ctx,text,style));return this;
   }
@@ -313,7 +461,7 @@ class RowScope {
   constructor(private readonly ctx:BuilderContext){}
   private active=true;
   close():void{this.active=false;}
-  private readonly entries:Array<{options:ColumnOptions;items:PdfRowItem[]}>=[] ;
+  private readonly entries:Array<{options:ColumnOptions;items:ColumnItem[]}>=[] ;
   private assertActive():void{if(!this.active)fail('row callback scope is closed');}
   column(options:ColumnOptions,callback:(column:ColumnScope)=>void):this;
   column(callback:(column:ColumnScope)=>void):this;
@@ -338,7 +486,8 @@ class RowScope {
     const autoCount=defined.filter(w=>w===null).length;
     const auto=autoCount?(usable-fixed)/autoCount:0;
     const cols:PdfRowColumn[]=this.entries.map((e,i)=>({
-      width:defined[i]??auto,align:e.options.align??'left',items:e.items
+      width:defined[i]??auto,align:e.options.align??'left',
+      items:compileColumnItems(this.ctx,defined[i]??auto,e.items)
     }));
     if(cols.some(c=>!validNumber(c.width)||c.width<60) ||
       cols.reduce((a,c)=>a+c.width,0)+gap*(cols.length-1)>printableWidth+0.02){
@@ -350,7 +499,7 @@ class RowScope {
 class GridScope {
   constructor(private readonly ctx:BuilderContext){}
   private active=true;
-  readonly cells:PdfRowItem[][]=[];
+  readonly cells:ColumnItem[][]=[];
   cell(callback:(column:ColumnScope)=>void):this {
     if(!this.active)fail('grid callback scope is closed');
     const scope=new ColumnScope(this.ctx);
@@ -413,7 +562,9 @@ export class PageBandScope {
     try{requireSyncResult(callback(grid));}finally{grid.close();}
     if(grid.cells.length!==n)fail('page band grid needs exactly one row of cells');
     const width=(contentWidth(this.ctx)-gap*(n-1))/n;
-    return this.add({gap,columns:grid.cells.map(items=>({width,items}))});
+    return this.add({gap,columns:grid.cells.map(items=>({
+      width,items:compileColumnItems(this.ctx,width,items)
+    }))});
   }
   finish():PdfRow{
     if(!this.band)fail('page band must have visible content');
@@ -507,122 +658,84 @@ function styledTable(
 }
 
 /** One visually decorated, page-fragmentable vertical flow. */
-class BoxScope {
-  private active=true;
-  readonly items:PdfBoxItem[]=[];
-  constructor(private readonly ctx:BuilderContext,private readonly innerWidth:number){}
-  close():void{this.active=false;}
-  private add(item:PdfBoxItem):this{
-    if(!this.active)fail('box callback scope is closed');
-    this.items.push(item);return this;
-  }
-  paragraph(text:string,style:VufraStyle={}):this{
-    ensureText(text);
-    const styled=mergeStyle(this.ctx.theme,undefined,style);
-    if(styled.bold||styled.font!==undefined){
-      const color=colorHex(styled.color,this.ctx.theme);
-      return this.add({type:'rich',runs:[{text,font:faceFor(styled,this.ctx.fonts),
-        ...(color?{color}:{}),...(styled.fontSize!==undefined?{fontSize:styled.fontSize}:{})}],
-        style:richStyle(styled)});
-    }
-    return this.add({type:'text',text,style:{
-      fontSize:styled.fontSize??11,
-      lineHeight:styled.lineHeight??Math.max(16,(styled.fontSize??11)*1.4),
-      spaceBefore:styled.spaceBefore??5,spaceAfter:styled.spaceAfter??5
-    },color:colorHex(styled.color,this.ctx.theme)});
-  }
-  heading(text:string,options:HeadingOptions={}):this{
-    const level=options.level??2;
-    if(![1,2,3].includes(level))fail('box heading level must be 1..3');
-    const size=[0,21,17,14][level];
-    const themed=this.ctx.theme?.[`h${level}` as 'h1'|'h2'|'h3'];
-    return this.paragraph(text,{
-      fontSize:size,lineHeight:size*1.4,spaceBefore:7,spaceAfter:5,
-      ...themed,...options
-    });
-  }
-  richText(callback:(text:{add(value:string,style?:VufraStyle):void})=>void,
-    style?:Partial<PdfTextStyle>):this{
-    const runs:PdfRichRun[]=[];
-    let active=true;
-    const collector={add:(value:string,opts:VufraStyle={})=>{
-      if(!this.active||!active)fail('box richText callback scope is closed');
-      ensureText(value);
-      const s=mergeStyle(this.ctx.theme,undefined,opts);
-      runs.push({text:value,font:faceFor(s,this.ctx.fonts),
-        ...(s.fontSize!==undefined?{fontSize:s.fontSize}:{}),
-        ...(s.color?{color:colorHex(s.color,this.ctx.theme)}:{})});
-    }};
-    try{requireSyncResult(callback(collector));}finally{active=false;}
-    if(!runs.length)fail('box richText requires runs');
-    return this.add({type:'rich',runs,style});
-  }
-  table(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):this{
-    if(!this.active)fail('box table scope is closed');
-    return this.add({type:'table',table:styledTable(this.ctx,this.innerWidth,rows,options)});
-  }
-  image(data:Uint8Array,options:ImageOptions):this{
-    if(!(data instanceof Uint8Array))fail('box image needs PNG/JPEG bytes');
-    return this.add({type:'image',data,...options});
-  }
-  spacer(height:number):this{return this.add({type:'spacer',height});}
-  divider(options:DividerOptions={}):this{
-    return this.add({type:'rule',height:options.height??1,
-      width:options.width??this.innerWidth,
-      color:colorHex(options.color,this.ctx.theme)});
-  }
-  rectangle(options:{width:number;height:number;color?:string}):this{
-    return this.add({type:'rectangle',...options,
-      color:colorHex(options.color,this.ctx.theme)});
-  }
-  list(items:string[],options:{ordered?:boolean}={}):this{
-    if(!Array.isArray(items)||!items.length||items.length>1000)
-      fail('box list needs 1..1000 items');
-    for(const [i,text] of items.entries()){
-      ensureText(text);
-      this.paragraph((options.ordered?String(i+1)+'. ':'• ')+text);
-    }
-    return this;
-  }
-  row(options:RowOptions,callback:(row:RowScope)=>void):this;
-  row(callback:(row:RowScope)=>void):this;
-  row(optsOrCb:RowOptions|((row:RowScope)=>void),callback?:(row:RowScope)=>void):this{
-    const options=typeof optsOrCb==='function'?{}:optsOrCb;
-    const cb=typeof optsOrCb==='function'?optsOrCb:callback;
-    if(!this.active||typeof cb!=='function')fail('box row needs synchronous callback');
-    const gap=options.gap??12;
-    if(!validNumber(gap)||gap<0||gap>80)fail('row.gap must be 0..80');
-    const row=new RowScope(this.ctx);
-    let native:PdfRow;
-    try{requireSyncResult(cb(row));native=row.finish(this.innerWidth,gap);}
-    finally{row.close();}
-    return this.add({type:'row',row:native});
-  }
-  grid(options:GridOptions,callback:(grid:GridScope)=>void):this{
-    const n=options.columns,gap=options.gap??12;
-    if(!Number.isInteger(n)||n<1||n>6||!validNumber(gap)||gap<0||gap>80)
-      fail('box grid columns must be 1..6 and gap 0..80');
-    const grid=new GridScope(this.ctx);
-    try{requireSyncResult(callback(grid));}finally{grid.close();}
-    const width=(this.innerWidth-gap*(n-1))/n;
-    if(width<60)fail('box grid cells must be at least 60pt wide');
-    for(let i=0;i<grid.cells.length;i+=n){
-      const cells=grid.cells.slice(i,i+n);
-      this.add({type:'row',row:{gap,columns:Array.from({length:n},(_,j)=>({
-        width,align:'left' as const,items:cells[j]??[]
-      }))}});
-    }
-    return this;
-  }
-}
-class ContentScope {
+export class ContentBuilder {
   private active=true;
   readonly blocks:PdfBlock[]=[];
-  constructor(private readonly ctx:BuilderContext){}
+  readonly items:PdfBoxItem[]=[];
+  constructor(private readonly ctx:BuilderContext,
+    private readonly width=contentWidth(ctx), private readonly inBox=false){}
   close():void{this.active=false;}
+  private pushBoxItem(item:PdfBoxItem):this {
+    if(!this.active || !this.inBox) fail('box content scope is closed');
+    this.items.push(item);
+    return this;
+  }
   private append(block:PdfBlock):this{
     if(!this.active)fail('content callback scope is closed');
-    this.blocks.push(block);return this;
+    if(!this.inBox){
+      this.blocks.push(block);
+      return this;
+    }
+    switch(block.type){
+      case 'paragraph':
+        return this.pushBoxItem({type:'text',text:block.text,style:{
+          fontSize:11,lineHeight:16,spaceBefore:5,spaceAfter:5}});
+      case 'heading': {
+        const size=[0,21,17,14][block.level];
+        return this.pushBoxItem({type:'text',text:block.text,style:{
+          fontSize:size,lineHeight:size*1.4,spaceBefore:7,spaceAfter:5}});
+      }
+      case 'styled-paragraph':
+        return this.pushBoxItem({type:'text',text:block.text,style:block.style});
+      case 'rich-paragraph':
+        return this.pushBoxItem({type:'rich',runs:block.runs,style:block.style});
+      case 'image':
+        return this.pushBoxItem('image' in block ? {type:'image',...block.image} : block);
+      case 'rule': case 'rectangle': case 'spacer':
+        return this.pushBoxItem(block);
+      case 'row':
+        return this.pushBoxItem(block);
+      case 'box':
+        return this.pushBoxItem(block);
+      case 'list':
+        for(const [i,text] of block.items.entries()){
+          this.append({type:'paragraph',text:(block.ordered?String(i+1)+'. ':'• ')+text});
+        }
+        return this;
+      case 'table':
+        return this.pushBoxItem({type:'table',table:styledTable(this.ctx,this.width,
+          block.table.rows, {columns:block.table.columns.map(c=>({
+            title:c.header,width:c.width
+          }))})});
+      default:
+        fail('this component cannot be nested inside a box');
+    }
+  }
+  /** Add a reusable functional node, or several children, without losing Fluent chaining. */
+  add(children:VufraChildren):this {
+    if(!this.active) fail('content callback scope is closed');
+    validateNodes(children);
+    for(const node of nodes(children)){
+      if(!node || typeof node!=='object')fail('invalid content component');
+      switch(node.kind){
+        case 'paragraph': this.paragraph(node.text,node.style);break;
+        case 'heading': this.heading(node.text,node.options);break;
+        case 'image': this.image(node.data,node.options);break;
+        case 'table': this.tableStyled(node.rows,node.options);break;
+        case 'flow': this.add(node.children);break;
+        case 'box': this.box(node.options,b=>b.add(node.children));break;
+        case 'row': this.row(node.options,r=>{
+          for(const col of node.columns){
+            r.column(col.options,c=>c.add(col.children));
+          }
+        });break;
+        case 'grid': this.grid(node.options,g=>{
+          for(const cell of node.cells)g.cell(c=>c.add(cell));
+        });break;
+        default: fail('unsupported content node');
+      }
+    }
+    return this;
   }
   paragraph(text:string,style?:VufraStyle):this {return this.append(textBlock(this.ctx,text,style));}
   heading(text:string,opts:HeadingOptions={}):this {return this.append(headingBlock(this.ctx,text,opts));}
@@ -652,23 +765,23 @@ class ContentScope {
   spacer(height:number):this{return this.append({type:'spacer',height});}
   pageBreak():this{return this.append({type:'page-break'});}
   divider(options:DividerOptions={}):this{
-    return this.append({type:'rule',width:options.width??contentWidth(this.ctx),
+    return this.append({type:'rule',width:options.width??this.width,
       height:options.height??2,color:colorHex(options.color,this.ctx.theme)});
   }
   rectangle(options:{width:number;height:number;color?:string}):this{
     return this.append({type:'rectangle',...options,color:colorHex(options.color,this.ctx.theme)});
   }
-  box(options:BoxOptions,callback:(box:BoxScope)=>void):this;
-  box(callback:(box:BoxScope)=>void):this;
-  box(optionsOrCb:BoxOptions|((box:BoxScope)=>void),
-    callback?:(box:BoxScope)=>void):this{
+  box(options:BoxOptions,callback:(box:ContentBuilder)=>void):this;
+  box(callback:(box:ContentBuilder)=>void):this;
+  box(optionsOrCb:BoxOptions|((box:ContentBuilder)=>void),
+    callback?:(box:ContentBuilder)=>void):this{
     const opts=typeof optionsOrCb==='function'?{}:optionsOrCb;
     const cb=typeof optionsOrCb==='function'?optionsOrCb:callback;
     if(typeof cb!=='function')fail('box requires a synchronous callback');
     const padding=opts.padding??12;
-    const innerWidth=(opts.width??contentWidth(this.ctx))-2*padding;
+    const innerWidth=(opts.width??this.width)-2*padding;
     if(!Number.isFinite(innerWidth)||innerWidth<60)fail('box content width must be at least 60pt');
-    const scope=new BoxScope(this.ctx,innerWidth);
+    const scope=new ContentBuilder(this.ctx,innerWidth,true);
     try{requireSyncResult(cb(scope));}
     finally{scope.close();}
     const boxed:PdfBox={
@@ -678,11 +791,34 @@ class ContentScope {
     };
     return this.append({type:'box',box:boxed});
   }
-  table<T extends object>(data:readonly T[]|PdfTable,options?:TableOptions<T>):this {
-    return this.append({type:'table',table:asTable(data,options,contentWidth(this.ctx))});
+  /** In a Box this is the rich table; at document root it remains the legacy table. */
+  table(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):this;
+  table<T extends object>(data:readonly T[]|PdfTable,options?:TableOptions<T>):this;
+  table(data:readonly object[]|PdfTable,
+    options?:StyledTableOptions|TableOptions<object>):this{
+    const styled=Array.isArray(data) && data.every(Array.isArray)
+      && !!options?.columns
+      && options.columns.every(c=>typeof (c as StyledTableColumn).title==='string'
+        && !('key' in c));
+    if(styled){
+      return this.tableStyled(data as readonly (readonly StyledTableCell[])[],
+        options as StyledTableOptions);
+    }
+    if(this.inBox){
+      const plain=asTable(data as readonly object[]|PdfTable,
+        options as TableOptions<object>|undefined,this.width);
+      return this.tableStyled(plain.rows,{columns:plain.columns.map(c=>({
+        title:c.header,width:c.width
+      }))});
+    }
+    return this.append({type:'table',table:asTable(
+      data as readonly object[]|PdfTable,options as TableOptions<object>|undefined,this.width)});
   }
   tableStyled(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):this{
-    return this.box({padding:0}, box=>box.table(rows,options));
+    if(this.inBox) return this.pushBoxItem({
+      type:'table',table:styledTable(this.ctx,this.width,rows,options)
+    });
+    return this.box({padding:0},box=>box.tableStyled(rows,options));
   }
   row(options:RowOptions,callback:(row:RowScope)=>void):this;
   row(callback:(row:RowScope)=>void):this;
@@ -696,7 +832,7 @@ class ContentScope {
     let result:PdfRow;
     try{
       requireSyncResult(cb(row));
-      result=row.finish(contentWidth(this.ctx),gap);
+      result=row.finish(this.width,gap);
     } finally {row.close();}
     return this.append({type:'row',row:result});
   }
@@ -708,25 +844,27 @@ class ContentScope {
     try{requireSyncResult(callback(grid));}finally{grid.close();}
     for(let i=0;i<grid.cells.length;i+=n){
       const cells=grid.cells.slice(i,i+n);
-      const width=(contentWidth(this.ctx)-gap*(n-1))/n;
+      const width=(this.width-gap*(n-1))/n;
       const cols=Array.from({length:n},(_,j)=>({
-        width,items:cells[j]??[],align:'left' as const
+        width,items:compileColumnItems(this.ctx,width,cells[j]??[]),
+        align:'left' as const
       }));
       this.append({type:'row',row:{columns:cols,gap}});
     }
     return this;
   }
-  section(callback:(section:ContentScope)=>void):this;
-  section(title:string,callback:(section:ContentScope)=>void):this;
-  section(titleOrCallback:string|((section:ContentScope)=>void), callback?:(section:ContentScope)=>void):this{
+  section(callback:(section:ContentBuilder)=>void):this;
+  section(title:string,callback:(section:ContentBuilder)=>void):this;
+  section(titleOrCallback:string|((section:ContentBuilder)=>void), callback?:(section:ContentBuilder)=>void):this{
     const title=typeof titleOrCallback==='string'?titleOrCallback:undefined;
     const cb=typeof titleOrCallback==='string'?callback:titleOrCallback;
     if(typeof cb!=='function')fail('section requires a callback');
     if(title)this.heading(title,{level:2});
-    const inner=new ContentScope(this.ctx);
+    const inner=new ContentBuilder(this.ctx,this.width,this.inBox);
     try{requireSyncResult(cb(inner));}
     finally{inner.close();}
-    for(const block of inner.blocks)this.append(block);
+    if(this.inBox)for(const item of inner.items)this.pushBoxItem(item);
+    else for(const block of inner.blocks)this.append(block);
     return this;
   }
 }
@@ -736,8 +874,8 @@ export class DocumentBuilder {
     private readonly blocks:readonly PdfBlock[],
     private readonly chrome:PdfPageChrome={}){}
   static create(config:BuilderContext):DocumentBuilder{return new DocumentBuilder(config,[]);}
-  private append(f:(scope:ContentScope)=>void):DocumentBuilder{
-    const scope=new ContentScope(this.ctx);
+  private append(f:(scope:ContentBuilder)=>void):DocumentBuilder{
+    const scope=new ContentBuilder(this.ctx);
     try{requireSyncResult(f(scope));}
     finally {scope.close();}
     return new DocumentBuilder(this.ctx,[...this.blocks,...structuredClone(scope.blocks)],
@@ -776,6 +914,10 @@ export class DocumentBuilder {
   firstFooter(callback:((scope:PageBandScope)=>void)|null):DocumentBuilder{
     return this.withBand('firstFooter',callback);
   }
+  /** Reuse one or many functional nodes while retaining the immutable fluent chain. */
+  add(children:VufraChildren):DocumentBuilder{
+    return this.append(s=>{s.add(children);});
+  }
   heading(text:string,options:HeadingOptions={}):DocumentBuilder{
     return this.append(s=>{s.heading(text,options);});
   }
@@ -798,14 +940,18 @@ export class DocumentBuilder {
   rectangle(opts:{width:number;height:number;color?:string}):DocumentBuilder{
     return this.append(s=>{s.rectangle(opts);});
   }
-  box(options:BoxOptions,callback:(b:BoxScope)=>void):DocumentBuilder;
-  box(callback:(b:BoxScope)=>void):DocumentBuilder;
-  box(optionsOrCb:BoxOptions|((b:BoxScope)=>void),cb?:(b:BoxScope)=>void):DocumentBuilder {
+  box(options:BoxOptions,callback:(b:ContentBuilder)=>void):DocumentBuilder;
+  box(callback:(b:ContentBuilder)=>void):DocumentBuilder;
+  box(optionsOrCb:BoxOptions|((b:ContentBuilder)=>void),cb?:(b:ContentBuilder)=>void):DocumentBuilder {
     return this.append(s=>{if(typeof optionsOrCb==='function')s.box(optionsOrCb);
       else s.box(optionsOrCb,cb!);});
   }
-  table<T extends object>(data:readonly T[]|PdfTable,opts?:TableOptions<T>):DocumentBuilder{
-    return this.append(s=>{s.table(data,opts);});
+  table(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):DocumentBuilder;
+  table<T extends object>(data:readonly T[]|PdfTable,opts?:TableOptions<T>):DocumentBuilder;
+  table(data:readonly object[]|PdfTable,
+    opts?:TableOptions<object>|StyledTableOptions):DocumentBuilder{
+    return this.append(s=>{s.table(data as readonly object[],
+      opts as TableOptions<object>);});
   }
   tableStyled(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):DocumentBuilder{
     return this.append(s=>{s.tableStyled(rows,options);});
@@ -819,9 +965,9 @@ export class DocumentBuilder {
   grid(opts:GridOptions,callback:(g:GridScope)=>void):DocumentBuilder{
     return this.append(s=>{s.grid(opts,callback);});
   }
-  section(callback:(s:ContentScope)=>void):DocumentBuilder;
-  section(title:string,callback:(s:ContentScope)=>void):DocumentBuilder;
-  section(titleOrCb:string|((s:ContentScope)=>void),cb?:(s:ContentScope)=>void):DocumentBuilder{
+  section(callback:(s:ContentBuilder)=>void):DocumentBuilder;
+  section(title:string,callback:(s:ContentBuilder)=>void):DocumentBuilder;
+  section(titleOrCb:string|((s:ContentBuilder)=>void),cb?:(s:ContentBuilder)=>void):DocumentBuilder{
     return this.append(s=>{if(typeof titleOrCb==='string')s.section(titleOrCb,cb!);
       else s.section(titleOrCb);});
   }

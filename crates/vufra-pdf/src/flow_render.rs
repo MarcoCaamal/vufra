@@ -46,6 +46,104 @@ enum PreparedBlock {
     },
 }
 
+fn measure_row_budget(
+    row: &crate::PdfRow,
+    total: &mut usize,
+    image_count: &mut usize,
+    image_bytes: &mut usize,
+    depth: usize,
+) -> Result<(), RenderError> {
+    if depth > 8 {
+        return Err(RenderError::InvalidInput("nested layout depth exceeds 8"));
+    }
+    for col in &row.columns {
+        for item in &col.items {
+            match item {
+                super::row::PdfRowItem::RichText { runs, .. } => {
+                    for run in runs {
+                        *total = total
+                            .checked_add(run.text.len())
+                            .ok_or(RenderError::InvalidInput("text too large"))?;
+                    }
+                }
+                super::row::PdfRowItem::Text { text, .. } => {
+                    *total = total
+                        .checked_add(text.len())
+                        .ok_or(RenderError::InvalidInput("text too large"))?;
+                }
+                super::row::PdfRowItem::Box(boxed) => {
+                    measure_box_budget(boxed, total, image_count, image_bytes, depth + 1)?
+                }
+                super::row::PdfRowItem::Image(image) => {
+                    *image_count += 1;
+                    *image_bytes = image_bytes
+                        .checked_add(image.data.len())
+                        .ok_or(RenderError::InvalidInput("too much image data"))?;
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(())
+}
+
+fn measure_box_budget(
+    boxed: &crate::PdfBox,
+    total: &mut usize,
+    image_count: &mut usize,
+    image_bytes: &mut usize,
+    depth: usize,
+) -> Result<(), RenderError> {
+    if depth > 8 || boxed.items.len() > 500 {
+        return Err(RenderError::InvalidInput(
+            "nested boxes exceed depth or item budget",
+        ));
+    }
+    for item in &boxed.items {
+        match item {
+            super::PdfBoxItem::RichText { runs, .. } => {
+                for run in runs {
+                    *total = total
+                        .checked_add(run.text.len())
+                        .ok_or(RenderError::InvalidInput("text too large"))?;
+                }
+            }
+            super::PdfBoxItem::Text { text, .. } => {
+                *total = total
+                    .checked_add(text.len())
+                    .ok_or(RenderError::InvalidInput("text too large"))?;
+            }
+            super::PdfBoxItem::Image(image) => {
+                *image_count += 1;
+                *image_bytes = image_bytes
+                    .checked_add(image.data.len())
+                    .ok_or(RenderError::InvalidInput("too much image data"))?;
+            }
+            super::PdfBoxItem::Row(row) => {
+                measure_row_budget(row, total, image_count, image_bytes, depth + 1)?
+            }
+            super::PdfBoxItem::Table(table) => {
+                for row in std::iter::once(&table.header).chain(&table.rows) {
+                    measure_row_budget(row, total, image_count, image_bytes, depth + 1)?;
+                }
+            }
+            super::PdfBoxItem::Box(child) => {
+                measure_box_budget(child, total, image_count, image_bytes, depth + 1)?
+            }
+            _ => {}
+        }
+    }
+    if *image_count > MAX_IMAGE_BLOCKS
+        || *image_bytes > MAX_TOTAL_IMAGE_BYTES
+        || *total > MAX_TOTAL_TEXT_BYTES
+    {
+        return Err(RenderError::InvalidInput(
+            "nested box exceeds resource budget",
+        ));
+    }
+    Ok(())
+}
+
 fn validate_flow(
     title: &str,
     blocks: &[PdfBlock],
@@ -106,125 +204,11 @@ fn validate_flow(
                 }
             }
             PdfBlock::Box(boxed) => {
-                if boxed.items.len() > 500 {
-                    return Err(RenderError::InvalidInput("too many box items"));
-                }
-                for item in &boxed.items {
-                    match item {
-                        super::PdfBoxItem::RichText { runs, .. } => {
-                            for run in runs {
-                                total = total
-                                    .checked_add(run.text.len())
-                                    .ok_or(RenderError::InvalidInput("text too large"))?;
-                            }
-                        }
-                        super::PdfBoxItem::Text { text, .. } => {
-                            total = total
-                                .checked_add(text.len())
-                                .ok_or(RenderError::InvalidInput("text too large"))?;
-                        }
-                        super::PdfBoxItem::Image(img) => {
-                            image_count += 1;
-                            image_bytes = image_bytes
-                                .checked_add(img.data.len())
-                                .ok_or(RenderError::InvalidInput("too much image data"))?;
-                        }
-                        super::PdfBoxItem::Table(table) => {
-                            for row in std::iter::once(&table.header).chain(&table.rows) {
-                                for column in &row.columns {
-                                    for nested in &column.items {
-                                        match nested {
-                                            super::row::PdfRowItem::RichText { runs, .. } => {
-                                                for run in runs {
-                                                    total = total
-                                                        .checked_add(run.text.len())
-                                                        .ok_or(RenderError::InvalidInput(
-                                                            "text too large",
-                                                        ))?;
-                                                }
-                                            }
-                                            super::row::PdfRowItem::Text { text, .. } => {
-                                                total = total.checked_add(text.len()).ok_or(
-                                                    RenderError::InvalidInput("text too large"),
-                                                )?;
-                                            }
-                                            super::row::PdfRowItem::Image(img) => {
-                                                image_count += 1;
-                                                image_bytes = image_bytes
-                                                    .checked_add(img.data.len())
-                                                    .ok_or(RenderError::InvalidInput(
-                                                        "too much image data",
-                                                    ))?;
-                                            }
-                                            _ => {}
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        super::PdfBoxItem::Row(row) => {
-                            for column in &row.columns {
-                                for nested in &column.items {
-                                    match nested {
-                                        super::row::PdfRowItem::RichText { runs, .. } => {
-                                            for run in runs {
-                                                total = total.checked_add(run.text.len()).ok_or(
-                                                    RenderError::InvalidInput("text too large"),
-                                                )?;
-                                            }
-                                        }
-                                        super::row::PdfRowItem::Text { text, .. } => {
-                                            total = total.checked_add(text.len()).ok_or(
-                                                RenderError::InvalidInput("text too large"),
-                                            )?;
-                                        }
-                                        super::row::PdfRowItem::Image(img) => {
-                                            image_count += 1;
-                                            image_bytes = image_bytes
-                                                .checked_add(img.data.len())
-                                                .ok_or(RenderError::InvalidInput(
-                                                "too much image data",
-                                            ))?;
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                if image_count > MAX_IMAGE_BLOCKS || image_bytes > MAX_TOTAL_IMAGE_BYTES {
-                    return Err(RenderError::InvalidInput("too many images or image bytes"));
-                }
+                measure_box_budget(boxed, &mut total, &mut image_count, &mut image_bytes, 0)?
             }
             PdfBlock::Row(row) => {
                 row.validate_structure(2000.0, 2000.0)?;
-                for col in &row.columns {
-                    for item in &col.items {
-                        match item {
-                            super::row::PdfRowItem::RichText { runs, .. } => {
-                                for run in runs {
-                                    total = total
-                                        .checked_add(run.text.len())
-                                        .ok_or(RenderError::InvalidInput("text too large"))?;
-                                }
-                            }
-                            super::row::PdfRowItem::Text { text, .. } => {
-                                total = total
-                                    .checked_add(text.len())
-                                    .ok_or(RenderError::InvalidInput("text too large"))?;
-                            }
-                            super::row::PdfRowItem::Image(image) => {
-                                image_count += 1;
-                                image_bytes = image_bytes
-                                    .checked_add(image.data.len())
-                                    .ok_or(RenderError::InvalidInput("too much image data"))?;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+                measure_row_budget(row, &mut total, &mut image_count, &mut image_bytes, 0)?;
                 if image_count > MAX_IMAGE_BLOCKS || image_bytes > MAX_TOTAL_IMAGE_BYTES {
                     return Err(RenderError::InvalidInput("too many images or image bytes"));
                 }
