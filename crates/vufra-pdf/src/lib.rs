@@ -114,7 +114,7 @@ impl Error for RenderError {}
 /// Single Rust render entry; the authored SemanticDocument owns its tree.
 /// Cancellation is passed through from NAPI to the same native renderer.
 pub fn render_semantic_pdf(
-    document: &SemanticDocument,
+    document: SemanticDocument,
     font_bytes: &[u8],
     options: RenderOptions,
 ) -> Result<Vec<u8>, RenderError> {
@@ -122,7 +122,7 @@ pub fn render_semantic_pdf(
 }
 
 pub fn render_semantic_pdf_with_cancel(
-    document: &SemanticDocument,
+    document: SemanticDocument,
     font_bytes: &[u8],
     options: RenderOptions,
     cancel: &AtomicBool,
@@ -144,14 +144,21 @@ pub fn render_semantic_pdf_with_cancel(
             "text size or line height outside accepted range",
         ));
     }
+    let SemanticDocument {
+        title,
+        nodes,
+        page,
+        fonts,
+        chrome,
+    } = document;
     flow_render::render_semantic_flow(
-        &document.title,
-        &document.nodes,
+        &title,
+        nodes,
         font_bytes,
         options,
-        document.page.unwrap_or_default(),
-        &document.fonts,
-        document.chrome.as_ref(),
+        page.unwrap_or_default(),
+        &fonts,
+        chrome.as_ref(),
         cancel,
     )
 }
@@ -211,17 +218,16 @@ mod tests {
     fn semantic_input_rejects_invalid_title_font_and_options() {
         let doc = SemanticDocument::new("");
         assert!(matches!(
-            render_semantic_pdf(&doc, &[1], RenderOptions::default()),
+            render_semantic_pdf(doc, &[1], RenderOptions::default()),
             Err(RenderError::InvalidInput(_))
         ));
-        let doc = SemanticDocument::new("Test");
         assert!(matches!(
-            render_semantic_pdf(&doc, &[], RenderOptions::default()),
+            render_semantic_pdf(SemanticDocument::new("Test"), &[], RenderOptions::default()),
             Err(RenderError::InvalidFont)
         ));
         assert!(matches!(
             render_semantic_pdf(
-                &doc,
+                SemanticDocument::new("Test"),
                 &[1],
                 RenderOptions {
                     text_size: f32::NAN,
@@ -236,7 +242,7 @@ mod tests {
         let signal = AtomicBool::new(true);
         let doc = SemanticDocument::new("Cancelable");
         assert!(matches!(
-            render_semantic_pdf_with_cancel(&doc, &[0, 1, 2], RenderOptions::default(), &signal),
+            render_semantic_pdf_with_cancel(doc, &[0, 1, 2], RenderOptions::default(), &signal),
             Err(RenderError::Cancelled)
         ));
     }

@@ -155,3 +155,22 @@ tamaño de buffers y número de imágenes.
 
 **No se entregan promesas de rendimiento** hasta medir workloads
 repetibles. El experimento admite refactors que rompen APIs.
+
+## Perfilado de memoria (Unidad 24)
+
+El motor Rust ahora consume `SemanticDocument` **por valor** al llamar
+a `render_semantic_pdf(document, font_bytes, options)`. El lowering
+del árbol semántico al pintor no duplica los buffers de imágenes anidadas.
+Los snapshots de la cola y de `toDocument()` se conservan.
+
+Para medir el RSS máximo de todo el proceso Node con 450 filas,
+24 imágenes y comprobación de los 450 identificadores:
+
+```bash
+node scripts/benchmark-native-memory.mjs REGULAR.ttf BOLD.ttf 3
+```
+
+Medición local: la mediana de RSS máxima pasó de **150,67 a
+139,91 MiB** (−10,76 MiB, −7,1 %). No mide el allocator Rust aislado
+ni garantiza este porcentaje en otras máquinas o cargas.
+Detalles: [ADR-0025](docs/adr/0025-owned-render-memory-profile.md).

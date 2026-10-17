@@ -80,3 +80,10 @@ La API es experimental. Algunas imágenes, celdas y encabezados
 indivisibles pueden producir un error cuando exceden la página;
 no hay rowspan/colspan, bidi/RTL completo ni SVG. No se incluyen
 fuentes. Detalles de arquitectura y decisiones en los ADR del README raíz.
+
+## Perfilado owned del motor
+
+La API Rust `render_semantic_pdf` recibe el documento owned por valor.
+El AST se consume hacia el pintor sin clonación completa; no existe
+zero-copy universal entre TypeScript, NAPI, Rust y Krilla.
+Benchmark reproducible: `scripts/benchmark-native-memory.mjs`.

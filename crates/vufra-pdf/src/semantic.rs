@@ -568,6 +568,68 @@ mod tests {
         assert_eq!(img.data.as_ptr(), address);
     }
     #[test]
+    fn deep_box_row_and_styled_table_transfer_image_bytes_without_clone() {
+        let make_image = |data: Vec<u8>| {
+            ContentNode::Image(PdfImage {
+                data,
+                width: 30.,
+                height: 30.,
+                fit: crate::ImageFit::Contain,
+            })
+        };
+        let root_bytes = vec![11; 128 * 1024];
+        let row_bytes = vec![22; 64 * 1024];
+        let table_bytes = vec![33; 32 * 1024];
+        let root_address = root_bytes.as_ptr();
+        let row_address = row_bytes.as_ptr();
+        let table_address = table_bytes.as_ptr();
+        let source = ContentNode::boxed(
+            ContentFrame::default(),
+            vec![
+                make_image(root_bytes),
+                ContentNode::row(
+                    0.,
+                    vec![ContentColumn::new(180., vec![make_image(row_bytes)])],
+                ),
+                ContentNode::StyledTable {
+                    header: Box::new(ContentNode::row(
+                        0.,
+                        vec![ContentColumn::new(
+                            180.,
+                            vec![ContentNode::paragraph("Image")],
+                        )],
+                    )),
+                    rows: vec![ContentNode::row(
+                        0.,
+                        vec![ContentColumn::new(180., vec![make_image(table_bytes)])],
+                    )],
+                    fills: vec![vec![None], vec![None]],
+                },
+            ],
+        );
+        let PdfBlock::Box(boxed) = PdfBlock::try_from(source).unwrap() else {
+            panic!("expected native painter box");
+        };
+        let PdfBoxItem::Image(root) = &boxed.items[0] else {
+            panic!("expected nested image");
+        };
+        assert_eq!(root.data.as_ptr(), root_address);
+        let PdfBoxItem::Row(row) = &boxed.items[1] else {
+            panic!("expected row");
+        };
+        let PdfRowItem::Image(row_img) = &row.columns[0].items[0] else {
+            panic!("expected row image");
+        };
+        assert_eq!(row_img.data.as_ptr(), row_address);
+        let PdfBoxItem::Table(table) = &boxed.items[2] else {
+            panic!("expected styled table");
+        };
+        let PdfRowItem::Image(cell_img) = &table.rows[0].columns[0].items[0] else {
+            panic!("expected styled table image");
+        };
+        assert_eq!(cell_img.data.as_ptr(), table_address);
+    }
+    #[test]
     fn canonical_text_works_for_all_rendering_contexts() {
         let style = TextStyle::paragraph();
         let root = PdfBlock::StyledParagraph {

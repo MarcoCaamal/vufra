@@ -674,7 +674,7 @@ pub fn render_pdf_native(
     chrome: Option<NodePageChrome>,
 ) -> napi::Result<Buffer> {
     let doc = parse_document(title, blocks, page, font_faces, chrome)?;
-    vufra_pdf::render_semantic_pdf(&doc, font_data.as_ref(), RenderOptions::default())
+    vufra_pdf::render_semantic_pdf(doc, font_data.as_ref(), RenderOptions::default())
         .map(Buffer::from)
         .map_err(|e| napi::Error::from_reason(e.to_string()))
 }
@@ -715,7 +715,7 @@ pub struct NativePdfResult {
 
 /// Owned input, moved off the JS thread before CPU-heavy layout and rendering.
 pub struct PdfRenderTask {
-    doc: SemanticDocument,
+    doc: Option<SemanticDocument>,
     font_data: Vec<u8>,
     cancelled: Arc<AtomicBool>,
 }
@@ -725,8 +725,12 @@ impl Task for PdfRenderTask {
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
         let started = Instant::now();
+        let doc = self
+            .doc
+            .take()
+            .ok_or_else(|| napi::Error::from_reason("native render task already consumed"))?;
         let bytes = vufra_pdf::render_semantic_pdf_with_cancel(
-            &self.doc,
+            doc,
             &self.font_data,
             RenderOptions::default(),
             &self.cancelled,
@@ -756,7 +760,7 @@ pub fn render_pdf_async_native(
 ) -> napi::Result<AsyncTask<PdfRenderTask>> {
     let doc = parse_document(title, blocks, page, font_faces, chrome)?;
     Ok(AsyncTask::new(PdfRenderTask {
-        doc,
+        doc: Some(doc),
         font_data: font_data.to_vec(),
         cancelled: token.map_or_else(|| Arc::new(AtomicBool::new(false)), |t| t.cancelled.clone()),
     }))

@@ -50,12 +50,11 @@ enum PreparedBlock {
     },
 }
 
-fn validate_flow(
+fn validate_semantic_input(
     title: &str,
-    blocks: &[PdfBlock],
+    canonical: &[ContentNode],
     font: &[u8],
     chrome: Option<&PdfPageChrome>,
-    canonical: &[ContentNode],
 ) -> Result<(), RenderError> {
     if title.trim().is_empty() || title.contains('\0') {
         return Err(RenderError::InvalidInput(
@@ -65,48 +64,15 @@ fn validate_flow(
     if font.is_empty() || font.len() > MAX_FONT_BYTES {
         return Err(RenderError::InvalidFont);
     }
-    if blocks.len() > 2_000 {
+    if canonical.len() > 2_000 {
         return Err(RenderError::InvalidInput("too many content blocks"));
     }
     let mut budget = SemanticBudget {
         text_bytes: title.len(),
         ..SemanticBudget::default()
     };
-    for (block, node) in blocks.iter().zip(canonical) {
+    for node in canonical {
         budget.visit(node, 0)?;
-        match block {
-            PdfBlock::Paragraph(_)
-            | PdfBlock::Heading { .. }
-            | PdfBlock::StyledParagraph { .. } => {}
-            PdfBlock::RichParagraph { runs, .. } => {
-                if runs.is_empty() || runs.len() > 1_000 {
-                    return Err(RenderError::InvalidInput(
-                        "rich paragraph requires 1..1000 runs",
-                    ));
-                }
-            }
-            PdfBlock::List { items, .. } => {
-                if items.is_empty()
-                    || items.len() > 1_000
-                    || items
-                        .iter()
-                        .any(|s| s.trim().is_empty() || s.contains('\0'))
-                {
-                    return Err(RenderError::InvalidInput(
-                        "list requires 1..1000 nonempty items",
-                    ));
-                }
-                // Canonical semantic traversal already counts list item bytes.
-            }
-            PdfBlock::Box(_) => {}
-            PdfBlock::Row(row) => row.validate_structure(2000.0, 2000.0)?,
-            PdfBlock::Graphic(_) | PdfBlock::PageBreak | PdfBlock::Image(_) => {}
-            PdfBlock::Spacer { height } => {
-                if !height.is_finite() || *height <= 0.0 {
-                    return Err(RenderError::InvalidInput("invalid spacer height"));
-                }
-            }
-        }
         if budget.text_bytes > MAX_TOTAL_TEXT_BYTES {
             return Err(RenderError::InvalidInput("too many rows or too much text"));
         }
@@ -139,12 +105,41 @@ fn validate_flow(
     Ok(())
 }
 
+fn validate_writer_blocks(blocks: &[PdfBlock]) -> Result<(), RenderError> {
+    for block in blocks {
+        match block {
+            PdfBlock::RichParagraph { runs, .. } if runs.is_empty() || runs.len() > 1_000 => {
+                return Err(RenderError::InvalidInput(
+                    "rich paragraph requires 1..1000 runs",
+                ));
+            }
+            PdfBlock::List { items, .. }
+                if items.is_empty()
+                    || items.len() > 1_000
+                    || items
+                        .iter()
+                        .any(|s| s.trim().is_empty() || s.contains('\0')) =>
+            {
+                return Err(RenderError::InvalidInput(
+                    "list requires 1..1000 nonempty items",
+                ));
+            }
+            PdfBlock::Row(row) => row.validate_structure(2000.0, 2000.0)?,
+            PdfBlock::Spacer { height } if !height.is_finite() || *height <= 0.0 => {
+                return Err(RenderError::InvalidInput("invalid spacer height"));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 /// The owned semantic nodes are the single input of preparation. Writer
 /// adapters are instantiated only after the canonical tree passes preflight.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn render_semantic_flow(
     title: &str,
-    canonical: &[ContentNode],
+    canonical: Vec<ContentNode>,
     font_bytes: &[u8],
     options: RenderOptions,
     geometry: PageGeometry,
@@ -154,12 +149,14 @@ pub(crate) fn render_semantic_flow(
 ) -> Result<Vec<u8>, RenderError> {
     check_cancel(cancel)?;
     geometry.validate()?;
+    // Preflight the canonical tree before consuming it. This keeps one
+    // ownership path from NAPI to the painter without cloning image buffers.
+    validate_semantic_input(title, &canonical, font_bytes, chrome)?;
     let writer = canonical
-        .iter()
-        .cloned()
+        .into_iter()
         .map(PdfBlock::try_from)
         .collect::<Result<Vec<_>, _>>()?;
-    validate_flow(title, &writer, font_bytes, chrome, canonical)?;
+    validate_writer_blocks(&writer)?;
     render_writer_flow(
         title,
         &writer,
