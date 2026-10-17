@@ -63,6 +63,7 @@ pub struct NodeFontFace {
 #[napi(object)]
 pub struct NodeRowItem {
     pub kind: String,
+    pub runs: Option<Vec<NodeRichRun>>,
     pub text: Option<String>,
     pub style: Option<NodeTextStyle>,
     pub height: Option<f64>,
@@ -83,6 +84,7 @@ pub struct NodeRow {
 #[napi(object)]
 pub struct NodeBoxItem {
     pub kind: String,
+    pub runs: Option<Vec<NodeRichRun>>,
     pub text: Option<String>,
     pub style: Option<NodeTextStyle>,
     pub color: Option<String>,
@@ -99,6 +101,9 @@ pub struct NodeBox {
     pub border_width: f64,
     pub border_color: Option<String>,
     pub background: Option<String>,
+    pub keep_together: Option<bool>,
+    pub break_before: Option<bool>,
+    pub keep_with_next: Option<bool>,
     pub items: Vec<NodeBoxItem>,
 }
 #[napi(object)]
@@ -195,6 +200,19 @@ fn optional_rgb(input: Option<String>) -> napi::Result<Option<[u8; 3]>> {
         })
         .transpose()
 }
+fn to_runs(runs: Vec<NodeRichRun>) -> napi::Result<Vec<PdfTextRun>> {
+    runs.into_iter()
+        .map(|r| {
+            Ok(PdfTextRun {
+                text: r.text,
+                font: r.font,
+                font_size: r.font_size.map(|v| v as f32),
+                color: optional_rgb(r.color)?,
+                fallback_fonts: r.fallback_fonts.unwrap_or_default(),
+            })
+        })
+        .collect()
+}
 fn to_box(input: NodeBox) -> napi::Result<PdfBox> {
     let align = match input.align.as_str() {
         "left" => BoxAlign::Left,
@@ -219,6 +237,16 @@ fn to_box(input: NodeBox) -> napi::Result<PdfBox> {
                     .ok_or_else(|| napi::Error::from_reason("box text style required"))?
                     .into(),
                 color: optional_rgb(item.color)?,
+            }),
+            "rich" => Ok(PdfBoxItem::RichText {
+                runs: to_runs(
+                    item.runs
+                        .ok_or_else(|| napi::Error::from_reason("box rich runs required"))?,
+                )?,
+                style: item
+                    .style
+                    .ok_or_else(|| napi::Error::from_reason("box rich style required"))?
+                    .into(),
             }),
             "image" => Ok(PdfBoxItem::Image(to_image(
                 item.image
@@ -248,6 +276,9 @@ fn to_box(input: NodeBox) -> napi::Result<PdfBox> {
         border_width: input.border_width as f32,
         border_color: optional_rgb(input.border_color)?,
         background: optional_rgb(input.background)?,
+        keep_together: input.keep_together.unwrap_or(false),
+        break_before: input.break_before.unwrap_or(false),
+        keep_with_next: input.keep_with_next.unwrap_or(false),
         items,
     })
 }
@@ -269,6 +300,17 @@ fn to_row(input: NodeRow) -> napi::Result<PdfRow> {
                             .ok_or_else(|| napi::Error::from_reason("row text style is required"))?
                             .into(),
                     }),
+                    "rich" => {
+                        Ok(PdfRowItem::RichText {
+                            runs: to_runs(item.runs.ok_or_else(|| {
+                                napi::Error::from_reason("row rich runs required")
+                            })?)?,
+                            style: item
+                                .style
+                                .ok_or_else(|| napi::Error::from_reason("row rich style required"))?
+                                .into(),
+                        })
+                    }
                     "image" => Ok(PdfRowItem::Image(to_image(
                         item.image
                             .ok_or_else(|| napi::Error::from_reason("row image is required"))?,

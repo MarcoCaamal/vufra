@@ -1,7 +1,10 @@
 //! Side-by-side row with text/image/graphics in independently measured columns.
 //! Unit 14: deliberately atomic across pages, unlike paginated main-flow tables.
 use crate::image::PreparedImage;
-use crate::{PdfGraphic, PdfImage, RenderError, TextStyle, check_cancel, measure_text_lines};
+use crate::rich_text::{FontRegistry, RichLine, prepare_rich};
+use crate::{
+    PdfGraphic, PdfImage, PdfTextRun, RenderError, TextStyle, check_cancel, measure_text_lines,
+};
 use krilla::{
     geom::Point,
     surface::Surface,
@@ -13,7 +16,14 @@ use std::sync::atomic::AtomicBool;
 
 #[derive(Debug, Clone)]
 pub enum PdfRowItem {
-    Text { text: String, style: TextStyle },
+    Text {
+        text: String,
+        style: TextStyle,
+    },
+    RichText {
+        runs: Vec<PdfTextRun>,
+        style: TextStyle,
+    },
     Image(PdfImage),
     Graphic(PdfGraphic),
     Spacer(f32),
@@ -34,6 +44,12 @@ enum PreparedItemKind {
         lines: Vec<String>,
         offsets: Vec<f32>,
         style: TextStyle,
+    },
+    Rich {
+        lines: Vec<RichLine>,
+        style: TextStyle,
+        line_height: f32,
+        offsets: Vec<f32>,
     },
     Image(PreparedImage),
     Graphic,
@@ -86,6 +102,12 @@ impl PdfRow {
                         }
                         style.validate(page_height)?;
                     }
+                    PdfRowItem::RichText { runs, style } => {
+                        style.validate(page_height)?;
+                        if runs.is_empty() || runs.len() > 1_000 {
+                            return Err(RenderError::InvalidInput("invalid row rich text runs"));
+                        }
+                    }
                     PdfRowItem::Image(img) => img.validate_box(col.width, page_height)?,
                     PdfRowItem::Graphic(g) => g.validate(col.width, page_height)?,
                     PdfRowItem::Spacer(h) if !h.is_finite() || *h <= 0.0 || *h > page_height => {
@@ -104,13 +126,14 @@ impl PdfRow {
     }
     pub fn prepare(
         &self,
-        printable_width: f32,
-        printable_height: f32,
+        printable_area: (f32, f32),
         family: &str,
         fonts: &mut FontContext,
         context: &mut LayoutContext<()>,
+        registry: &mut FontRegistry,
         cancel: &AtomicBool,
     ) -> Result<PreparedRow, RenderError> {
+        let (printable_width, printable_height) = printable_area;
         self.validate_structure(printable_width, printable_height)?;
         let mut result = Vec::new();
         let mut x = 0.0;
@@ -153,6 +176,36 @@ impl PdfRow {
                                 lines,
                                 offsets,
                                 style: *style,
+                            },
+                        )
+                    }
+                    PdfRowItem::RichText { runs, style } => {
+                        let lines = prepare_rich(runs, *style, col.width, registry, cancel)?;
+                        let largest = runs
+                            .iter()
+                            .map(|r| r.font_size.unwrap_or(style.font_size))
+                            .fold(style.font_size, f32::max);
+                        let line_height = style.line_height.max(largest * 1.35);
+                        let offsets = if col.right_align {
+                            lines
+                                .iter()
+                                .map(|line| {
+                                    registry.line_width(line).map(|w| (col.width - w).max(0.0))
+                                })
+                                .collect::<Result<Vec<_>, _>>()?
+                        } else {
+                            vec![0.0; lines.len()]
+                        };
+                        let h = style.space_before
+                            + lines.len() as f32 * line_height
+                            + style.space_after;
+                        (
+                            h,
+                            PreparedItemKind::Rich {
+                                lines,
+                                style: *style,
+                                line_height,
+                                offsets,
                             },
                         )
                     }
@@ -199,10 +252,11 @@ impl PreparedRow {
         row: &PdfRow,
         surface: &mut Surface,
         font: &Font,
-        left: f32,
-        top: f32,
+        registry: &FontRegistry,
+        origin: (f32, f32),
         cancel: &AtomicBool,
     ) -> Result<(), RenderError> {
+        let (left, top) = origin;
         for (col_idx, col) in self.columns.iter().enumerate() {
             for (item_idx, item) in col.items.iter().enumerate() {
                 check_cancel(cancel)?;
@@ -232,6 +286,38 @@ impl PreparedRow {
                                 false,
                                 TextDirection::Auto,
                             );
+                        }
+                    }
+                    PreparedItemKind::Rich {
+                        lines,
+                        style,
+                        line_height,
+                        offsets,
+                    } => {
+                        for (i, line) in lines.iter().enumerate() {
+                            let baseline =
+                                position_y + style.space_before + (i as f32 + 0.8) * line_height;
+                            for run in line {
+                                let old_fill = surface.get_fill().cloned();
+                                if let Some(c) = run.color {
+                                    use krilla::{color::rgb, paint::Fill};
+                                    surface.set_fill(Some(Fill {
+                                        paint: rgb::Color::new(c[0], c[1], c[2]).into(),
+                                        ..Fill::default()
+                                    }));
+                                } else {
+                                    surface.set_fill(None);
+                                }
+                                surface.draw_text(
+                                    Point::from_xy(left + col.x + offsets[i] + run.x, baseline),
+                                    registry.font(run.font_index),
+                                    run.font_size,
+                                    &run.text,
+                                    false,
+                                    TextDirection::Auto,
+                                );
+                                surface.set_fill(old_fill);
+                            }
                         }
                     }
                     PreparedItemKind::Image(prepared) => {

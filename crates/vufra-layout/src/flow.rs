@@ -13,6 +13,8 @@ pub enum FlowBlock {
     Box {
         item_heights: Vec<f32>,
         padding: f32,
+        keep_together: bool,
+        break_before: bool,
     },
     Graphic {
         height: f32,
@@ -90,7 +92,7 @@ pub fn paginate_flow(
 
 /// Moves a short text block and the beginning of the next block together when
 /// there is enough space on a fresh page. Flags address block indices; only
-/// Paragraph blocks may be flagged. Oversized groups degrade to normal flow.
+/// Paragraph and Box blocks may be flagged. Oversized groups degrade to normal flow.
 pub fn paginate_flow_with_keep(
     blocks: &[FlowBlock],
     keep_with_next: &[bool],
@@ -108,22 +110,27 @@ pub fn paginate_flow_with_keep(
     }];
     for (block, item) in blocks.iter().enumerate() {
         if keep_with_next[block] {
-            let FlowBlock::Paragraph {
-                lines,
-                line_height,
-                padding_before,
-                spacing_after,
-            } = item
-            else {
-                return Err(PaginationError::InvalidHeight);
+            let own_height = match item {
+                FlowBlock::Paragraph {
+                    lines,
+                    line_height,
+                    padding_before,
+                    spacing_after,
+                } => *lines as f32 * line_height + padding_before + spacing_after,
+                FlowBlock::Box {
+                    item_heights,
+                    padding,
+                    ..
+                } => item_heights.iter().sum::<f32>() + 2.0 * padding,
+                _ => return Err(PaginationError::InvalidHeight),
             };
             if let Some(next) = blocks.get(block + 1) {
-                let own_height = *lines as f32 * line_height + padding_before + spacing_after;
                 let next_height = match next {
                     FlowBlock::PageBreak => page_height,
                     FlowBlock::Box {
                         item_heights,
                         padding,
+                        ..
                     } => item_heights.first().copied().unwrap_or(0.0) + 2.0 * padding,
                     FlowBlock::Image { height }
                     | FlowBlock::Graphic { height }
@@ -160,7 +167,15 @@ pub fn paginate_flow_with_keep(
             FlowBlock::Box {
                 item_heights,
                 padding,
+                keep_together,
+                break_before,
             } => {
+                if *break_before && pages.last().is_some_and(|p| !p.fragments.is_empty()) {
+                    pages.push(FlowPage {
+                        fragments: Vec::new(),
+                        used_height: 0.0,
+                    });
+                }
                 if item_heights.is_empty()
                     || item_heights.len() > 10_000
                     || !padding.is_finite()
@@ -174,6 +189,9 @@ pub fn paginate_flow_with_keep(
                 }
                 let sum = item_heights.iter().sum::<f32>() + 2.0 * padding;
                 if !sum.is_finite() {
+                    return Err(PaginationError::InvalidHeight);
+                }
+                if *keep_together && sum > page_height + EPS {
                     return Err(PaginationError::InvalidHeight);
                 }
                 let mut cursor = 0;
@@ -470,6 +488,110 @@ mod tests {
         }
     }
     #[test]
+    fn box_page_policies_are_explicit_and_preserve_order() {
+        let boxed = |keep_together, break_before| FlowBlock::Box {
+            item_heights: vec![21.0, 21.0],
+            padding: 5.0,
+            keep_together,
+            break_before,
+        };
+        let breaks = paginate_flow(&[para(2), boxed(false, true), para(2)], 100.0).unwrap();
+        assert_eq!(breaks.len(), 2);
+        assert!(
+            breaks[0]
+                .fragments
+                .iter()
+                .all(|f| !matches!(f, FlowFragment::Box { .. }))
+        );
+        assert!(matches!(
+            breaks[1].fragments[0],
+            FlowFragment::Box {
+                block: 1,
+                first: true,
+                last: true,
+                ..
+            }
+        ));
+        let too_tall = FlowBlock::Box {
+            item_heights: vec![45.0, 45.0, 45.0],
+            padding: 5.0,
+            keep_together: true,
+            break_before: false,
+        };
+        assert!(paginate_flow(std::slice::from_ref(&too_tall), 100.0).is_err());
+        let FlowBlock::Box {
+            item_heights,
+            padding,
+            ..
+        } = too_tall
+        else {
+            unreachable!()
+        };
+        let splittable = FlowBlock::Box {
+            item_heights,
+            padding,
+            keep_together: false,
+            break_before: false,
+        };
+        let normal = paginate_flow(&[splittable], 100.0).unwrap();
+        assert_eq!(normal.len(), 2);
+        let ordered = normal
+            .iter()
+            .flat_map(|p| p.fragments.iter())
+            .flat_map(|f| {
+                if let FlowFragment::Box {
+                    start_item,
+                    end_item,
+                    ..
+                } = f
+                {
+                    (*start_item..*end_item).collect::<Vec<_>>()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ordered, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn boxed_keep_with_next_moves_pair_only_when_possible() {
+        let blocks = vec![
+            para(6),
+            FlowBlock::Box {
+                item_heights: vec![20.0],
+                padding: 5.0,
+                keep_together: true,
+                break_before: false,
+            },
+            para(2),
+        ];
+        let with_keep = paginate_flow_with_keep(&blocks, &[false, true, false], 100.0).unwrap();
+        assert_eq!(with_keep.len(), 2);
+        assert!(
+            with_keep[0]
+                .fragments
+                .iter()
+                .all(|f| !matches!(f, FlowFragment::Box { .. }))
+        );
+        assert!(matches!(
+            with_keep[1].fragments[0],
+            FlowFragment::Box { block: 1, .. }
+        ));
+        assert!(matches!(
+            with_keep[1].fragments[1],
+            FlowFragment::Paragraph { block: 2, .. }
+        ));
+        let without_keep = paginate_flow(&blocks, 100.0).unwrap();
+        assert!(
+            without_keep[0]
+                .fragments
+                .iter()
+                .any(|f| matches!(f, FlowFragment::Box { block: 1, .. }))
+        );
+    }
+
+    #[test]
     fn long_box_fragments_without_missing_items_and_edges_only_at_ends() {
         let items = vec![14.0; 70];
         let blocks = vec![
@@ -482,6 +604,8 @@ mod tests {
             FlowBlock::Box {
                 item_heights: items.clone(),
                 padding: 9.0,
+                keep_together: false,
+                break_before: false,
             },
             FlowBlock::Paragraph {
                 lines: 1,
@@ -538,6 +662,8 @@ mod tests {
             FlowBlock::Box {
                 item_heights: vec![24.0, 24.0],
                 padding: 12.0,
+                keep_together: false,
+                break_before: false,
             },
         ];
         let pages = paginate_flow(&blocks, 110.0).unwrap();
@@ -554,7 +680,9 @@ mod tests {
             paginate_flow(
                 &[FlowBlock::Box {
                     item_heights: vec![105.0],
-                    padding: 5.0
+                    padding: 5.0,
+                    keep_together: false,
+                    break_before: false,
                 }],
                 110.0
             )

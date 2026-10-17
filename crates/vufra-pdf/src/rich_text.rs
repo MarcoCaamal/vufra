@@ -152,6 +152,13 @@ impl FontRegistry {
     pub fn font(&self, index: usize) -> Font {
         self.slots[index].font.clone()
     }
+    pub(crate) fn line_width(&mut self, line: &RichLine) -> Result<f32, RenderError> {
+        let mut width = 0.0_f32;
+        for run in line {
+            width = width.max(run.x + self.measure(run.font_index, &run.text, run.font_size)?);
+        }
+        Ok(width)
+    }
     fn measure(&mut self, index: usize, text: &str, size: f32) -> Result<f32, RenderError> {
         let face = &mut self.slots[index];
         let mut context: LayoutContext<()> = LayoutContext::new();

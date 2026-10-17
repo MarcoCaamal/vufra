@@ -1,9 +1,11 @@
 //! Paginated decorated containers: stacked content, caller-defined padding,
 //! RGB fills and borders. Long text is split into line-height fragments.
 use crate::image::PreparedImage;
+use crate::rich_text::{FontRegistry, RichLine, prepare_rich};
 use crate::row::PreparedRow;
 use crate::{
-    PdfGraphic, PdfImage, PdfRow, RenderError, TextStyle, check_cancel, measure_text_lines,
+    PdfGraphic, PdfImage, PdfRow, PdfTextRun, RenderError, TextStyle, check_cancel,
+    measure_text_lines,
 };
 use krilla::{
     geom::Point,
@@ -26,6 +28,10 @@ pub enum PdfBoxItem {
         style: TextStyle,
         color: Option<[u8; 3]>,
     },
+    RichText {
+        runs: Vec<PdfTextRun>,
+        style: TextStyle,
+    },
     Image(PdfImage),
     Graphic(PdfGraphic),
     Row(PdfRow),
@@ -39,6 +45,9 @@ pub struct PdfBox {
     pub border_width: f32,
     pub border_color: Option<[u8; 3]>,
     pub background: Option<[u8; 3]>,
+    pub keep_together: bool,
+    pub break_before: bool,
+    pub keep_with_next: bool,
     pub items: Vec<PdfBoxItem>,
 }
 enum PreparedContent {
@@ -46,6 +55,11 @@ enum PreparedContent {
         text: String,
         size: f32,
         color: Option<[u8; 3]>,
+        before: f32,
+        line_height: f32,
+    },
+    Rich {
+        line: RichLine,
         before: f32,
         line_height: f32,
     },
@@ -98,6 +112,12 @@ impl PdfBox {
                     }
                     style.validate(page_height - 2.0 * self.padding)?;
                 }
+                PdfBoxItem::RichText { runs, style } => {
+                    style.validate(page_height - 2.0 * self.padding)?;
+                    if runs.is_empty() || runs.len() > 1_000 {
+                        return Err(RenderError::InvalidInput("invalid box rich text runs"));
+                    }
+                }
                 PdfBoxItem::Image(image) => {
                     image.validate_box(w - 2.0 * self.padding, page_height - 2.0 * self.padding)?
                 }
@@ -119,13 +139,14 @@ impl PdfBox {
     }
     pub fn prepare(
         &self,
-        page_width: f32,
-        page_height: f32,
+        page: (f32, f32),
         family: &str,
         fonts: &mut FontContext,
         context: &mut LayoutContext<()>,
+        registry: &mut FontRegistry,
         cancel: &AtomicBool,
     ) -> Result<PreparedBox, RenderError> {
+        let (page_width, page_height) = page;
         self.validate(page_width, page_height)?;
         let width = self.width.unwrap_or(page_width);
         let inner = width - 2.0 * self.padding;
@@ -173,6 +194,35 @@ impl PdfBox {
                         });
                     }
                 }
+                PdfBoxItem::RichText { runs, style } => {
+                    let lines = prepare_rich(runs, *style, inner, registry, cancel)?;
+                    let largest = runs
+                        .iter()
+                        .map(|r| r.font_size.unwrap_or(style.font_size))
+                        .fold(style.font_size, f32::max);
+                    let line_height = style.line_height.max(largest * 1.35);
+                    let len = lines.len();
+                    for (line_idx, line) in lines.into_iter().enumerate() {
+                        let before = if line_idx == 0 {
+                            style.space_before
+                        } else {
+                            0.0
+                        };
+                        let after = if line_idx + 1 == len {
+                            style.space_after
+                        } else {
+                            0.0
+                        };
+                        items.push(PreparedItem {
+                            height: before + line_height + after,
+                            kind: PreparedContent::Rich {
+                                line,
+                                before,
+                                line_height,
+                            },
+                        });
+                    }
+                }
                 PdfBoxItem::Image(img) => {
                     let prepared = img.prepare()?;
                     pixels = pixels.saturating_add(prepared.pixel_count());
@@ -187,11 +237,11 @@ impl PdfBox {
                 }),
                 PdfBoxItem::Row(r) => {
                     let prepared = r.prepare(
-                        inner,
-                        page_height - 2.0 * self.padding,
+                        (inner, page_height - 2.0 * self.padding),
                         family,
                         fonts,
                         context,
+                        registry,
                         cancel,
                     )?;
                     pixels = pixels.saturating_add(prepared.image_pixels);
@@ -257,6 +307,7 @@ impl PreparedBox {
         source: &PdfBox,
         surface: &mut Surface,
         font: &Font,
+        registry: &FontRegistry,
         pos: BoxFragmentPosition,
         cancel: &AtomicBool,
     ) -> Result<(), RenderError> {
@@ -317,6 +368,34 @@ impl PreparedBox {
                         surface.set_fill(old_fill);
                     }
                 }
+                PreparedContent::Rich {
+                    line,
+                    before,
+                    line_height,
+                } => {
+                    let baseline = y + before + line_height * 0.8;
+                    for run in line {
+                        let old_fill = surface.get_fill().cloned();
+                        if let Some(c) = run.color {
+                            use krilla::{color::rgb, paint::Fill};
+                            surface.set_fill(Some(Fill {
+                                paint: rgb::Color::new(c[0], c[1], c[2]).into(),
+                                ..Fill::default()
+                            }));
+                        } else {
+                            surface.set_fill(None);
+                        }
+                        surface.draw_text(
+                            Point::from_xy(x + self.padding + run.x, baseline),
+                            registry.font(run.font_index),
+                            run.font_size,
+                            &run.text,
+                            false,
+                            TextDirection::Auto,
+                        );
+                        surface.set_fill(old_fill);
+                    }
+                }
                 PreparedContent::Image(prepared, index) => {
                     if let PdfBoxItem::Image(img) = &source.items[*index] {
                         prepared.draw(surface, img, x + self.padding, y)?;
@@ -329,7 +408,7 @@ impl PreparedBox {
                 }
                 PreparedContent::Row(prepared, index) => {
                     if let PdfBoxItem::Row(r) = &source.items[*index] {
-                        prepared.draw(r, surface, font, x + self.padding, y, cancel)?;
+                        prepared.draw(r, surface, font, registry, (x + self.padding, y), cancel)?;
                     }
                 }
                 PreparedContent::Spacer => {}
@@ -350,6 +429,9 @@ mod tests {
             border_width: 2.0,
             border_color: Some([12, 45, 200]),
             background: Some([240, 250, 255]),
+            keep_together: false,
+            break_before: false,
+            keep_with_next: false,
             items: vec![PdfBoxItem::Text {
                 text: "Example".into(),
                 style: TextStyle::paragraph(),

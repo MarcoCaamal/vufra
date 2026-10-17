@@ -106,6 +106,13 @@ fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), Re
                 }
                 for item in &boxed.items {
                     match item {
+                        super::PdfBoxItem::RichText { runs, .. } => {
+                            for run in runs {
+                                total = total
+                                    .checked_add(run.text.len())
+                                    .ok_or(RenderError::InvalidInput("text too large"))?;
+                            }
+                        }
                         super::PdfBoxItem::Text { text, .. } => {
                             total = total
                                 .checked_add(text.len())
@@ -121,6 +128,13 @@ fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), Re
                             for column in &row.columns {
                                 for nested in &column.items {
                                     match nested {
+                                        super::row::PdfRowItem::RichText { runs, .. } => {
+                                            for run in runs {
+                                                total = total.checked_add(run.text.len()).ok_or(
+                                                    RenderError::InvalidInput("text too large"),
+                                                )?;
+                                            }
+                                        }
                                         super::row::PdfRowItem::Text { text, .. } => {
                                             total = total.checked_add(text.len()).ok_or(
                                                 RenderError::InvalidInput("text too large"),
@@ -151,6 +165,13 @@ fn validate_flow(title: &str, blocks: &[PdfBlock], font: &[u8]) -> Result<(), Re
                 for col in &row.columns {
                     for item in &col.items {
                         match item {
+                            super::row::PdfRowItem::RichText { runs, .. } => {
+                                for run in runs {
+                                    total = total
+                                        .checked_add(run.text.len())
+                                        .ok_or(RenderError::InvalidInput("text too large"))?;
+                                }
+                            }
                             super::row::PdfRowItem::Text { text, .. } => {
                                 total = total
                                     .checked_add(text.len())
@@ -253,10 +274,12 @@ pub(super) fn render_flow(
 
     // Do not allocate duplicate font contexts for documents without rich text.
     let mut font_registry = if !extra_fonts.is_empty()
-        || blocks
-            .iter()
-            .any(|b| matches!(b, PdfBlock::RichParagraph { .. }))
-    {
+        || blocks.iter().any(|b| {
+            matches!(
+                b,
+                PdfBlock::RichParagraph { .. } | PdfBlock::Box(_) | PdfBlock::Row(_)
+            )
+        }) {
         Some(FontRegistry::new(font_bytes, extra_fonts)?)
     } else {
         None
@@ -269,11 +292,13 @@ pub(super) fn render_flow(
         match block {
             PdfBlock::Box(boxed) => {
                 let prepared_box = boxed.prepare(
-                    geometry.content_width(),
-                    geometry.content_height(),
+                    (geometry.content_width(), geometry.content_height()),
                     &family,
                     &mut fonts,
                     &mut context,
+                    font_registry
+                        .as_mut()
+                        .expect("nested content has font registry"),
                     cancel,
                 )?;
                 total_image_pixels = total_image_pixels.saturating_add(prepared_box.image_pixels);
@@ -285,6 +310,8 @@ pub(super) fn render_flow(
                 measurements.push(FlowBlock::Box {
                     item_heights: prepared_box.item_heights.clone(),
                     padding: boxed.padding,
+                    keep_together: boxed.keep_together,
+                    break_before: boxed.break_before,
                 });
                 prepared.push(PreparedBlock::Box(prepared_box));
             }
@@ -390,11 +417,13 @@ pub(super) fn render_flow(
             }
             PdfBlock::Row(row) => {
                 let prepared_row = row.prepare(
-                    geometry.content_width(),
-                    geometry.content_height(),
+                    (geometry.content_width(), geometry.content_height()),
                     &family,
                     &mut fonts,
                     &mut context,
+                    font_registry
+                        .as_mut()
+                        .expect("nested content has font registry"),
                     cancel,
                 )?;
                 total_image_pixels = total_image_pixels.saturating_add(prepared_row.image_pixels);
@@ -466,7 +495,10 @@ pub(super) fn render_flow(
                 } | PdfBlock::RichParagraph {
                     keep_with_next: true,
                     ..
-                }
+                } | PdfBlock::Box(super::PdfBox {
+                    keep_with_next: true,
+                    ..
+                })
             )
         })
         .collect::<Vec<_>>();
@@ -523,6 +555,9 @@ pub(super) fn render_flow(
                             source,
                             &mut surface,
                             &font,
+                            font_registry
+                                .as_ref()
+                                .expect("nested content has font registry"),
                             super::box_layout::BoxFragmentPosition {
                                 left,
                                 top: y,
@@ -540,7 +575,16 @@ pub(super) fn render_flow(
                 FlowFragment::Graphic { block, height } => {
                     match (&prepared[*block], &blocks[*block]) {
                         (PreparedBlock::Row(prepared_row), PdfBlock::Row(row)) => {
-                            prepared_row.draw(row, &mut surface, &font, left, y, cancel)?;
+                            prepared_row.draw(
+                                row,
+                                &mut surface,
+                                &font,
+                                font_registry
+                                    .as_ref()
+                                    .expect("nested content has font registry"),
+                                (left, y),
+                                cancel,
+                            )?;
                         }
                         (_, PdfBlock::Graphic(graphic)) => graphic.draw(&mut surface, left, y)?,
                         _ => {}
