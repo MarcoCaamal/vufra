@@ -101,3 +101,23 @@ test('async task owns original inputs after enqueue', async () => {
   assert.ok(output.text.includes('THIS STAYS ORIGINAL'));
   assert.ok(!output.text.includes('THIS WAS CHANGED'));
 });
+
+test('native async snapshots regular font, additional bold face and PNG against caller mutation',async()=>{
+  const regular=Buffer.from(font);
+  const boldBytes=readFileSync(execFileSync('fc-match',
+    ['Noto Sans:style=Bold','-f','%{file}\\n'],{encoding:'utf8'}).trim());
+  const png=readFileSync(new URL('./fixtures/two-tone.png',import.meta.url));
+  const engine=createVufra({font:regular,fonts:{bold:boldBytes}});
+  const doc=engine.document({title:'Immutable binary snapshot'})
+    .paragraph('SAFE_BINARY_SNAPSHOT',{bold:true})
+    .image(png,{width:60,height:35}).toDocument();
+  const baseline=renderPdf(doc,regular);
+  const task=renderPdfAsync(doc,regular);
+  regular.fill(0);
+  doc.fontFaces.bold.fill(0);
+  doc.blocks.find(block=>block.type==='image').data.fill(0);
+  const output=Buffer.from(await task);
+  assert.deepEqual(output,Buffer.from(baseline),
+    'queued native job must own regular font, rich bold face and image payload');
+  assert.match(inspect(output).text,/SAFE_BINARY_SNAPSHOT/);
+});

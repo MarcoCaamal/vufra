@@ -674,7 +674,7 @@ pub fn render_pdf_native(
     chrome: Option<NodePageChrome>,
 ) -> napi::Result<Buffer> {
     let doc = parse_document(title, blocks, page, font_faces, chrome)?;
-    vufra_pdf::render_semantic_pdf(doc, font_data.as_ref(), RenderOptions::default())
+    vufra_pdf::render_semantic_pdf(doc, font_data.to_vec(), RenderOptions::default())
         .map(Buffer::from)
         .map_err(|e| napi::Error::from_reason(e.to_string()))
 }
@@ -731,7 +731,7 @@ impl Task for PdfRenderTask {
             .ok_or_else(|| napi::Error::from_reason("native render task already consumed"))?;
         let bytes = vufra_pdf::render_semantic_pdf_with_cancel(
             doc,
-            &self.font_data,
+            std::mem::take(&mut self.font_data),
             RenderOptions::default(),
             &self.cancelled,
         )

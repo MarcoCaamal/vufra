@@ -117,7 +117,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     });
     doc.nodes
         .push(ContentNode::paragraph("CANONICAL_END_MARKER"));
-    let pdf = render_semantic_pdf(doc, &font, RenderOptions::default())?;
+    let pdf = render_semantic_pdf(doc, font, RenderOptions::default())?;
     if let Some(parent) = output.parent() {
         fs::create_dir_all(parent)?;
     }

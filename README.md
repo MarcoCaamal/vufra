@@ -226,3 +226,25 @@ de velocidad en todos los PDF.
 
 La Fluent API y la protección de presupuestos siguen intactas.
 Ver [ADR-0028](docs/adr/0028-cached-image-fragments.md).
+
+## Unidad 28: buffers de fuentes owned entre NAPI y Rust
+
+La API Rust consume `Vec<u8>` para la fuente principal y lo
+comparte entre Krilla, Fontique y FontRegistry con `Arc<Vec<u8>>`,
+sin duplicar esos bytes de nuevo dentro de Rust.
+
+La copia inicial al recibir un Buffer desde JS **se conserva**:
+los trabajos asíncronos necesitan aislar memoria JS modificable.
+La cola conserva sus propios snapshots. No se hace zero-copy inseguro.
+
+```bash
+node scripts/benchmark-napi-font-ownership.mjs REGULAR.ttf BOLD.ttf 3
+```
+
+El benchmark utiliza una TTF válida rellenada artificialmente a
+10 MiB para medir las copias; no simula 10 MiB de glifos complejos.
+Se observó maxRSS de 136,46 → 116,52 MiB con ese payload y
+136,57 → 133,63 MiB en el control con fuente normal y 24 PNG.
+Estos resultados no garantizan aceleración general.
+
+Detalles: [ADR-0029](docs/adr/0029-owned-font-buffer-and-safe-napi-snapshots.md).

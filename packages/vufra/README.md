@@ -115,3 +115,13 @@ La API Fluent pública no cambia.
 
 Benchmark: `scripts/benchmark-fragmented-images.mjs`.
 Más información: ADR-0028.
+
+## Fuente principal owned y snapshots en NAPI
+
+La fuente principal se transfiere como `Vec<u8>` owned desde NAPI
+hasta `Arc<Vec<u8>>` de Rust sin copias internas adicionales.
+Se **conserva** un snapshot seguro desde la memoria mutable de JS
+para evitar carreras con el worker asíncrono. También se mantiene
+el aislamiento de `PdfRenderQueue` y sus cancelaciones.
+
+Benchmark: `scripts/benchmark-napi-font-ownership.mjs`, ADR-0029.
