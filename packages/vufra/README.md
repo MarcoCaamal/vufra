@@ -161,3 +161,19 @@ El caché acotado de bytes comprimidos permanece intacto.
 Benchmark: `scripts/benchmark-large-raster.mjs`; test:
 `packages/vufra/tests/large-raster-concurrency.test.mjs`.
 Detalles: ADR-0032. La Fluent API no cambia.
+
+## Layout de grid proporcional
+
+Además de `grid({columns:3})`, ahora puedes expresar
+`grid({columns:['2fr','1fr'],gap:12})`,
+`grid({columns:[100,'30%','1fr']})` o
+`grid({columns:['*','2fr']})`.
+Las pistas se calculan en puntos PDF desde el ancho real
+del contenedor (también en `box()`, `header()` y `footer()`).
+
+Vufra valida que cada columna tenga al menos 60pt y que el
+grid no exceda el espacio disponible antes de enviarlo a Rust.
+Se usa el mismo builder Fluent y un único resolver.
+
+Ejemplo completo: `examples/fluent-grid-tracks.mjs`.
+Ver ADR-0033.

@@ -78,7 +78,13 @@ export interface StyledTableOptions {
 }
 export interface RowOptions { gap?: number }
 export interface ColumnOptions { width?: number | `${number}%` | '*'; align?: 'left' | 'right' }
-export interface GridOptions { columns: number; gap?: number }
+/** A grid track: fixed points, percent of usable width, or flexible fr units. */
+export type GridTrack = number | '*' | `${number}%` | `${number}fr`;
+export interface GridOptions {
+  /** A column count for equal tracks, or an explicit CSS-inspired track list. */
+  columns: number | readonly GridTrack[];
+  gap?: number;
+}
 export interface ImageOptions { width:number; height:number; fit?: 'contain'|'cover' }
 export interface DividerOptions {height?:number;color?:string;width?:number}
 export interface BoxOptions {
@@ -309,6 +315,52 @@ function asRowItemText(ctx:BuilderContext,text:string,style:VufraStyle={},baseSi
   return {type:'text',text,style:{fontSize,lineHeight:styled.lineHeight??Math.max(fontSize*1.4,16),
     spaceBefore:styled.spaceBefore??4,spaceAfter:styled.spaceAfter??3}};
 }
+/** Resolve grid tracks once, for body, nested boxes and page bands alike.
+ * Track percentages use the space after gaps (the same rule as row columns).
+ * Fractional tracks share whatever remains after fixed points and percents.
+ */
+function resolveGridTracks(options:GridOptions, width:number):number[] {
+  const gap=options.gap??12;
+  if(!validNumber(width)||width<=0||!validNumber(gap)||gap<0||gap>80)
+    fail('grid requires positive width and gap between 0 and 80pt');
+  const {columns}=options;
+  const tracks:readonly GridTrack[]=typeof columns==='number'
+    ? (Number.isInteger(columns)&&columns>=1&&columns<=6
+      ? Array.from({length:columns},()=>'*' as const)
+      : fail('grid.columns must be 1..6 tracks'))
+    : columns;
+  if(!Array.isArray(tracks)||tracks.length<1||tracks.length>6)
+    fail('grid.columns must be 1..6 tracks');
+  const usable=width-gap*(tracks.length-1);
+  if(!validNumber(usable)||usable<=0)
+    fail('grid gaps exceed available width');
+  let fixed=0,weight=0;
+  const sizes=tracks.map(track=>{
+    if(typeof track==='number') {
+      if(!validNumber(track)||track<=0)fail('grid fixed track must be positive points');
+      fixed+=track;return {fixed:track,flex:0};
+    }
+    if(track==='*') {weight++;return {fixed:0,flex:1};}
+    if(typeof track!=='string')
+      fail('grid track must be points, %, * or fr');
+    const part=/^([0-9]+(?:\.[0-9]+)?)(%|fr)$/.exec(track);
+    if(!part)fail('grid track must be points, %, * or fr');
+    const value=Number(part[1]);
+    if(!Number.isFinite(value)||value<=0)
+      fail('grid track size must be finite and positive');
+    if(part[2]==='fr'){weight+=value;return {fixed:0,flex:value};}
+    const size=usable*value/100;
+    fixed+=size;return {fixed:size,flex:0};
+  });
+  if(!Number.isFinite(fixed)||!Number.isFinite(weight)||fixed>usable+0.02)
+    fail('grid tracks exceed available width');
+  const available=Math.max(0,usable-fixed);
+  const result=sizes.map(s=>s.fixed+(s.flex?available*s.flex/weight:0));
+  if(result.some(n=>!validNumber(n)||n<60)||
+     result.reduce((sum,n)=>sum+n,0)>usable+0.02)
+    fail('grid tracks do not fit (each column needs at least 60pt)');
+  return result;
+}
 function buildColumnWidth(value:ColumnOptions['width'],total:number):number|null {
   if(value===undefined||value==='*')return null;
   if(typeof value==='number')return value;
@@ -527,15 +579,13 @@ export class PageBandScope {
   }
   grid(options:GridOptions,callback:(grid:GridScope)=>void):this{
     if(!this.active)fail('page band scope is closed');
-    const n=options.columns,gap=options.gap??12;
-    if(!Number.isInteger(n)||n<1||n>6||!validNumber(gap)||gap<0||gap>80)
-      fail('page band grid requires 1..6 columns and gap 0..80');
+    const widths=resolveGridTracks(options,contentWidth(this.ctx));
     const grid=new GridScope(this.ctx);
     try{requireSyncResult(callback(grid));}finally{grid.close();}
-    if(grid.cells.length!==n)fail('page band grid needs exactly one row of cells');
-    const width=(contentWidth(this.ctx)-gap*(n-1))/n;
-    return this.add({gap,columns:grid.cells.map(items=>({
-      width,items:compileColumnItems(this.ctx,width,items)
+    if(grid.cells.length!==widths.length)
+      fail('page band grid needs exactly one row of cells');
+    return this.add({gap:options.gap??12,columns:grid.cells.map((items,i)=>({
+      width:widths[i],items:compileColumnItems(this.ctx,widths[i],items)
     }))});
   }
   finish():PdfRow{
@@ -781,15 +831,14 @@ export class ContentBuilder {
     return this.append({type:'row',row:result});
   }
   grid(options:GridOptions,callback:(grid:GridScope)=>void):this{
-    const n=options.columns,gap=options.gap??12;
-    if(!Number.isInteger(n)||n<1||n>6)fail('grid.columns must be 1..6');
-    if(!validNumber(gap)||gap<0||gap>80)fail('grid.gap must be 0..80');
+    const widths=resolveGridTracks(options,this.width);
+    const n=widths.length,gap=options.gap??12;
     const grid=new GridScope(this.ctx);
     try{requireSyncResult(callback(grid));}finally{grid.close();}
+    if(grid.cells.length===0)fail('grid needs at least one cell');
     for(let i=0;i<grid.cells.length;i+=n){
       const cells=grid.cells.slice(i,i+n);
-      const width=(this.width-gap*(n-1))/n;
-      const cols=Array.from({length:n},(_,j)=>({
+      const cols=widths.map((width,j)=>({
         width,items:compileColumnItems(this.ctx,width,cells[j]??[]),
         align:'left' as const
       }));

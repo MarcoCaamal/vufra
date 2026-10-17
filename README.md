@@ -326,3 +326,33 @@ API experimental de compatibilidad.
 
 La investigación y la decisión están en
 [ADR-0032](docs/adr/0032-large-raster-concurrency-and-cache-rejection.md).
+
+## Unidad 32: cuadrículas con proporciones al estilo web
+
+Vufra permite distribuir un grid mediante puntos, porcentajes y
+fracciones **sin implementar un navegador ni CSS Grid completo**:
+
+```ts
+report.grid({columns:['2fr','1fr'],gap:12},grid=>{
+  grid.cell(c=>c.heading('Ingresos').paragraph('$842,560'));
+  grid.cell(c=>c.heading('Pedidos').paragraph('1,240'));
+});
+```
+
+También funcionan `columns:3` (pistas iguales),
+`columns:[125,'30%','1fr']` y `'*'` para una fracción flexible.
+El mismo algoritmo valida el espacio disponible en el cuerpo,
+las cajas anidadas y los encabezados o pies de página.
+Valores que no caben, fracciones inválidas y grids vacíos fallan
+antes del render nativo, con errores claros.
+
+```bash
+node examples/fluent-grid-tracks.mjs REGULAR.ttf BOLD.ttf artifacts/fluent-grid-tracks.pdf
+```
+
+El ejemplo empresarial genera 11 páginas, con tarjetas KPI
+reutilizables, estilos, encabezados y 190 registros en una tabla
+paginada. El objetivo es **facilidad de autoría y layouts robustos**,
+no sumar cachés o subsistemas de concurrencia.
+
+Detalles: [ADR-0033](docs/adr/0033-fluent-grid-fractional-tracks.md).
