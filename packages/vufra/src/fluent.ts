@@ -66,6 +66,12 @@ export interface BoxOptions {
   padding?:number;
   background?:string;
   border?:{width?:number;color?:string};
+  /** Refuse fragmentation; returns an error if the entire box exceeds one page. */
+  keepTogether?:boolean;
+  /** Start this box on the next page unless already at a page boundary. */
+  breakBefore?:boolean;
+  /** Keep the box and the first fragment of its successor together when possible. */
+  keepWithNext?:boolean;
 }
 
 function fail(message:string): never { throw new TypeError('Vufra: '+message); }
@@ -203,14 +209,18 @@ function imageBlock(data:Uint8Array,opts:ImageOptions):PdfBlock {
   if(!(data instanceof Uint8Array))fail('image needs PNG/JPEG Uint8Array bytes');
   return {type:'image',data,...opts};
 }
-function asRowItemText(text:string,style:VufraStyle={},baseSize=11):PdfRowItem{
+function asRowItemText(ctx:BuilderContext,text:string,style:VufraStyle={},baseSize=11):PdfRowItem{
   ensureText(text);
-  if(style.font!==undefined||style.bold||style.color!==undefined){
-    fail('row columns currently support regular-font text only; rich styles are a future layout feature');
+  const styled=mergeStyle(ctx.theme,undefined,style);
+  if(styled.font!==undefined||styled.bold||styled.color!==undefined){
+    const color=colorHex(styled.color,ctx.theme);
+    return {type:'rich',runs:[{text,font:faceFor(styled,ctx.fonts),
+      ...(color?{color}:{}),...(styled.fontSize!==undefined?{fontSize:styled.fontSize}:{})}],
+      style:richStyle(styled)};
   }
-  const fontSize=style.fontSize??baseSize;
-  return {type:'text',text,style:{fontSize,lineHeight:style.lineHeight??Math.max(fontSize*1.4,16),
-    spaceBefore:style.spaceBefore??4,spaceAfter:style.spaceAfter??3}};
+  const fontSize=styled.fontSize??baseSize;
+  return {type:'text',text,style:{fontSize,lineHeight:styled.lineHeight??Math.max(fontSize*1.4,16),
+    spaceBefore:styled.spaceBefore??4,spaceAfter:styled.spaceAfter??3}};
 }
 function buildColumnWidth(value:ColumnOptions['width'],total:number):number|null {
   if(value===undefined||value==='*')return null;
@@ -222,19 +232,37 @@ function buildColumnWidth(value:ColumnOptions['width'],total:number):number|null
 }
 
 class ColumnScope {
+  constructor(private readonly ctx:BuilderContext){}
   private active=true;
   readonly items:PdfRowItem[]=[];
   private assertActive():void{if(!this.active)fail('column callback scope is closed');}
   close():void{this.active=false;}
   paragraph(text:string,style?:VufraStyle):this{
-    this.assertActive();this.items.push(asRowItemText(text,style));return this;
+    this.assertActive();this.items.push(asRowItemText(this.ctx,text,style));return this;
   }
   heading(text:string,opts:HeadingOptions={}):this{
     this.assertActive();
     const size=opts.fontSize??[0,21,17,14][opts.level??2];
-    this.items.push(asRowItemText(text,{...opts,fontSize:size,
+    this.items.push(asRowItemText(this.ctx,text,{...opts,fontSize:size,
       lineHeight:opts.lineHeight??size*1.4,spaceBefore:opts.spaceBefore??7,spaceAfter:opts.spaceAfter??6},size));
     return this;
+  }
+  richText(callback:(text:{add(value:string,style?:VufraStyle):void})=>void,
+    style?:Partial<PdfTextStyle>):this{
+    this.assertActive();
+    const runs:PdfRichRun[]=[];
+    let active=true;
+    const collector={add:(value:string,opts:VufraStyle={})=>{
+      if(!this.active||!active)fail('column richText callback scope is closed');
+      ensureText(value);
+      const s=mergeStyle(this.ctx.theme,undefined,opts);
+      runs.push({text:value,font:faceFor(s,this.ctx.fonts),
+        ...(s.fontSize!==undefined?{fontSize:s.fontSize}:{}),
+        ...(s.color?{color:colorHex(s.color,this.ctx.theme)}:{})});
+    }};
+    try{requireSyncResult(callback(collector));}finally{active=false;}
+    if(!runs.length)fail('column richText requires runs');
+    this.items.push({type:'rich',runs,style});return this;
   }
   image(data:Uint8Array,options:ImageOptions):this{
     this.assertActive();this.items.push({type:'image',data,...options});return this;
@@ -251,6 +279,7 @@ class ColumnScope {
   }
 }
 class RowScope {
+  constructor(private readonly ctx:BuilderContext){}
   private active=true;
   close():void{this.active=false;}
   private readonly entries:Array<{options:ColumnOptions;items:PdfRowItem[]}>=[] ;
@@ -263,7 +292,7 @@ class RowScope {
     const options=typeof optionsOrCallback==='function'?{}:optionsOrCallback;
     const cb=typeof optionsOrCallback==='function'?optionsOrCallback:callback;
     if(typeof cb!=='function')fail('row.column requires a synchronous callback');
-    const col=new ColumnScope();
+    const col=new ColumnScope(this.ctx);
     try{requireSyncResult(cb(col));}
     finally {col.close();}
     this.entries.push({options,items:col.items});
@@ -288,11 +317,12 @@ class RowScope {
   }
 }
 class GridScope {
+  constructor(private readonly ctx:BuilderContext){}
   private active=true;
   readonly cells:PdfRowItem[][]=[];
   cell(callback:(column:ColumnScope)=>void):this {
     if(!this.active)fail('grid callback scope is closed');
-    const scope=new ColumnScope();
+    const scope=new ColumnScope(this.ctx);
     try{requireSyncResult(callback(scope));}
     finally{scope.close();}
     this.cells.push(scope.items);
@@ -314,8 +344,11 @@ class BoxScope {
   paragraph(text:string,style:VufraStyle={}):this{
     ensureText(text);
     const styled=mergeStyle(this.ctx.theme,undefined,style);
-    if(styled.bold|| (styled.font!==undefined && styled.font!=='regular')){
-      fail('box text currently supports the regular font only; real bold within boxes requires a future typography unit');
+    if(styled.bold||styled.font!==undefined){
+      const color=colorHex(styled.color,this.ctx.theme);
+      return this.add({type:'rich',runs:[{text,font:faceFor(styled,this.ctx.fonts),
+        ...(color?{color}:{}),...(styled.fontSize!==undefined?{fontSize:styled.fontSize}:{})}],
+        style:richStyle(styled)});
     }
     return this.add({type:'text',text,style:{
       fontSize:styled.fontSize??11,
@@ -332,6 +365,22 @@ class BoxScope {
       fontSize:size,lineHeight:size*1.4,spaceBefore:7,spaceAfter:5,
       ...themed,...options
     });
+  }
+  richText(callback:(text:{add(value:string,style?:VufraStyle):void})=>void,
+    style?:Partial<PdfTextStyle>):this{
+    const runs:PdfRichRun[]=[];
+    let active=true;
+    const collector={add:(value:string,opts:VufraStyle={})=>{
+      if(!this.active||!active)fail('box richText callback scope is closed');
+      ensureText(value);
+      const s=mergeStyle(this.ctx.theme,undefined,opts);
+      runs.push({text:value,font:faceFor(s,this.ctx.fonts),
+        ...(s.fontSize!==undefined?{fontSize:s.fontSize}:{}),
+        ...(s.color?{color:colorHex(s.color,this.ctx.theme)}:{})});
+    }};
+    try{requireSyncResult(callback(collector));}finally{active=false;}
+    if(!runs.length)fail('box richText requires runs');
+    return this.add({type:'rich',runs,style});
   }
   image(data:Uint8Array,options:ImageOptions):this{
     if(!(data instanceof Uint8Array))fail('box image needs PNG/JPEG bytes');
@@ -353,6 +402,36 @@ class BoxScope {
     for(const [i,text] of items.entries()){
       ensureText(text);
       this.paragraph((options.ordered?String(i+1)+'. ':'• ')+text);
+    }
+    return this;
+  }
+  row(options:RowOptions,callback:(row:RowScope)=>void):this;
+  row(callback:(row:RowScope)=>void):this;
+  row(optsOrCb:RowOptions|((row:RowScope)=>void),callback?:(row:RowScope)=>void):this{
+    const options=typeof optsOrCb==='function'?{}:optsOrCb;
+    const cb=typeof optsOrCb==='function'?optsOrCb:callback;
+    if(!this.active||typeof cb!=='function')fail('box row needs synchronous callback');
+    const gap=options.gap??12;
+    if(!validNumber(gap)||gap<0||gap>80)fail('row.gap must be 0..80');
+    const row=new RowScope(this.ctx);
+    let native:PdfRow;
+    try{requireSyncResult(cb(row));native=row.finish(this.innerWidth,gap);}
+    finally{row.close();}
+    return this.add({type:'row',row:native});
+  }
+  grid(options:GridOptions,callback:(grid:GridScope)=>void):this{
+    const n=options.columns,gap=options.gap??12;
+    if(!Number.isInteger(n)||n<1||n>6||!validNumber(gap)||gap<0||gap>80)
+      fail('box grid columns must be 1..6 and gap 0..80');
+    const grid=new GridScope(this.ctx);
+    try{requireSyncResult(callback(grid));}finally{grid.close();}
+    const width=(this.innerWidth-gap*(n-1))/n;
+    if(width<60)fail('box grid cells must be at least 60pt wide');
+    for(let i=0;i<grid.cells.length;i+=n){
+      const cells=grid.cells.slice(i,i+n);
+      this.add({type:'row',row:{gap,columns:Array.from({length:n},(_,j)=>({
+        width,align:'left' as const,items:cells[j]??[]
+      }))}});
     }
     return this;
   }
@@ -431,7 +510,7 @@ class ContentScope {
     if(!cb)fail('row requires a callback');
     const gap=options.gap??12;
     if(!validNumber(gap)||gap<0||gap>80)fail('row.gap must be between 0 and 80pt');
-    const row=new RowScope();
+    const row=new RowScope(this.ctx);
     let result:PdfRow;
     try{
       requireSyncResult(cb(row));
@@ -443,7 +522,7 @@ class ContentScope {
     const n=options.columns,gap=options.gap??12;
     if(!Number.isInteger(n)||n<1||n>6)fail('grid.columns must be 1..6');
     if(!validNumber(gap)||gap<0||gap>80)fail('grid.gap must be 0..80');
-    const grid=new GridScope();
+    const grid=new GridScope(this.ctx);
     try{requireSyncResult(callback(grid));}finally{grid.close();}
     for(let i=0;i<grid.cells.length;i+=n){
       const cells=grid.cells.slice(i,i+n);

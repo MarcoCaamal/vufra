@@ -46,7 +46,7 @@ writeFileSync('invoice.pdf',pdf);
 
 Also supported: `heading`, `paragraph`, `richText`, `box`, `image`, `list`, `divider`, `rectangle`, `spacer`, `section`, `grid`, `pageBreak`, `renderSync`, `enqueue(queue)` and `toDocument()`.
 
-**Important limits:** rows/grids are real horizontal layouts but **atomic across pages**; they cannot split vertically. Long structured data belongs in `table`, which repeats headers and paginates. Column scope text currently uses the regular font (with size/line-height options). Builder callbacks run synchronously; prepare I/O before calling them. Decorated `box()` is available and its paragraphs split across pages, but nested tables/grids and nonregular fonts within box are not available yet. No custom header/footer, `chart`, or existing-PDF `fromPdf/overlay` yet. Header/footer use the native fixed design; custom vertical margins must respect its minimums. All fonts are provided by the caller.
+**Important limits:** rows/grids are real horizontal layouts but **atomic across pages**; they cannot split vertically. Long structured data belongs in `table`, which repeats headers and paginates. Column scopes and decorated boxes can use named TTF/OTF faces, including genuine bold, and `richText` runs; no synthetic fonts. Builder callbacks run synchronously; prepare I/O before calling them. Decorated `box()` can contain rows and grids; long text fragments across pages. Nested tables, arbitrary boxes inside boxes, and vertically fragmentable rows are not supported. No custom header/footer, `chart`, or existing-PDF `fromPdf/overlay` yet. Header/footer use the native fixed design; custom vertical margins must respect its minimums. All fonts are provided by the caller.
 
 ## Decorated boxes with real multipage continuation (Unit 15)
 
@@ -67,7 +67,38 @@ const pdf = await engine.document({title:'Business report'})
   .render();
 ```
 
-Box children currently support paragraph/heading/list/image/spacer/divider/rectangle, with regular font plus configurable size, color and line height. The engine measures text using the **inside width** (subtracting the padding) and splits long boxes at text-line boundaries. Each fragment gets its own background and side borders; only the first has a top border, and only the last has a bottom border. Short boxes that fit on a fresh page are kept together. Images are atomic. No special font faces, tables/rows, rounded corners, shadows or nested boxes inside decorated boxes yet. See `examples/fluent-panels.mjs`.
+Box children support paragraph/heading/richText/list/image/spacer/divider/rectangle and atomic row/grid, with real caller-supplied fonts (including bold), configurable size, color and line height. The engine measures text using the **inside width** (subtracting the padding) and splits long boxes at text-line boundaries. Each fragment gets its own background and side borders; only the first has a top border, and only the last has a bottom border. Short boxes that fit on a fresh page are kept together. Images are atomic. No tables, rounded corners, shadows or arbitrary box-in-box nesting yet. See `examples/fluent-panels.mjs` and `examples/fluent-nested.mjs`.
+
+## Layouts anidados y paginación avanzada (Unidad 16)
+
+El builder sigue siendo Fluent: las cajas ahora admiten `row()`, `grid()`, `richText()` y negritas verdaderas a partir de las fuentes que registre el consumidor.
+
+```ts
+const pdf=await engine.document({title:'Reporte',page:'Letter'})
+  .box({padding:18,background:'#EFF5FC',keepWithNext:true},box=>{
+    box.heading('Resultados',{bold:true});
+    box.grid({columns:2,gap:12},grid=>{
+      grid.cell(c=>c.paragraph('Ingresos',{bold:true}));
+      grid.cell(c=>c.paragraph('$125,000'));
+    });
+    box.richText(text=>{
+      text.add('Estado: ');
+      text.add('VALIDADO',{bold:true,color:'#008F88'});
+    });
+  })
+  .paragraph('Comentario de gerencia')
+  .box({breakBefore:true,keepTogether:true},box=>{
+    box.row(row=>{
+      row.column(c=>c.paragraph('Responsable',{bold:true}));
+      row.column(c=>c.paragraph('Operaciones'));
+    });
+  })
+  .render();
+```
+
+`breakBefore` empieza la caja en una página nueva si la actual ya tiene contenido. `keepTogether` evita dividir la caja y **rechaza** los elementos más altos que una página. `keepWithNext` intenta mantener la caja y al menos el comienzo del bloque siguiente en la misma página cuando caben juntos. Las filas y las filas de grid son atómicas (se mueven enteras a otra página o se rechazan si exceden una página). Las cajas largas siguen dividiéndose por líneas.
+
+El ancho de fila y grid anidados se resuelve desde el ancho interno de la caja. Las fuentes, incluyendo la cara `bold`, se suministran explícitamente con `fonts`; una cara desconocida genera error y **no** se sintetiza. Ejemplo completo: `examples/fluent-nested.mjs`. Diseño: `docs/adr/0017-nested-layouts-and-page-policies.md`.
 
 ## Low-level AST API (still supported)
 

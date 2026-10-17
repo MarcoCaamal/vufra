@@ -176,7 +176,9 @@ test('invalid nested layouts reject rather than silently flatten',()=>{
    r.column({width:'70%'},c=>c.paragraph('RIGHT'));
  }),/do not fit printable/);
  assert.throws(()=>doc.row(r=>r.column({width:30},c=>c.paragraph('BAD'))),/>=60/);
- assert.throws(()=>doc.row(r=>r.column(c=>c.paragraph('bad',{bold:true}))),/regular-font text only/);
+ const actual=inspect(doc.row(r=>r.column(c=>c.paragraph('REALBOLD',{bold:true}))).renderSync());
+ assert.match(actual.raw,/REALBOLD/);
+ assert.match(actual.fonts,/NotoSans-Bold/);
  assert.throws(()=>doc.row(r=>r.column(c=>c.paragraph('text').spacer(900))).renderSync(),/unsupported or invalid row column item/);
  assert.throws(()=>doc.row(r=>r.column(c=>c.paragraph('too tall '.repeat(850)))).renderSync(),/row height exceeds/);
  assert.throws(()=>doc.table([{id:1}],{columns:[{key:'id',width:20}]}),/less than 36pt/);

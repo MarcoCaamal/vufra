@@ -152,7 +152,7 @@ test('invalid decorated box input explicitly errors instead of being ignored',()
  assert.throws(()=>base.box({padding:0,border:{width:2,color:'blue'}},b=>b.paragraph('BAD')).renderSync(),/invalid box/);
  assert.throws(()=>base.box({width:90},b=>b.paragraph('BAD')).renderSync(),/invalid box/);
  assert.throws(()=>base.box({border:{width:2,color:'unknown'}},b=>b.paragraph('BAD')),/color/);
- assert.throws(()=>base.box(b=>b.paragraph('BOLD',{bold:true})),/regular font/);
+ assert.throws(()=>base.box(b=>b.paragraph('BOLD',{bold:true})),/must be configured using a real/);
  assert.throws(()=>base.box(b=>b.paragraph('BAD').spacer(900)).renderSync(),/invalid box/);
  assert.throws(()=>base.box(b=>b.paragraph('A'.repeat(2000))).renderSync(),/unbreakable text/);
 });
