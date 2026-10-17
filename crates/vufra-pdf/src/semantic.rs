@@ -30,6 +30,7 @@ pub struct ContentFrame {
     pub align: BoxAlign,
     pub padding: f32,
     pub border_width: f32,
+    pub radius: f32,
     pub border_color: Option<[u8; 3]>,
     pub background: Option<[u8; 3]>,
     pub keep_together: bool,
@@ -43,6 +44,7 @@ impl Default for ContentFrame {
             align: BoxAlign::Left,
             padding: 12.0,
             border_width: 0.0,
+            radius: 0.0,
             border_color: None,
             background: None,
             keep_together: false,
@@ -58,6 +60,7 @@ impl From<&PdfBox> for ContentFrame {
             align: b.align,
             padding: b.padding,
             border_width: b.border_width,
+            radius: b.radius,
             border_color: b.border_color,
             background: b.background,
             keep_together: b.keep_together,
@@ -347,6 +350,7 @@ fn box_from_parts(frame: ContentFrame, children: Vec<ContentNode>) -> Result<Pdf
         align: frame.align,
         padding: frame.padding,
         border_width: frame.border_width,
+        radius: frame.radius,
         border_color: frame.border_color,
         background: frame.background,
         keep_together: frame.keep_together,
@@ -690,6 +694,7 @@ mod tests {
             align: BoxAlign::Center,
             padding: 11.,
             border_width: 2.,
+            radius: 8.,
             border_color: Some([1, 2, 3]),
             background: Some([3, 2, 1]),
             keep_together: false,
@@ -716,6 +721,7 @@ mod tests {
             panic!("must remain box")
         };
         assert_eq!(b.padding, 11.);
+        assert_eq!(b.radius, 8.);
         assert_eq!(b.border_color, Some([1, 2, 3]));
         assert!(b.break_before && b.keep_with_next);
         let PdfBoxItem::Row(r) = &b.items[0] else {
@@ -787,6 +793,7 @@ mod tests {
                 align: BoxAlign::Left,
                 padding: 12.,
                 border_width: 0.,
+                radius: 0.,
                 border_color: None,
                 background: Some([3, 4, 5]),
                 keep_together: false,

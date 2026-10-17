@@ -49,6 +49,7 @@ pub struct PdfBox {
     pub align: BoxAlign,
     pub padding: f32,
     pub border_width: f32,
+    pub radius: f32,
     pub border_color: Option<[u8; 3]>,
     pub background: Option<[u8; 3]>,
     pub keep_together: bool,
@@ -140,6 +141,7 @@ pub struct PreparedBox {
     x: f32,
     padding: f32,
     border_width: f32,
+    radius: f32,
     border_color: Option<[u8; 3]>,
     background: Option<[u8; 3]>,
     items: Vec<PreparedItem>,
@@ -218,6 +220,10 @@ impl PdfBox {
             || !self.border_width.is_finite()
             || !(0.0..=6.0).contains(&self.border_width)
             || self.border_width > self.padding
+            || !self.radius.is_finite()
+            || self.radius < 0.0
+            || self.radius > 24.0
+            || self.radius > self.padding
             || w - 2.0 * self.padding < 60.0
             || self.padding * 2.0 + 1.0 > page_height
             || self.items.is_empty()
@@ -560,6 +566,7 @@ impl PdfBox {
             x,
             padding: self.padding,
             border_width: self.border_width,
+            radius: self.radius,
             border_color: self.border_color,
             background: self.background,
             items,
@@ -585,6 +592,113 @@ fn rect(
     }
     .draw(surface, x, y)
 }
+/// Round only the authored start and end. A repeated table header does
+/// not create another first border on intermediate pages.
+fn rounded_background(
+    surface: &mut Surface,
+    area: (f32, f32, f32, f32),
+    radius: f32,
+    first: bool,
+    last: bool,
+    color: [u8; 3],
+) -> Result<(), RenderError> {
+    use krilla::{color::rgb, geom::PathBuilder, paint::Fill};
+    let (x, y, w, h) = area;
+    let top = if first { radius } else { 0.0 };
+    let bottom = if last { radius } else { 0.0 };
+    let mut shape = PathBuilder::new();
+    shape.move_to(x + top, y);
+    shape.line_to(x + w - top, y);
+    if top > 0.0 {
+        shape.quad_to(x + w, y, x + w, y + top);
+    }
+    shape.line_to(x + w, y + h - bottom);
+    if bottom > 0.0 {
+        shape.quad_to(x + w, y + h, x + w - bottom, y + h);
+    }
+    shape.line_to(x + bottom, y + h);
+    if bottom > 0.0 {
+        shape.quad_to(x, y + h, x, y + h - bottom);
+    }
+    shape.line_to(x, y + top);
+    if top > 0.0 {
+        shape.quad_to(x, y, x + top, y);
+    }
+    shape.close();
+    let path = shape
+        .finish()
+        .ok_or(RenderError::InvalidInput("rounded box path"))?;
+    let old_fill = surface.get_fill().cloned();
+    let old_stroke = surface.get_stroke().cloned();
+    surface.set_stroke(None);
+    surface.set_fill(Some(Fill {
+        paint: rgb::Color::new(color[0], color[1], color[2]).into(),
+        ..Fill::default()
+    }));
+    surface.draw_path(&path);
+    surface.set_fill(old_fill);
+    surface.set_stroke(old_stroke);
+    Ok(())
+}
+
+/// Curved caps only on first/last authored fragments. Vertical border sides
+/// remain straight on intermediate pages.
+fn rounded_border(
+    surface: &mut Surface,
+    area: (f32, f32, f32, f32),
+    radius: f32,
+    border: f32,
+    first: bool,
+    last: bool,
+    color: [u8; 3],
+) -> Result<(), RenderError> {
+    use krilla::{color::rgb, geom::PathBuilder, paint::Stroke};
+    let (x, y, w, h) = area;
+    let top = if first { radius } else { 0.0 };
+    let bottom = if last { radius } else { 0.0 };
+    let mid_height = h - top - bottom;
+    rect(surface, x, y + top, border, mid_height, color)?;
+    rect(surface, x + w - border, y + top, border, mid_height, color)?;
+    let draw_cap = |surface: &mut Surface, top_cap: bool| -> Result<(), RenderError> {
+        let center = border * 0.5;
+        let r = radius.max(center);
+        let mut shape = PathBuilder::new();
+        if top_cap {
+            shape.move_to(x + center, y + r);
+            shape.quad_to(x + center, y + center, x + r, y + center);
+            shape.line_to(x + w - r, y + center);
+            shape.quad_to(x + w - center, y + center, x + w - center, y + r);
+        } else {
+            shape.move_to(x + center, y + h - r);
+            shape.quad_to(x + center, y + h - center, x + r, y + h - center);
+            shape.line_to(x + w - r, y + h - center);
+            shape.quad_to(x + w - center, y + h - center, x + w - center, y + h - r);
+        }
+        let path = shape
+            .finish()
+            .ok_or(RenderError::InvalidInput("rounded border path"))?;
+        let old_fill = surface.get_fill().cloned();
+        let old_stroke = surface.get_stroke().cloned();
+        surface.set_fill(None);
+        surface.set_stroke(Some(Stroke {
+            paint: rgb::Color::new(color[0], color[1], color[2]).into(),
+            width: border,
+            ..Stroke::default()
+        }));
+        surface.draw_path(&path);
+        surface.set_fill(old_fill);
+        surface.set_stroke(old_stroke);
+        Ok(())
+    };
+    if first {
+        draw_cap(surface, true)?;
+    }
+    if last {
+        draw_cap(surface, false)?;
+    }
+    Ok(())
+}
+
 pub struct BoxFragmentPosition {
     pub left: f32,
     pub top: f32,
@@ -723,17 +837,40 @@ impl PreparedBox {
         let first = has_original && original.start == 0;
         let last = has_original && original.end == self.item_heights.len();
         if let Some(color) = self.background {
-            rect(surface, x, top, self.width, height, color)?;
+            if self.radius > 0.0 {
+                rounded_background(
+                    surface,
+                    (x, top, self.width, height),
+                    self.radius,
+                    first,
+                    last,
+                    color,
+                )?;
+            } else {
+                rect(surface, x, top, self.width, height, color)?;
+            }
         }
         if let Some(color) = self.border_color.filter(|_| self.border_width > 0.0) {
             let b = self.border_width;
-            rect(surface, x, top, b, height, color)?;
-            rect(surface, x + self.width - b, top, b, height, color)?;
-            if first {
-                rect(surface, x, top, self.width, b, color)?;
-            }
-            if last {
-                rect(surface, x, top + height - b, self.width, b, color)?;
+            if self.radius > 0.0 {
+                rounded_border(
+                    surface,
+                    (x, top, self.width, height),
+                    self.radius,
+                    b,
+                    first,
+                    last,
+                    color,
+                )?;
+            } else {
+                rect(surface, x, top, b, height, color)?;
+                rect(surface, x + self.width - b, top, b, height, color)?;
+                if first {
+                    rect(surface, x, top, self.width, b, color)?;
+                }
+                if last {
+                    rect(surface, x, top + height - b, self.width, b, color)?;
+                }
             }
         }
         let mut y = top + self.padding;
@@ -941,6 +1078,7 @@ mod tests {
             align: BoxAlign::Left,
             padding: 12.0,
             border_width: 2.0,
+            radius: 0.0,
             border_color: Some([12, 45, 200]),
             background: Some([240, 250, 255]),
             keep_together: false,
@@ -963,6 +1101,7 @@ mod tests {
                 align: BoxAlign::Left,
                 padding: 0.0,
                 border_width: 0.0,
+                radius: 0.0,
                 border_color: None,
                 background: None,
                 keep_together: false,
@@ -986,6 +1125,7 @@ mod tests {
                 align: BoxAlign::Left,
                 padding: 0.0,
                 border_width: 0.0,
+                radius: 0.0,
                 border_color: None,
                 background: None,
                 keep_together: false,
@@ -1010,6 +1150,22 @@ mod tests {
             value = wrapper(value);
         }
         assert!(value.validate(497.0, 650.0).is_err());
+    }
+    #[test]
+    fn rounded_box_requires_bounded_radius_and_sufficient_padding() {
+        let mut b = box_example();
+        b.padding = 16.0;
+        b.radius = 12.0;
+        assert!(b.validate(497.0, 650.0).is_ok());
+        for radius in [-1.0, f32::INFINITY, f32::NAN, 25.0, 17.0] {
+            b.radius = radius;
+            assert!(
+                b.validate(497.0, 650.0).is_err(),
+                "invalid radius {radius} should be rejected"
+            );
+        }
+        b.radius = 0.0;
+        assert!(b.validate(497.0, 650.0).is_ok());
     }
     #[test]
     fn bad_geometry_is_rejected() {

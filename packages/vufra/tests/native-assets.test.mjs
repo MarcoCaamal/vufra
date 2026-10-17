@@ -43,7 +43,7 @@ test('native font and image assets snapshot sources once, reuse exact content an
 test('cached image counts still apply per-document (65 instances rejected)',()=>{
  const assets=new native.NativeAssets([]);
  const id=assets.registerImage(png);
- const over={kind:'box',boxData:{align:'left',padding:12,borderWidth:0,
+ const over={kind:'box',boxData:{align:'left',padding:12,borderWidth:0,radius:0,
   items:Array.from({length:65},()=>({kind:'image',
    image:{assetId:id,width:80,height:40,fit:'contain'}}))}};
  assert.throws(()=>native.renderPdfNative('Image limit',[over],

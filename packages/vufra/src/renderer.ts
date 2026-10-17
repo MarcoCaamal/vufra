@@ -65,6 +65,7 @@ export interface PdfBox {
   width?:number;
   align?:'left'|'center'|'right';
   padding?:number;
+  radius?:number;
   background?:string;
   border?:{width?:number;color?:string};
   keepTogether?:boolean;
@@ -129,7 +130,7 @@ type NativeBlock = {
   keepWithNext?: boolean; items?: string[]; ordered?: boolean;
   graphic?: {kind:string;width:number;height:number;color:string};
   image?: { data?: Uint8Array; assetId?:number; width: number; height: number; fit: 'contain' | 'cover' };
-  boxData?: {width?:number;align:string;padding:number;borderWidth:number;
+  boxData?: {width?:number;align:string;padding:number;radius:number;borderWidth:number;
     borderColor?:string;background?:string;
     keepTogether?:boolean;breakBefore?:boolean;keepWithNext?:boolean;items:Array<{
       kind:string;text?:string;style?:PdfTextStyle;color?:string;height?:number;
@@ -391,11 +392,13 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
         const innerWidth=(boxed?.width ?? printableWidth)-2*(boxed?.padding??12);
         const padding=boxed?.padding??12;
         const borderWidth=boxed?.border?.width??0;
+        const radius=boxed?.radius??0;
         if (!boxed || !Array.isArray(boxed.items) || boxed.items.length<1 ||
             boxed.items.length>500 ||
             !Number.isFinite(padding) || padding<0 || padding>60 ||
             !Number.isFinite(borderWidth) || borderWidth<0 || borderWidth>6 ||
             borderWidth>padding ||
+            !Number.isFinite(radius) || radius<0 || radius>24 || radius>padding ||
             !Number.isFinite(boxed.width??printableWidth) ||
             (boxed.width??printableWidth)<100 ||
             (boxed.width??printableWidth)>printableWidth ||
@@ -480,7 +483,7 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
         });
         return {
           width:boxed.width,align:boxed.align??'left',padding,
-          borderWidth,borderColor:rgb(boxed.border?.color),
+          radius,borderWidth,borderColor:rgb(boxed.border?.color),
           background:rgb(boxed.background),keepTogether:boxed.keepTogether,
           breakBefore:boxed.breakBefore,keepWithNext:boxed.keepWithNext,items
         };

@@ -237,6 +237,7 @@ impl PdfRow {
             align: BoxAlign::Left,
             padding: 0.0,
             border_width: 0.0,
+            radius: 0.0,
             border_color: None,
             background: None,
             keep_together: false,

@@ -486,3 +486,31 @@ El ejemplo genera once páginas con 165 registros en orden.
 No cambió la Fluent API ni se añadieron cachés.
 
 Detalles: [ADR-0037](docs/adr/0037-nested-box-borders-and-repeated-headers.md).
+
+## Unidad 37: tarjetas redondeadas con bordes coherentes
+
+Usa `radius` para crear tarjetas y paneles de aspecto moderno
+sin imágenes ni CSS y con la misma Fluent API:
+
+```ts
+document.box({padding:16,radius:12,background:'#EEF4FF',
+  border:{width:2,color:'#173D78'}},card=>
+  card.heading('Resultados').paragraph('$842,560'));
+```
+
+También funciona en `theme.presets.box.card` y dentro de
+`grid()`, `row()` y cajas anidadas. Las esquinas se dibujan
+vectorialmente en el PDF, solo donde la caja realmente empieza
+o termina. En las páginas intermedias los bordes laterales
+continúan y los extremos son rectos, incluso cuando una tabla
+repite encabezados. `radius:0` produce el mismo PDF rectangular.
+
+El radio está en puntos PDF, debe ser de 0 a 24 y no superar
+el padding. Los valores inválidos fallan antes del render.
+
+```bash
+node examples/fluent-rounded-dashboard.mjs REGULAR.ttf BOLD.ttf artifacts/fluent-rounded-dashboard.pdf
+```
+
+El ejemplo muestra 9 tarjetas y 165 registros en 11 páginas.
+Ver [ADR-0038](docs/adr/0038-page-aware-rounded-boxes.md).

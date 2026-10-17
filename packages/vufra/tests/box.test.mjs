@@ -160,7 +160,7 @@ test('invalid decorated box input explicitly errors instead of being ignored',()
 test('native binding enforces recursive image count before copying boxed buffers',()=>{
  const native=require('../native/vufra.node');
  const overLimit={kind:'box',boxData:{
-   align:'left',padding:12,borderWidth:0,items:Array.from({length:65},()=>({
+   align:'left',padding:12,borderWidth:0,radius:0,items:Array.from({length:65},()=>({
      kind:'image',image:{data:img,width:80,height:40,fit:'contain'}
    }))
  }};

@@ -108,6 +108,8 @@ export interface BoxOptions {
   width?:number;
   align?:'left'|'center'|'right';
   padding?:number;
+  /** Corner radius in PDF points (0..24, no larger than padding). */
+  radius?:number;
   background?:string;
   border?:{width?:number;color?:string};
   /** Keep this container on one page; reject if it cannot fit. */

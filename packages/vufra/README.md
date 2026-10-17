@@ -229,3 +229,18 @@ nuevo inicio de caja.
 No hay cambios en la sintaxis Fluent ni en los presets.
 Ejemplo: `examples/fluent-nested-box-continuations.mjs`.
 Documentación de diseño: ADR-0037.
+
+## Esquinas redondeadas en `box()`
+
+`box({radius:12,padding:16},cb)` genera curvas vectoriales
+con un único radio expresado en puntos PDF. También admite
+`theme.presets.box.card.radius`. Reglas: radio finito
+entre 0 y 24, no mayor que `padding`.
+
+Los bordes de cajas paginadas solo se redondean en la
+primera/última página real de cada contenedor. Los cortes
+intermedios permanecen rectos, sin afectar tablas ni
+encabezados repetidos. `radius:0` conserva el dibujo anterior.
+
+Ejemplo: `examples/fluent-rounded-dashboard.mjs`.
+Detalles: ADR-0038.
