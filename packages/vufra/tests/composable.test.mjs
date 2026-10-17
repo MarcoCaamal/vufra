@@ -126,9 +126,11 @@ test('nested recursion depth, invalid components and impossible atomic boxes rej
   let nested=paragraph('DEEPEST');
   for(let i=0;i<10;i++)nested=box({padding:9},nested);
   assert.throws(()=>base.add(nested).renderSync(),/depth exceeds 8/);
-  assert.throws(()=>base.add(box({padding:12},[
+  const pages=inspect(base.add(box({padding:12},[
     box({padding:12},paragraph('VERY_BIG_TEXT '.repeat(2000)))
-  ])).renderSync(),/nested box exceeds printable|pagination|height/i);
+  ])).renderSync());
+  assert.ok(pages.pages>=3, 'nested content must now paginate');
+  assert.equal((pages.raw.match(/VERY_BIG_TEXT/g)??[]).length,2000);
 });
 test('resource limits count deeply nested images, not just root images',()=>{
   const c=box({padding:0},Array.from({length:65},(_,i)=>
@@ -205,4 +207,168 @@ test('cyclic functional component graph rejected without mutating immutable docu
   const base=engine.document({title:'Cycle'});
   assert.throws(()=>base.add(cyclic),/circular component tree/);
   assert.equal(base.toDocument().blocks.length,0);
+});
+
+
+test('deep nested boxes fragment across pages without duplicate data or text beyond margins',()=>{
+  const markers=Array.from({length:250},(_,i)=>
+    paragraph('NESTED_'+String(i+1).padStart(4,'0')+' complete entry'));
+  const wrapped=box({padding:18,background:'#F6F9FF',border:{color:'#557799',width:1}},[
+    heading('OUTER_HEADING'),
+    box({padding:16,background:'#FFF5EA',border:{color:'#DD6633',width:1}},[
+      paragraph('INNER_HEADING'),
+      box({padding:14,background:'#EDF9EC',border:{color:'#338833',width:1}},markers),
+      paragraph('AFTER_INNER_BOX')
+    ]),
+    paragraph('AFTER_OUTER_BOX')
+  ]);
+  const result=inspect(engine.document({title:'Deep fragmentation',page:'Letter'})
+    .add(wrapped).renderSync());
+  assert.ok(result.pages>=7, 'expected >=7 paginated pages');
+  assert.deepEqual([...result.raw.matchAll(/NESTED_(\d{4})/g)].map(m=>+m[1]),
+    Array.from({length:250},(_,i)=>i+1));
+  assert.equal((result.raw.match(/AFTER_OUTER_BOX/g)??[]).length,1);
+  assert.equal((result.raw.match(/AFTER_INNER_BOX/g)??[]).length,1);
+  // All painted text stays strictly within US Letter content area.
+  for(const w of result.words.filter(w=>w.text.startsWith('NESTED_') ||
+    w.text==='OUTER_HEADING' || w.text==='INNER_HEADING' ||
+    w.text==='AFTER_INNER_BOX' || w.text==='AFTER_OUTER_BOX')) {
+    assert.ok(w.left>=49-1 && w.right<=612-49+1,
+      'horizontal overflow: '+w.text+' at '+w.left);
+    assert.ok(w.top>=120-5 && w.bottom<=792-72+5,
+      'vertical overflow: '+w.text+' at '+w.top);
+  }
+});
+
+test('styled table inside nested box repeats heading and preserves invoice entries',()=>{
+  const records=Array.from({length:175},(_,i)=>[
+    'HIER_'+String(i+1).padStart(4,'0'),'$'+(i+1)*3
+  ]);
+  const result=inspect(engine.document({title:'Nested tables',page:'Letter'})
+    .add(box({padding:10},[
+      box({padding:13,border:{width:1,color:'#557799'}},[
+        table(records,{columns:[
+          {title:'REPEAT_LABEL',width:'60%'},{title:'AMOUNT_COL',width:'40%'}
+        ]})
+      ])
+    ])).renderSync());
+  assert.ok(result.pages>=5);
+  assert.deepEqual([...result.raw.matchAll(/HIER_(\d{4})/g)].map(m=>+m[1]),
+    Array.from({length:175},(_,i)=>i+1));
+  for(let i=1;i<=result.pages;i++){
+    const pageText=execFileSync('pdftotext',['-raw','-f',String(i),'-l',String(i),
+      result.path,'-'],{encoding:'utf8'});
+    assert.equal((pageText.match(/REPEAT_LABEL/g)??[]).length,1,
+      'repeated table header on page '+i);
+  }
+});
+
+
+test('tall parallel Row content splits at item boundaries instead of rejecting whole row',()=>{
+  const out=inspect(engine.document({title:'Fragmented row',page:'Letter'})
+    .row(r=>r
+      .column({width:'50%'},c=>{
+        for(let i=1;i<=42;i++)c.paragraph('LEFT_'+String(i).padStart(3,'0'));
+      })
+      .column({width:'50%'},c=>{
+        for(let i=1;i<=35;i++)c.paragraph('RIGHT_'+String(i).padStart(3,'0'));
+      })
+    ).renderSync());
+  assert.ok(out.pages>=2);
+  const tokens=[...out.raw.matchAll(/LEFT_(\d{3})/g)].map(m=>+m[1]);
+  assert.deepEqual(tokens,Array.from({length:42},(_,i)=>i+1));
+  const right=[...out.raw.matchAll(/RIGHT_(\d{3})/g)].map(m=>+m[1]);
+  assert.deepEqual(right,Array.from({length:35},(_,i)=>i+1));
+});
+
+test('tall Row nested inside deeply decorated boxes resumes correctly on later pages',()=>{
+  const out=inspect(engine.document({title:'Nested fragmented row',page:'Letter'})
+    .box({padding:15,border:{color:'#556677',width:1}},b=>b
+      .box({padding:13,background:'#F3F7FC'},inner=>inner
+        .row(r=>r
+          .column({width:'50%'},c=>{
+            for(let i=1;i<=41;i++)c.paragraph('NLEFT_'+String(i).padStart(3,'0'));
+          })
+          .column({width:'50%'},c=>{
+            for(let i=1;i<=42;i++)c.paragraph('NRIGHT_'+String(i).padStart(3,'0'));
+          })
+        )
+        .paragraph('NESTED_ROW_AFTER')
+      )
+    ).renderSync());
+  assert.ok(out.pages>=2);
+  assert.deepEqual([...out.raw.matchAll(/NLEFT_(\d{3})/g)].map(m=>+m[1]),
+    Array.from({length:41},(_,i)=>i+1));
+  assert.deepEqual([...out.raw.matchAll(/NRIGHT_(\d{3})/g)].map(m=>+m[1]),
+    Array.from({length:42},(_,i)=>i+1));
+  assert.match(out.raw,/NESTED_ROW_AFTER/);
+});
+
+
+test('nested keepTogether and breakBefore preserve explicit pagination policies',()=>{
+  const lead=Array.from({length:17},(_,i)=>
+    paragraph('LEAD_'+String(i+1).padStart(2,'0')));
+  const fixed=Array.from({length:10},(_,i)=>
+    paragraph('KEPT_'+String(i+1).padStart(2,'0')));
+  const out=inspect(engine.document({title:'Keep policies',page:'Letter'})
+    .add(box({padding:10},[
+      ...lead,
+      box({padding:8,keepTogether:true,background:'#EEF4FF'},fixed)
+    ])).renderSync());
+  assert.ok(out.pages>=2);
+  assert.deepEqual([...out.raw.matchAll(/KEPT_(\d{2})/g)].map(m=>+m[1]),
+    Array.from({length:10},(_,i)=>i+1));
+  const page1=execFileSync('pdftotext',['-raw','-f','1','-l','1',out.path,'-'],
+    {encoding:'utf8'});
+  assert.doesNotMatch(page1,/KEPT_01/);
+  const broken=inspect(engine.document({title:'Break policies',page:'Letter'})
+    .add(box({padding:10},[
+      paragraph('BEFORE_BREAK'),
+      box({padding:8,breakBefore:true},paragraph('AFTER_BREAK'))
+    ])).renderSync());
+  assert.equal(broken.pages,2);
+  assert.equal((broken.raw.match(/BEFORE_BREAK/g)??[]).length,1);
+  assert.equal((broken.raw.match(/AFTER_BREAK/g)??[]).length,1);
+});
+
+test('oversized nested keepTogether box rejects instead of clipping or silently splitting',()=>{
+  const body=Array.from({length:120},(_,i)=>paragraph('ATOMIC_'+i));
+  assert.throws(()=>engine.document({title:'Too large keep together',page:'Letter'})
+    .add(box({padding:8},box({padding:8,keepTogether:true},body)))
+    .renderSync(),/InvalidHeight|invalid layout|height/i);
+});
+
+
+test('nested boxes repaint actual RGB backgrounds on first, middle and last page',()=>{
+  const lines=Array.from({length:180},(_,i)=>
+    paragraph('COLORLINE_'+String(i+1).padStart(4,'0')));
+  const out=inspect(engine.document({title:'Fragment RGB',page:'Letter'})
+    .add(box({padding:18,background:'#EEF4FF'},[
+      box({padding:16,background:'#EDF9EC'},lines)
+    ])).renderSync());
+  assert.ok(out.pages>=5);
+  for(const page of [...new Set([1,Math.ceil(out.pages/2),out.pages])]){
+    const xml=execFileSync('pdftotext',['-bbox','-f',String(page),'-l',
+      String(page),out.path,'-'],{encoding:'utf8'});
+    const match=xml.match(/<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">COLORLINE_\d{4}<\/word>/);
+    assert.ok(match,'content on page '+page);
+    const ppm=execFileSync('pdftoppm',['-f',String(page),'-l',String(page),
+      '-r','72','-singlefile',out.path],{maxBuffer:8*1024*1024});
+    const header=ppm.subarray(0,90).toString('latin1')
+      .match(/^P6\s+(\d+)\s+(\d+)\s+255\s/);
+    assert.ok(header,'valid raster');
+    const width=+header[1],height=+header[2];
+    const x=Math.floor(+match[1]-4),y=Math.floor(+match[2]+2);
+    assert.ok(x>=0&&y>=0&&x<width&&y<height);
+    const offset=header[0].length+(y*width+x)*3;
+    assert.deepEqual([...ppm.subarray(offset,offset+3)],[237,249,236],
+      'inner box background must be repainted on page '+page);
+  }
+});
+
+test('complex rich-text row still rejects a single indivisible overheight run',()=>{
+  const huge='IMPOSSIBLE_RICH '.repeat(2200);
+  assert.throws(()=>engine.document({title:'Oversized one rich run'})
+    .row(r=>r.column(c=>c.paragraph(huge,{bold:true})))
+    .renderSync(),/row height exceeds printable page/i);
 });

@@ -114,14 +114,16 @@ test('keepTogether rejects an impossible box while ordinary box fragments all wo
  assert.throws(()=>app.document({title:'Impossible keep',page:'Letter'})
  .box({keepTogether:true},b=>b.paragraph(terms)).renderSync(),/pagination failed|InvalidHeight|height/i);
 });
-test('oversized nested row errors and unknown font is rejected before rendering',()=>{
+test('nested plain-text row paginates while invalid geometry/fonts still reject',()=>{
  const d=app.document({title:'Bad nested'});
  assert.throws(()=>d.box({width:240,padding:20},b=>b.row(r=>{
    r.column({width:150},c=>c.paragraph('ONE'));
    r.column({width:150},c=>c.paragraph('TWO'));
  })),/do not fit/);
- assert.throws(()=>d.box(b=>b.row(r=>r.column(c=>
-   c.paragraph('X '.repeat(2500))))).renderSync(),/row height exceeds/);
+ const longRow=inspect(d.box(b=>b.row(r=>r.column(c=>
+   c.paragraph('X '.repeat(2500))))).renderSync());
+ assert.ok(longRow.pages>=2);
+ assert.equal((longRow.raw.match(/\bX\b/g)??[]).length,2500);
  assert.throws(()=>d.box(b=>b.paragraph('Unknown',{font:'unconfigured'})),/must be configured/);
  assert.throws(()=>renderPdf({title:'Native guard',blocks:[{type:'box',
    box:{items:[{type:'rich',runs:[{text:'X',font:'missing'}]}]}}]},regular),

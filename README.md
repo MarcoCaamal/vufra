@@ -41,7 +41,7 @@ const invoice = vufra.document({title:'Factura',page:'Letter'})
 
 Las filas se dibujan en **columnas reales** medidas por Parley; las tablas extensas siguen repitiendo su encabezado y paginándose en Rust. Los callbacks de composición son síncronos. Además tienes `.section()`, `.grid()`, `.richText()`, `.image()`, `.list()`, `.divider()` y `.pageBreak()`. `toDocument()` permite inspeccionar el AST; `renderSync()` y `enqueue(queue)` reutilizan el mismo motor.
 
-**Alcance actual:** las filas y grids siguen siendo indivisibles; las tablas y el contenido de texto de `.box()` pueden continuar entre páginas. La API todavía no ofrece `.chart()` ni `.fromPdf()` para completar PDFs existentes. El motor sigue reservando su encabezado y pie predeterminados (márgenes verticales mínimos 110/50 pt). El API de bajo nivel `renderPdf(document,font)` se mantiene compatible.
+**Alcance actual:** las filas cortas son atómicas, las largas se fragmentan entre elementos o líneas de texto simple; los boxes anidados pueden continuar entre páginas. Las tablas avanzadas repiten encabezados, aunque cada celda enriquecida se mantiene atómica. Los márgenes y límites continúan siendo explícitos.
 
 La API Rust subyacente vive en `crates/vufra-pdf`: `render_pdf(&PdfDocument, &[u8], RenderOptions)`.
 
@@ -66,7 +66,7 @@ const pdf = await vufra.document({title:'Resumen'})
 
 `box()` utiliza un compositor Rust nativo. Los textos se envuelven al ancho interior (descontando padding) y las cajas largas pueden fragmentarse entre páginas con fondo y bordes continuos. También acepta imágenes PNG/JPEG, rectángulos, espacios y listas sencillas. Se puede elegir ancho y alineación `left/center/right`.
 
-**Limitaciones:** tablas y `row/grid` no se anidan todavía en la API `box()`. Las fuentes especiales y negritas reales siguen disponibles mediante `richText()` fuera de cajas; dentro de `box()` el texto usa la fuente regular (pero admite tamaño, interlineado y color). Las imágenes dentro de la caja son indivisibles. Los callbacks son síncronos.
+**Limitaciones actuales:** imágenes grandes, rich runs individuales demasiado altos y cajas dentro de celdas Row/Grid demasiado altas aún son atómicos. Tablas, rows y grids sí pueden anidarse en boxes. Los callbacks son síncronos.
 
 ### Generación asíncrona para Node.js y NestJS (Unidad 07)
 
@@ -435,6 +435,37 @@ El árbol funcional es un AST lógico TypeScript que se baja al AST especializad
 existente en Rust; la unificación total de la medición Rust queda pendiente
 (ADR-0020).
 
+### Layout jerárquico y paginación recursiva (Unidad 20)
+
+Rust baja los nodos preparados a un árbol geométrico común independiente
+del PDF writer (Leaf, Container, RepeatTable). Los contenedores se
+fragmentan por hojas y repintan fondos/bordes con padding en cada página.
+Las tablas profundas repiten encabezados.
+
+Las filas Row/Grid que caben en una página conservan su layout previo.
+Las filas largas se dividen entre elementos y, para texto simple,
+también entre líneas Parley. Las cajas hijas respetan keepTogether y
+breakBefore.
+
+~~~typescript
+const pdf = await engine.document({title:'Informe'})
+  .box({padding:18},content => content
+    .box({padding:14},inner => inner
+      .paragraph('Informe extensísimo '.repeat(2000))
+    )
+  )
+  .row(r=>r
+    .column(c=>c.paragraph('Columna A '.repeat(500)))
+    .column(c=>c.paragraph('Columna B '.repeat(500)))
+  )
+  .render();
+~~~
+
+Límites: el AST geométrico es común en Rust, pero los tipos de contenido
+siguen especializados. Un rich-run individual muy alto, una imagen
+gigante o una caja muy alta dentro de una celda siguen siendo atómicos.
+Las tablas enriquecidas parten entre filas. Véase ADR-0021.
+
 ## Hitos
 
 | Unidad | Hito | Estado |
@@ -459,6 +490,7 @@ existente en Rust; la unificación total de la medición Rust queda pendiente
 | 17 | Plantillas de página, portada distinta, logos y numeración tardía | Prototipo funcional |
 | 18 | Tablas enriquecidas y encabezados repetidos dentro de cajas | Prototipo funcional |
 | 19 | Composición funcional + Fluent compartida, cajas anidadas nativas | Refactor incremental |
+| 20 | Árbol geométrico Rust, cajas fragmentables y filas largas paginadas | Prototipo funcional |
 | Más adelante | Bindings multiplataforma, publicaciones, estabilidad | Pendiente |
 
 ## Arquitectura implementada
@@ -495,7 +527,7 @@ cd packages/vufra && npm test
 
 La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 registros ordenados sin pérdida/duplicación, PDFs multipágina y errores de entrada controlados.
 
-**No soporta aún:** texto RTL/shaping complejo, fallback automático por cluster Unicode, SVG/otras imágenes vectoriales, celdas combinadas, estilos enriquecidos en celdas ni páginas de tamaño diferente dentro del mismo documento. **En el modo `blocks`, los párrafos y las filas de tablas multicolumna continúan entre páginas; en el modo heredado, párrafos y filas simples siguen indivisibles.** Palabras inquebrantables más anchas que una columna generan error. Solo se ha probado Linux x86_64.
+**No soporta aún:** RTL complejo, SVG, celdas combinadas ni tamaños distintos por página. Las tablas enriquecidas permiten estilos por celda pero no fragmentar el contenido de una celda individual. El modo heredado de filas simples conserva sus restricciones previas. El motor sigue en fase experimental.
 
 ## Documentación
 
@@ -520,6 +552,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [Unidad 17 — Plantillas de página](docs/experiments/18-page-templates-milestone.md)
 - [Unidad 18 — Tablas enriquecidas](docs/experiments/19-styled-tables-milestone.md)
 - [Unidad 19 — Fluent componible](docs/experiments/20-composable-nodes-milestone.md)
+- [Unidad 20 — Paginación jerárquica](docs/experiments/21-hierarchical-layout-milestone.md)
 - [ADR-0001 Licencia](docs/adr/0001-license.md)
 - [ADR-0002 Monorepo](docs/adr/0002-monorepo.md)
 - [ADR-0003 Writer PDF y SDK Node](docs/adr/0003-prototype-pdf-and-node.md)
@@ -540,6 +573,7 @@ La Unidad 02 comprobó texto en español, párrafos con ajuste de línea, 1,000 
 - [ADR-0018 Plantillas de página](docs/adr/0018-page-templates-and-running-bands.md)
 - [ADR-0019 Tablas enriquecidas en cajas](docs/adr/0019-styled-tables-in-boxes.md)
 - [ADR-0020 Fluent componible y nodos](docs/adr/0020-composable-fluent-and-unified-nodes.md)
+- [ADR-0021 Layout jerárquico y paginación](docs/adr/0021-hierarchical-layout-and-recursive-pagination.md)
 - [Paquete TypeScript](packages/vufra/README.md)
 
 ## Licencia

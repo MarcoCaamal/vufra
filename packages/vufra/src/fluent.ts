@@ -97,7 +97,7 @@ export interface BoxOptions {
   padding?:number;
   background?:string;
   border?:{width?:number;color?:string};
-  /** Refuse fragmentation; returns an error if the entire box exceeds one page. */
+  /** Keep this container on one page; reject if it cannot fit. */
   keepTogether?:boolean;
   /** Start this box on the next page unless already at a page boundary. */
   breakBefore?:boolean;

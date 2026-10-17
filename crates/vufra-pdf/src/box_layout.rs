@@ -14,7 +14,10 @@ use krilla::{
 };
 use parley::{FontContext, LayoutContext};
 use std::sync::atomic::AtomicBool;
-use vufra_layout::flow::BoxRepeatSpan;
+use vufra_layout::{
+    flow::{BoxNestedSpan, BoxRepeatSpan},
+    tree::{FlattenedLayout, LayoutNode},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BoxAlign {
@@ -114,6 +117,7 @@ enum PreparedContent {
     Image(PreparedImage, usize),
     Graphic(usize),
     Row(PreparedRow, usize),
+    SplitRow(PreparedRow, PdfRow),
     TableRow(PreparedRow, usize, usize),
     Box(Box<PreparedBox>, usize),
     Spacer,
@@ -121,11 +125,16 @@ enum PreparedContent {
 struct PreparedItem {
     height: f32,
     kind: PreparedContent,
+    /// DFS indices in the flattened leaf stream, used for page-local painting.
+    flat_start: usize,
+    flat_end: usize,
 }
 pub struct PreparedBox {
     pub item_heights: Vec<f32>,
     pub image_pixels: u64,
     pub repeat_headers: Vec<BoxRepeatSpan>,
+    pub nested_spans: Vec<BoxNestedSpan>,
+    layout_nodes: Vec<LayoutNode>,
     width: f32,
     x: f32,
     padding: f32,
@@ -136,6 +145,55 @@ pub struct PreparedBox {
 }
 
 impl PdfBox {
+    /// Lower PDF-specific prepared leaves to the writer-independent geometry
+    /// tree. One measurement model serves text, images, rows, tables and boxes.
+    fn layout_nodes_for(
+        items: &[PreparedItem],
+        sources: &[PdfBoxItem],
+    ) -> Result<Vec<LayoutNode>, RenderError> {
+        let mut nodes = Vec::new();
+        let mut i = 0;
+        while i < items.len() {
+            match &items[i].kind {
+                PreparedContent::Box(nested, source_idx) => {
+                    let Some(PdfBoxItem::Box(original)) = sources.get(*source_idx) else {
+                        return Err(RenderError::InvalidInput("nested box source mismatch"));
+                    };
+                    nodes.push(LayoutNode::Container {
+                        padding: nested.padding,
+                        keep_together: original.keep_together,
+                        break_before: original.break_before,
+                        children: nested.layout_nodes.clone(),
+                    });
+                    i += 1;
+                }
+                PreparedContent::TableRow(_, table_idx, 0) => {
+                    let header = items[i].height;
+                    i += 1;
+                    let mut rows = Vec::new();
+                    while i < items.len() {
+                        if let PreparedContent::TableRow(_, source, _) = &items[i].kind
+                            && source == table_idx
+                        {
+                            rows.push(items[i].height);
+                            i += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    nodes.push(LayoutNode::RepeatTable { header, rows });
+                }
+                PreparedContent::TableRow(..) => {
+                    return Err(RenderError::InvalidInput("table row without header"));
+                }
+                _ => {
+                    nodes.push(LayoutNode::Leaf(items[i].height));
+                    i += 1;
+                }
+            }
+        }
+        Ok(nodes)
+    }
     pub fn validate(&self, width: f32, page_height: f32) -> Result<(), RenderError> {
         self.validate_depth(width, page_height, 0)
     }
@@ -244,7 +302,6 @@ impl PdfBox {
         };
         let mut items = Vec::new();
         let mut pixels = 0u64;
-        let mut repeat_headers = Vec::new();
         for (idx, item) in self.items.iter().enumerate() {
             check_cancel(cancel)?;
             match item {
@@ -271,6 +328,8 @@ impl PdfBox {
                         };
                         let height = before + style.line_height + after;
                         items.push(PreparedItem {
+                            flat_start: 0,
+                            flat_end: 0,
                             height,
                             kind: PreparedContent::Text {
                                 text: line.clone(),
@@ -302,6 +361,8 @@ impl PdfBox {
                             0.0
                         };
                         items.push(PreparedItem {
+                            flat_start: 0,
+                            flat_end: 0,
                             height: before + line_height + after,
                             kind: PreparedContent::Rich {
                                 line,
@@ -315,16 +376,20 @@ impl PdfBox {
                     let prepared = img.prepare()?;
                     pixels = pixels.saturating_add(prepared.pixel_count());
                     items.push(PreparedItem {
+                        flat_start: 0,
+                        flat_end: 0,
                         height: img.height,
                         kind: PreparedContent::Image(prepared, idx),
                     });
                 }
                 PdfBoxItem::Graphic(g) => items.push(PreparedItem {
+                    flat_start: 0,
+                    flat_end: 0,
                     height: g.height,
                     kind: PreparedContent::Graphic(idx),
                 }),
                 PdfBoxItem::Row(r) => {
-                    let prepared = r.prepare_depth(
+                    match r.prepare_depth(
                         (inner, page_height - 2.0 * self.padding),
                         family,
                         fonts,
@@ -332,16 +397,46 @@ impl PdfBox {
                         registry,
                         cancel,
                         depth + 1,
-                    )?;
-                    pixels = pixels.saturating_add(prepared.image_pixels);
-                    items.push(PreparedItem {
-                        height: prepared.height,
-                        kind: PreparedContent::Row(prepared, idx),
-                    });
+                    ) {
+                        Ok(prepared) => {
+                            pixels = pixels.saturating_add(prepared.image_pixels);
+                            items.push(PreparedItem {
+                                flat_start: 0,
+                                flat_end: 0,
+                                height: prepared.height,
+                                kind: PreparedContent::Row(prepared, idx),
+                            });
+                        }
+                        Err(error) if PdfRow::is_tall_row_error(&error) => {
+                            for segment in
+                                r.as_fragmentable_box(family, fonts, context, cancel)?.items
+                            {
+                                let PdfBoxItem::Row(source_row) = segment else {
+                                    unreachable!("split row contains only rows");
+                                };
+                                let prepared = source_row.prepare_depth(
+                                    (inner, page_height - 2.0 * self.padding),
+                                    family,
+                                    fonts,
+                                    context,
+                                    registry,
+                                    cancel,
+                                    depth + 1,
+                                )?;
+                                pixels = pixels.saturating_add(prepared.image_pixels);
+                                items.push(PreparedItem {
+                                    flat_start: 0,
+                                    flat_end: 0,
+                                    height: prepared.height,
+                                    kind: PreparedContent::SplitRow(prepared, source_row),
+                                });
+                            }
+                        }
+                        Err(error) => return Err(error),
+                    }
                 }
                 PdfBoxItem::Table(table) => {
                     table.validate(inner, page_height - 2.0 * self.padding, depth + 1)?;
-                    let header_item = items.len();
                     for (row_idx, row) in std::iter::once(&table.header)
                         .chain(table.rows.iter())
                         .enumerate()
@@ -358,14 +453,12 @@ impl PdfBox {
                         )?;
                         pixels = pixels.saturating_add(prepared.image_pixels);
                         items.push(PreparedItem {
+                            flat_start: 0,
+                            flat_end: 0,
                             height: prepared.height.max(1.0),
                             kind: PreparedContent::TableRow(prepared, idx, row_idx),
                         });
                     }
-                    repeat_headers.push(BoxRepeatSpan {
-                        header_item,
-                        end_item: items.len(),
-                    });
                 }
                 PdfBoxItem::Box(boxed) => {
                     let nested = boxed.prepare_depth(
@@ -379,17 +472,16 @@ impl PdfBox {
                     )?;
                     pixels = pixels.saturating_add(nested.image_pixels);
                     let nested_height = nested.total_height();
-                    if nested_height + 2.0 * self.padding > page_height + 0.001 {
-                        return Err(RenderError::InvalidInput(
-                            "nested box exceeds printable page; atomic nesting cannot split",
-                        ));
-                    }
                     items.push(PreparedItem {
+                        flat_start: 0,
+                        flat_end: 0,
                         height: nested_height,
                         kind: PreparedContent::Box(Box::new(nested), idx),
                     });
                 }
                 PdfBoxItem::Spacer(h) => items.push(PreparedItem {
+                    flat_start: 0,
+                    flat_end: 0,
                     height: *h,
                     kind: PreparedContent::Spacer,
                 }),
@@ -398,11 +490,30 @@ impl PdfBox {
         if items.len() > 10_000 {
             return Err(RenderError::InvalidInput("too many box text lines"));
         }
-        let heights = items.iter().map(|i| i.height).collect();
+        let layout_nodes = Self::layout_nodes_for(&items, &self.items)?;
+        let flattened =
+            FlattenedLayout::from_nodes(&layout_nodes).map_err(RenderError::InvalidLayout)?;
+        let mut offset = 0usize;
+        for item in &mut items {
+            item.flat_start = offset;
+            offset += if let PreparedContent::Box(nested, _) = &item.kind {
+                nested.item_heights.len()
+            } else {
+                1
+            };
+            item.flat_end = offset;
+        }
+        if offset != flattened.heights.len() {
+            return Err(RenderError::InvalidInput(
+                "measured tree leaf range mismatch",
+            ));
+        }
         Ok(PreparedBox {
-            item_heights: heights,
+            item_heights: flattened.heights,
             image_pixels: pixels,
-            repeat_headers,
+            repeat_headers: flattened.headers,
+            nested_spans: flattened.groups,
+            layout_nodes,
             width,
             x,
             padding: self.padding,
@@ -444,7 +555,13 @@ pub struct BoxFragmentPosition {
 }
 impl PreparedBox {
     pub(crate) fn total_height(&self) -> f32 {
-        self.item_heights.iter().sum::<f32>() + 2.0 * self.padding
+        self.item_heights.iter().sum::<f32>()
+            + 2.0 * self.padding
+            + self
+                .nested_spans
+                .iter()
+                .map(|span| 2.0 * span.padding)
+                .sum::<f32>()
     }
     #[allow(clippy::too_many_arguments)]
     fn draw_table_row(
@@ -506,26 +623,55 @@ impl PreparedBox {
         }
         prepared.draw(row, surface, font, registry, origin, cancel)
     }
-    pub fn draw(
+    /// Height of a page-local selection of the measured DFS leaves. Every
+    /// active container contributes its own padding on this particular page.
+    fn selection_height(&self, leaves: &[usize]) -> f32 {
+        let mut sum = 2.0 * self.padding;
+        for item in &self.items {
+            let included = leaves
+                .iter()
+                .filter(|&&i| i >= item.flat_start && i < item.flat_end)
+                .copied()
+                .collect::<Vec<_>>();
+            if included.is_empty() {
+                continue;
+            }
+            if let PreparedContent::Box(nested, _) = &item.kind {
+                let translated = included
+                    .iter()
+                    .map(|i| i - item.flat_start)
+                    .collect::<Vec<_>>();
+                sum += nested.selection_height(&translated);
+            } else {
+                sum += item.height;
+            }
+        }
+        sum
+    }
+
+    /// Paint each occupied container fragment independently while retaining
+    /// the same measured leaf order used by the flow paginator.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_selected(
         &self,
         source: &PdfBox,
         surface: &mut Surface,
         font: &Font,
         registry: &FontRegistry,
-        pos: BoxFragmentPosition,
+        left: f32,
+        top: f32,
+        leaves: &[usize],
         cancel: &AtomicBool,
     ) -> Result<(), RenderError> {
-        let BoxFragmentPosition {
-            left,
-            top,
-            start,
-            end,
-            repeat_header,
-            first,
-            last,
-            height,
-        } = pos;
+        if leaves.is_empty() {
+            return Err(RenderError::InvalidInput("empty box fragment"));
+        }
+        let height = self.selection_height(leaves);
         let x = left + self.x;
+        let first = leaves.first() == Some(&0);
+        let last = leaves
+            .last()
+            .is_some_and(|v| v + 1 == self.item_heights.len());
         if let Some(color) = self.background {
             rect(surface, x, top, self.width, height, color)?;
         }
@@ -541,31 +687,38 @@ impl PreparedBox {
             }
         }
         let mut y = top + self.padding;
-        if let Some(header) = repeat_header {
-            let item = self.items.get(header).ok_or(RenderError::InvalidInput(
-                "invalid repeated table header index",
-            ))?;
-            if let PreparedContent::TableRow(prepared, table_idx, row_idx) = &item.kind {
-                self.draw_table_row(
-                    source,
+        for item in &self.items {
+            check_cancel(cancel)?;
+            let included = leaves
+                .iter()
+                .filter(|&&i| i >= item.flat_start && i < item.flat_end)
+                .copied()
+                .collect::<Vec<_>>();
+            if included.is_empty() {
+                continue;
+            }
+            if let PreparedContent::Box(nested, index) = &item.kind {
+                let original = match &source.items[*index] {
+                    PdfBoxItem::Box(b) => b,
+                    _ => return Err(RenderError::InvalidInput("nested box source mismatch")),
+                };
+                let translated = included
+                    .iter()
+                    .map(|i| i - item.flat_start)
+                    .collect::<Vec<_>>();
+                nested.draw_selected(
+                    original,
                     surface,
                     font,
                     registry,
-                    (x + self.padding, y),
-                    prepared,
-                    *table_idx,
-                    *row_idx,
+                    x + self.padding,
+                    y,
+                    &translated,
                     cancel,
                 )?;
-                y += item.height;
-            } else {
-                return Err(RenderError::InvalidInput(
-                    "invalid repeated table header item",
-                ));
+                y += nested.selection_height(&translated);
+                continue;
             }
-        }
-        for item in &self.items[start..end] {
-            check_cancel(cancel)?;
             match &item.kind {
                 PreparedContent::Text {
                     text,
@@ -634,6 +787,16 @@ impl PreparedBox {
                         g.draw(surface, x + self.padding, y)?;
                     }
                 }
+                PreparedContent::SplitRow(prepared, source_row) => {
+                    prepared.draw(
+                        source_row,
+                        surface,
+                        font,
+                        registry,
+                        (x + self.padding, y),
+                        cancel,
+                    )?;
+                }
                 PreparedContent::Row(prepared, index) => {
                     if let PdfBoxItem::Row(r) = &source.items[*index] {
                         prepared.draw(r, surface, font, registry, (x + self.padding, y), cancel)?;
@@ -652,34 +815,41 @@ impl PreparedBox {
                         cancel,
                     )?;
                 }
-                PreparedContent::Box(nested, index) => {
-                    let original = match &source.items[*index] {
-                        PdfBoxItem::Box(boxed) => boxed,
-                        _ => return Err(RenderError::InvalidInput("nested box source mismatch")),
-                    };
-                    nested.draw(
-                        original,
-                        surface,
-                        font,
-                        registry,
-                        BoxFragmentPosition {
-                            left: x + self.padding,
-                            top: y,
-                            start: 0,
-                            end: nested.items.len(),
-                            repeat_header: None,
-                            first: true,
-                            last: true,
-                            height: nested.total_height(),
-                        },
-                        cancel,
-                    )?;
-                }
+                PreparedContent::Box(..) => unreachable!("box handled recursively"),
                 PreparedContent::Spacer => {}
             }
             y += item.height;
         }
         Ok(())
+    }
+    pub fn draw(
+        &self,
+        source: &PdfBox,
+        surface: &mut Surface,
+        font: &Font,
+        registry: &FontRegistry,
+        pos: BoxFragmentPosition,
+        cancel: &AtomicBool,
+    ) -> Result<(), RenderError> {
+        if pos.start >= pos.end || pos.end > self.item_heights.len() {
+            return Err(RenderError::InvalidInput("invalid box fragment bounds"));
+        }
+        let mut leaves = Vec::with_capacity(pos.end - pos.start + 1);
+        if let Some(header) = pos.repeat_header {
+            if header >= pos.start || header >= self.item_heights.len() {
+                return Err(RenderError::InvalidInput("invalid repeated table header"));
+            }
+            leaves.push(header);
+        }
+        leaves.extend(pos.start..pos.end);
+        if (self.selection_height(&leaves) - pos.height).abs() > 0.1 {
+            return Err(RenderError::InvalidInput(
+                "box fragment height disagrees with paginator",
+            ));
+        }
+        self.draw_selected(
+            source, surface, font, registry, pos.left, pos.top, &leaves, cancel,
+        )
     }
 }
 #[cfg(test)]

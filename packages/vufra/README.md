@@ -46,7 +46,7 @@ writeFileSync('invoice.pdf',pdf);
 
 Also supported: `heading`, `paragraph`, `richText`, `box`, `image`, `list`, `divider`, `rectangle`, `spacer`, `section`, `grid`, `pageBreak`, `renderSync`, `enqueue(queue)` and `toDocument()`.
 
-**Important limits:** rows/grids are real horizontal layouts but **atomic across pages**; they cannot split vertically. Long structured data belongs in `table`, which repeats headers and paginates. Column scopes and decorated boxes can use named TTF/OTF faces, including genuine bold, and `richText` runs; no synthetic fonts. Builder callbacks run synchronously; prepare I/O before calling them. Decorated `box()` can contain rows and grids; long text fragments across pages. Nested tables, arbitrary boxes inside boxes, and vertically fragmentable rows are not supported. No custom header/footer, `chart`, or existing-PDF `fromPdf/overlay` yet. Header/footer use the native fixed design; custom vertical margins must respect its minimums. All fonts are provided by the caller.
+**Important limits:** Rows/grids are measured horizontally. Long ones can split between column items and ordinary Parley-measured text lines. A single rich-text run, image, or giant cell box is still atomic. Styled tables repeat headers but split between complete rows, not within complex cells. Content callbacks are synchronous, fonts are supplied by callers and PDF overlays/charts are pending.
 
 ## Decorated boxes with real multipage continuation (Unit 15)
 
@@ -67,7 +67,7 @@ const pdf = await engine.document({title:'Business report'})
   .render();
 ```
 
-Box children support paragraph/heading/richText/list/image/spacer/divider/rectangle and atomic row/grid, with real caller-supplied fonts (including bold), configurable size, color and line height. The engine measures text using the **inside width** (subtracting the padding) and splits long boxes at text-line boundaries. Each fragment gets its own background and side borders; only the first has a top border, and only the last has a bottom border. Short boxes that fit on a fresh page are kept together. Images are atomic. No tables, rounded corners, shadows or arbitrary box-in-box nesting yet. See `examples/fluent-panels.mjs` and `examples/fluent-nested.mjs`.
+Box children support paragraphs, images, nested boxes, rich rows/grids and styled tables, with real embedded fonts. Long nested boxes fragment across pages and repaint backgrounds/borders with correct padding; images and individual rich runs remain atomic. No rounded corners, shadows, PDF overlays or SVG yet.
 
 ## Layouts anidados y paginación avanzada (Unidad 16)
 
@@ -417,7 +417,26 @@ const pdf=await engine.document({title:'Factura'})
 El mismo ContentBuilder se usa en callbacks de box() y secciones del
 documento; soporta composición jerárquica y la API encadenada.
 Las cajas pueden anidarse hasta ocho niveles con padding/bordes reales.
-Una caja anidada demasiado alta se rechaza explícitamente.
+Las cajas hijas largas pueden continuar entre páginas; keepTogether
+rechaza explícitamente una caja que no cabe en una página.
 El motor sigue utilizando ASTs nativos especializados detrás de la capa
 de nodos lógicos, y no admite aún Box/Table dentro de celdas Row/Grid.
 Más información: ADR-0020 y examples/fluent-composition.mjs.
+
+
+## Árbol geométrico Rust y paginación jerárquica (Unidad 20)
+
+Los boxes anidados muy largos pueden continuar entre páginas:
+el motor repinta fondo/bordes y reserva padding real en cada fragmento.
+Las tablas dentro de varios boxes conservan encabezados repetidos.
+
+Una Row/Grid larga se corta entre elementos sincronizados de columnas.
+El texto normal puede cortarse entre líneas Parley medidas; las
+filas cortas preservan su layout anterior. keepTogether y breakBefore
+de boxes anidados se respetan.
+
+El árbol geométrico de vufra-layout::tree es independiente de Krilla
+pero no sustituye los tipos especializados para contenido y pintura.
+Rich-text multi-font individual, imágenes gigantes o boxes muy grandes
+dentro de celdas siguen indivisibles y las tablas avanzadas dividen
+entre filas. ADR-0021 y examples/fluent-hierarchical.mjs.

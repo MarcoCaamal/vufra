@@ -1,6 +1,7 @@
 //! Resumable pagination spike (indivisible table rows).
 pub mod flow;
 pub mod split;
+pub mod tree;
 use std::fmt;
 use vufra_core::TableRow;
 

@@ -7,6 +7,18 @@ use super::{
 
 const EPS: f32 = 0.001;
 
+/// Inclusive-exclusive range of leaves inside a nested decorated container.
+/// Each occupied page fragment reserves its own top and bottom padding.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BoxNestedSpan {
+    pub start_item: usize,
+    pub end_item: usize,
+    pub padding: f32,
+    /// True prevents splitting a child box even when the parent can split.
+    pub keep_together: bool,
+    pub break_before: bool,
+}
+
 /// Header row of a nested table, repeated when continuation starts inside its body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoxRepeatSpan {
@@ -21,6 +33,7 @@ pub enum FlowBlock {
         item_heights: Vec<f32>,
         padding: f32,
         repeat_headers: Vec<BoxRepeatSpan>,
+        nested_spans: Vec<BoxNestedSpan>,
         keep_together: bool,
         break_before: bool,
     },
@@ -177,6 +190,7 @@ pub fn paginate_flow_with_keep(
                 item_heights,
                 padding,
                 repeat_headers,
+                nested_spans,
                 keep_together,
                 break_before,
             } => {
@@ -211,7 +225,32 @@ pub fn paginate_flow_with_keep(
                     }
                     previous_end = span.end_item;
                 }
-                let sum = item_heights.iter().sum::<f32>() + 2.0 * padding;
+                // DFS spans are ordered parent-before-child, may be nested,
+                // never partially intersect. Every continuation carries padding.
+                let mut ancestors: Vec<BoxNestedSpan> = Vec::new();
+                for span in nested_spans {
+                    if span.start_item >= span.end_item
+                        || span.end_item > item_heights.len()
+                        || !span.padding.is_finite()
+                        || !(0.0..=60.0).contains(&span.padding)
+                    {
+                        return Err(PaginationError::InvalidHeight);
+                    }
+                    while ancestors
+                        .last()
+                        .is_some_and(|a| a.end_item <= span.start_item)
+                    {
+                        ancestors.pop();
+                    }
+                    if let Some(a) = ancestors.last()
+                        && span.end_item > a.end_item
+                    {
+                        return Err(PaginationError::InvalidHeight);
+                    }
+                    ancestors.push(*span);
+                }
+                let overhead = nested_spans.iter().map(|s| 2.0 * s.padding).sum::<f32>();
+                let sum = item_heights.iter().sum::<f32>() + 2.0 * padding + overhead;
                 if !sum.is_finite() {
                     return Err(PaginationError::InvalidHeight);
                 }
@@ -253,10 +292,65 @@ pub fn paginate_flow_with_keep(
                     }
                     let mut end = cursor;
                     let mut consumed = 2.0 * padding + header_extra;
-                    while end < item_heights.len()
-                        && consumed + item_heights[end] <= available + EPS
-                    {
-                        consumed += item_heights[end];
+                    while end < item_heights.len() {
+                        if nested_spans.iter().any(|span| {
+                            span.start_item == end
+                                && span.break_before
+                                && (end > cursor || current.used_height > 0.0)
+                        }) {
+                            break;
+                        }
+                        let mut defer_group = false;
+                        for span in nested_spans
+                            .iter()
+                            .filter(|span| span.start_item == end && span.keep_together)
+                        {
+                            let group_height = item_heights[span.start_item..span.end_item]
+                                .iter()
+                                .sum::<f32>()
+                                + nested_spans
+                                    .iter()
+                                    .filter(|child| {
+                                        child.start_item >= span.start_item
+                                            && child.end_item <= span.end_item
+                                    })
+                                    .map(|child| 2.0 * child.padding)
+                                    .sum::<f32>();
+                            let ancestor_padding = nested_spans
+                                .iter()
+                                .filter(|parent| {
+                                    parent.start_item <= span.start_item
+                                        && parent.end_item >= span.end_item
+                                        && (parent.start_item != span.start_item
+                                            || parent.end_item != span.end_item)
+                                })
+                                .map(|parent| 2.0 * parent.padding)
+                                .sum::<f32>();
+                            if group_height + ancestor_padding + 2.0 * padding > page_height + EPS {
+                                return Err(PaginationError::InvalidHeight);
+                            }
+                            if consumed + group_height > available + EPS {
+                                defer_group = true;
+                                break;
+                            }
+                        }
+                        if defer_group {
+                            break;
+                        }
+                        let newly_opened = nested_spans
+                            .iter()
+                            .filter(|span| {
+                                span.start_item <= end
+                                    && end < span.end_item
+                                    && (end == cursor || span.start_item == end)
+                            })
+                            .map(|span| 2.0 * span.padding)
+                            .sum::<f32>();
+                        let increment = item_heights[end] + newly_opened;
+                        if consumed + increment > available + EPS {
+                            break;
+                        }
+                        consumed += increment;
                         end += 1;
                     }
                     // Never leave an isolated table header at the page bottom.
@@ -539,6 +633,87 @@ mod tests {
         }
     }
     #[test]
+    fn nested_container_charges_padding_on_every_continuation_page() {
+        let block = FlowBlock::Box {
+            item_heights: vec![20.0; 7],
+            padding: 5.0,
+            repeat_headers: vec![],
+            nested_spans: vec![BoxNestedSpan {
+                start_item: 1,
+                end_item: 6,
+                padding: 5.0,
+                keep_together: false,
+                break_before: false,
+            }],
+            keep_together: false,
+            break_before: false,
+        };
+        let pages = paginate_flow(&[block], 80.0).unwrap();
+        assert_eq!(pages.len(), 3);
+        assert!(pages.iter().all(|p| p.used_height <= 80.0));
+        assert!(matches!(&pages[0].fragments[0],
+            FlowFragment::Box {start_item:0,end_item:3,height,..}
+                if (*height-80.0).abs()<0.01));
+        assert!(matches!(&pages[1].fragments[0],
+            FlowFragment::Box {start_item:3,end_item:6,height,..}
+                if (*height-80.0).abs()<0.01));
+        assert!(matches!(&pages[2].fragments[0],
+            FlowFragment::Box {start_item:6,end_item:7,height,..}
+                if (*height-30.0).abs()<0.01));
+    }
+    #[test]
+    fn nested_box_keep_together_and_break_before_are_enforced() {
+        let boxed = |keep_together, break_before| FlowBlock::Box {
+            item_heights: vec![20.0, 20.0, 20.0],
+            padding: 5.0,
+            repeat_headers: vec![],
+            nested_spans: vec![BoxNestedSpan {
+                start_item: 1,
+                end_item: 3,
+                padding: 5.0,
+                keep_together,
+                break_before,
+            }],
+            keep_together: false,
+            break_before: false,
+        };
+        let kept = paginate_flow(&[boxed(true, false)], 70.0).unwrap();
+        assert_eq!(kept.len(), 2);
+        assert!(matches!(
+            &kept[0].fragments[0],
+            FlowFragment::Box {
+                start_item: 0,
+                end_item: 1,
+                ..
+            }
+        ));
+        assert!(matches!(
+            &kept[1].fragments[0],
+            FlowFragment::Box {
+                start_item: 1,
+                end_item: 3,
+                ..
+            }
+        ));
+        let broken = paginate_flow(&[boxed(false, true)], 90.0).unwrap();
+        assert_eq!(broken.len(), 2);
+        let too_tall = FlowBlock::Box {
+            item_heights: vec![40.0, 40.0],
+            padding: 10.0,
+            repeat_headers: vec![],
+            nested_spans: vec![BoxNestedSpan {
+                start_item: 0,
+                end_item: 2,
+                padding: 10.0,
+                keep_together: true,
+                break_before: false,
+            }],
+            keep_together: false,
+            break_before: false,
+        };
+        assert!(paginate_flow(&[too_tall], 90.0).is_err());
+    }
+    #[test]
     fn repeated_box_table_header_is_charged_on_every_continuation_page() {
         let block = FlowBlock::Box {
             item_heights: vec![20.0, 25.0, 25.0, 25.0, 25.0],
@@ -547,6 +722,7 @@ mod tests {
                 header_item: 0,
                 end_item: 5,
             }],
+            nested_spans: vec![],
             keep_together: false,
             break_before: false,
         };
@@ -575,6 +751,7 @@ mod tests {
                 header_item: 1,
                 end_item: 4,
             }],
+            nested_spans: vec![],
             keep_together: false,
             break_before: false,
         };
@@ -604,6 +781,7 @@ mod tests {
             item_heights: vec![21.0, 21.0],
             padding: 5.0,
             repeat_headers: vec![],
+            nested_spans: vec![],
             keep_together,
             break_before,
         };
@@ -628,6 +806,7 @@ mod tests {
             item_heights: vec![45.0, 45.0, 45.0],
             padding: 5.0,
             repeat_headers: vec![],
+            nested_spans: vec![],
             keep_together: true,
             break_before: false,
         };
@@ -644,6 +823,7 @@ mod tests {
             item_heights,
             padding,
             repeat_headers: vec![],
+            nested_spans: vec![],
             keep_together: false,
             break_before: false,
         };
@@ -676,6 +856,7 @@ mod tests {
                 item_heights: vec![20.0],
                 padding: 5.0,
                 repeat_headers: vec![],
+                nested_spans: vec![],
                 keep_together: true,
                 break_before: false,
             },
@@ -720,6 +901,7 @@ mod tests {
                 item_heights: items.clone(),
                 padding: 9.0,
                 repeat_headers: vec![],
+                nested_spans: vec![],
                 keep_together: false,
                 break_before: false,
             },
@@ -779,6 +961,7 @@ mod tests {
                 item_heights: vec![24.0, 24.0],
                 padding: 12.0,
                 repeat_headers: vec![],
+                nested_spans: vec![],
                 keep_together: false,
                 break_before: false,
             },
@@ -799,6 +982,7 @@ mod tests {
                     item_heights: vec![105.0],
                     padding: 5.0,
                     repeat_headers: vec![],
+                    nested_spans: vec![],
                     keep_together: false,
                     break_before: false,
                 }],

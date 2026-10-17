@@ -180,7 +180,10 @@ test('invalid nested layouts reject rather than silently flatten',()=>{
  assert.match(actual.raw,/REALBOLD/);
  assert.match(actual.fonts,/NotoSans-Bold/);
  assert.throws(()=>doc.row(r=>r.column(c=>c.paragraph('text').spacer(900))).renderSync(),/unsupported or invalid row column item/);
- assert.throws(()=>doc.row(r=>r.column(c=>c.paragraph('too tall '.repeat(850)))).renderSync(),/row height exceeds/);
+ const longRow=inspect(doc.row(r=>r.column(c=>
+   c.paragraph('too tall '.repeat(850)))).renderSync());
+ assert.ok(longRow.pages>=2);
+ assert.equal((longRow.raw.match(/too/g)??[]).length,850);
  assert.throws(()=>doc.table([{id:1}],{columns:[{key:'id',width:20}]}),/less than 36pt/);
  assert.throws(()=>doc.heading('INVALID',{color:'unknown'}),/color/);
  assert.throws(()=>vufra.document({title:'Missing'}).paragraph('TEXT').renderSync(),/no font configured/);

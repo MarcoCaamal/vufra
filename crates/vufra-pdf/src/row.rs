@@ -1,6 +1,6 @@
 //! Side-by-side row with text/image/graphics in independently measured columns.
-//! Unit 14: deliberately atomic across pages, unlike paginated main-flow tables.
-use crate::box_layout::{BoxFragmentPosition, PdfBox, PreparedBox};
+//! Short rows stay atomic; overflowing rows use aligned item and text-line fragments.
+use crate::box_layout::{BoxAlign, BoxFragmentPosition, PdfBox, PdfBoxItem, PreparedBox};
 use crate::image::PreparedImage;
 use crate::rich_text::{FontRegistry, RichLine, prepare_rich};
 use crate::{
@@ -75,6 +75,100 @@ pub struct PreparedRow {
 }
 
 impl PdfRow {
+    /// Divide a tall independently stacked row at synchronized item boundaries.
+    /// Each segment keeps all column widths; longer columns continue on later
+    /// pages while exhausted columns are empty. Plain text may split into lines.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn as_fragmentable_box(
+        &self,
+        family: &str,
+        fonts: &mut FontContext,
+        context: &mut LayoutContext<()>,
+        cancel: &AtomicBool,
+    ) -> Result<PdfBox, RenderError> {
+        // Shape ordinary text with the same Parley width used by the painter.
+        // A long paragraph becomes independently page-breakable measured lines.
+        // Mixed-font rich runs remain indivisible until line-range rich fragments
+        // can preserve exact glyph/font registry information.
+        let mut columns = Vec::new();
+        for col in &self.columns {
+            let mut expanded = Vec::new();
+            for item in &col.items {
+                check_cancel(cancel)?;
+                match item {
+                    PdfRowItem::Text { text, style } => {
+                        let lines = measure_text_lines(
+                            text,
+                            col.width,
+                            family,
+                            fonts,
+                            context,
+                            style.font_size,
+                            cancel,
+                        )?;
+                        let len = lines.len();
+                        for (idx, line) in lines.into_iter().enumerate() {
+                            let mut style = *style;
+                            if idx > 0 {
+                                style.space_before = 0.0;
+                            }
+                            if idx + 1 < len {
+                                style.space_after = 0.0;
+                            }
+                            expanded.push(PdfRowItem::Text { text: line, style });
+                        }
+                    }
+                    other => expanded.push(other.clone()),
+                }
+                if expanded.len() > 500 {
+                    return Err(RenderError::InvalidInput(
+                        "row text needs more than 500 line fragments",
+                    ));
+                }
+            }
+            columns.push(PdfRowColumn {
+                width: col.width,
+                right_align: col.right_align,
+                items: expanded,
+            });
+        }
+        let len = columns.iter().map(|col| col.items.len()).max().unwrap_or(0);
+        let items = (0..len)
+            .map(|i| {
+                PdfBoxItem::Row(PdfRow {
+                    gap: self.gap,
+                    columns: columns
+                        .iter()
+                        .map(|col| PdfRowColumn {
+                            width: col.width,
+                            right_align: col.right_align,
+                            items: col.items.get(i).cloned().into_iter().collect(),
+                        })
+                        .collect(),
+                })
+            })
+            .collect();
+        Ok(PdfBox {
+            width: None,
+            align: BoxAlign::Left,
+            padding: 0.0,
+            border_width: 0.0,
+            border_color: None,
+            background: None,
+            keep_together: false,
+            break_before: false,
+            keep_with_next: false,
+            items,
+        })
+    }
+    pub(crate) fn is_tall_row_error(error: &RenderError) -> bool {
+        matches!(
+            error,
+            RenderError::InvalidInput(
+                "row height exceeds printable page; split content into multiple rows"
+            )
+        )
+    }
     pub fn validate_structure(
         &self,
         content_width: f32,

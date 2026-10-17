@@ -36,6 +36,10 @@ enum PreparedBlock {
     Graphic,
     Row(super::row::PreparedRow),
     Box(super::box_layout::PreparedBox),
+    GeneratedBox {
+        source: super::PdfBox,
+        prepared: super::box_layout::PreparedBox,
+    },
     Rich {
         lines: Vec<RichLine>,
         line_height: f32,
@@ -411,6 +415,7 @@ pub(super) fn render_flow(
                     item_heights: prepared_box.item_heights.clone(),
                     padding: boxed.padding,
                     repeat_headers: prepared_box.repeat_headers.clone(),
+                    nested_spans: prepared_box.nested_spans.clone(),
                     keep_together: boxed.keep_together,
                     break_before: boxed.break_before,
                 });
@@ -517,7 +522,7 @@ pub(super) fn render_flow(
                 prepared.push(PreparedBlock::List { lines, style });
             }
             PdfBlock::Row(row) => {
-                let prepared_row = row.prepare(
+                let result = row.prepare(
                     (geometry.content_width(), geometry.content_height()),
                     &family,
                     &mut fonts,
@@ -526,17 +531,51 @@ pub(super) fn render_flow(
                         .as_mut()
                         .expect("nested content has font registry"),
                     cancel,
-                )?;
-                total_image_pixels = total_image_pixels.saturating_add(prepared_row.image_pixels);
+                );
+                match result {
+                    Ok(prepared_row) => {
+                        total_image_pixels =
+                            total_image_pixels.saturating_add(prepared_row.image_pixels);
+                        measurements.push(FlowBlock::Graphic {
+                            height: prepared_row.height,
+                        });
+                        prepared.push(PreparedBlock::Row(prepared_row));
+                    }
+                    Err(error) if super::PdfRow::is_tall_row_error(&error) => {
+                        let source =
+                            row.as_fragmentable_box(&family, &mut fonts, &mut context, cancel)?;
+                        let prepared_box = source.prepare(
+                            (geometry.content_width(), geometry.content_height()),
+                            &family,
+                            &mut fonts,
+                            &mut context,
+                            font_registry
+                                .as_mut()
+                                .expect("nested content has font registry"),
+                            cancel,
+                        )?;
+                        total_image_pixels =
+                            total_image_pixels.saturating_add(prepared_box.image_pixels);
+                        measurements.push(FlowBlock::Box {
+                            item_heights: prepared_box.item_heights.clone(),
+                            padding: 0.0,
+                            repeat_headers: prepared_box.repeat_headers.clone(),
+                            nested_spans: prepared_box.nested_spans.clone(),
+                            keep_together: false,
+                            break_before: false,
+                        });
+                        prepared.push(PreparedBlock::GeneratedBox {
+                            source,
+                            prepared: prepared_box,
+                        });
+                    }
+                    Err(error) => return Err(error),
+                }
                 if total_image_pixels > MAX_TOTAL_IMAGE_PIXELS {
                     return Err(RenderError::InvalidInput(
                         "total image pixel budget exceeded",
                     ));
                 }
-                measurements.push(FlowBlock::Graphic {
-                    height: prepared_row.height,
-                });
-                prepared.push(PreparedBlock::Row(prepared_row));
             }
             PdfBlock::Graphic(graphic) => {
                 graphic.validate(geometry.content_width(), geometry.content_height())?;
@@ -668,9 +707,16 @@ pub(super) fn render_flow(
                     last,
                     height,
                 } => {
-                    if let (PreparedBlock::Box(prepared_box), PdfBlock::Box(source)) =
-                        (&prepared[*block], &blocks[*block])
-                    {
+                    let fragment_source = match (&prepared[*block], &blocks[*block]) {
+                        (PreparedBlock::Box(prepared_box), PdfBlock::Box(source)) => {
+                            Some((prepared_box, source))
+                        }
+                        (PreparedBlock::GeneratedBox { source, prepared }, _) => {
+                            Some((prepared, source))
+                        }
+                        _ => None,
+                    };
+                    if let Some((prepared_box, source)) = fragment_source {
                         prepared_box.draw(
                             source,
                             &mut surface,
