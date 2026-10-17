@@ -426,3 +426,32 @@ El ejemplo incluye 37 tarjetas de altura variable y
 un PDF de 13 páginas sin pérdida de IDs.
 
 Consulta [ADR-0035](docs/adr/0035-automatic-grid-minimum-width-and-row-gap.md).
+
+## Unidad 35: títulos y separadores conscientes de la paginación
+
+Vufra mantiene el título junto al primer contenido visible,
+incluso si el autor añade uno o varios `spacer()` intermedios:
+
+```ts
+report.section('Transacciones',section=>section
+  .spacer(12)
+  .table(rows,{columns})
+);
+```
+
+El paginador calcula el espacio de la tabla o caja que realmente
+deberá reservar: si toda la caja cabe en una página nueva,
+mueve el grupo completo; si se fragmenta, conserva el título
+junto al primer fragmento útil. Esto evita encabezados huérfanos.
+
+Los separadores entre bloques que coinciden con un salto
+**implícito** de página ya no ocupan margen superior en la
+página nueva. En cambio, un espaciado al principio del documento
+o después de `.pageBreak()` se conserva deliberadamente.
+
+No añadimos otra sintaxis, CSS ni nuevo motor de layout.
+```bash
+node examples/fluent-page-aware-sections.mjs REGULAR.ttf BOLD.ttf artifacts/fluent-page-aware-sections.pdf
+```
+El ejemplo empresarial valida 185 transacciones y 11 páginas.
+Ver [ADR-0036](docs/adr/0036-page-aware-soft-separators-and-headings.md).

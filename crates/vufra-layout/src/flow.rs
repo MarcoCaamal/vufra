@@ -99,6 +99,70 @@ pub fn paginate_flow(
     paginate_flow_with_keep(blocks, &vec![false; blocks.len()], page_height)
 }
 
+/// The first visible fragment's minimum footprint. A hard page break (or
+/// an explicit break-before box) must never be crossed by keep-with-next.
+fn first_visible_height(block: &FlowBlock, page_height: f32) -> Option<f32> {
+    match block {
+        FlowBlock::PageBreak | FlowBlock::Spacer { .. } => None,
+        FlowBlock::Box {
+            break_before: true, ..
+        } => None,
+        FlowBlock::Box {
+            item_heights,
+            padding,
+            repeat_headers,
+            nested_spans,
+            ..
+        } => {
+            // A box that fits on an empty page is moved there *whole* by the
+            // box paginator. Keep-next must reserve its whole size as well;
+            // otherwise a heading may fit while the box jumps to the next page.
+            let total = item_heights.iter().sum::<f32>()
+                + 2.0 * padding
+                + nested_spans
+                    .iter()
+                    .map(|span| 2.0 * span.padding)
+                    .sum::<f32>();
+            if total <= page_height + EPS {
+                return Some(total);
+            }
+            let first = item_heights.first().copied().unwrap_or(0.0);
+            // Fragmenting tables must carry the repeated header plus first row.
+            let first_content = if repeat_headers.iter().any(|span| span.header_item == 0) {
+                first + item_heights.get(1).copied().unwrap_or(0.0)
+            } else {
+                first
+            };
+            Some(first_content + 2.0 * padding)
+        }
+        FlowBlock::Graphic { height } | FlowBlock::Image { height } => Some(*height),
+        FlowBlock::Paragraph {
+            line_height,
+            padding_before,
+            ..
+        } => Some(line_height + padding_before),
+    }
+}
+
+/// Return the next visible block and the full intervening vertical gap.
+/// Explicit page breaks (including break-before boxes) are hard boundaries.
+fn following_visible(blocks: &[FlowBlock], start: usize, page_height: f32) -> Option<(usize, f32)> {
+    let mut gap = 0.0;
+    for (idx, block) in blocks.iter().enumerate().skip(start) {
+        match block {
+            FlowBlock::Spacer { height } => {
+                if !height.is_finite() || *height <= 0.0 {
+                    return None; // The regular spacer branch reports InvalidHeight.
+                }
+                gap += height;
+            }
+            _ if first_visible_height(block, page_height).is_some() => return Some((idx, gap)),
+            _ => return None,
+        }
+    }
+    None
+}
+
 /// Moves a short text block and the beginning of the next block together when
 /// there is enough space on a fresh page. Flags address block indices; only
 /// Paragraph and Box blocks may be flagged. Oversized groups degrade to normal flow.
@@ -117,7 +181,19 @@ pub fn paginate_flow_with_keep(
         fragments: Vec::new(),
         used_height: 0.0,
     }];
+    // Spacers skipped at implicit page boundaries are still validated.
+    for item in blocks {
+        if let FlowBlock::Spacer { height } = item
+            && (!height.is_finite() || *height <= 0.0 || *height > page_height)
+        {
+            return Err(PaginationError::InvalidHeight);
+        }
+    }
+    let mut skipped_until = 0usize;
     for (block, item) in blocks.iter().enumerate() {
+        if block < skipped_until {
+            continue;
+        }
         if keep_with_next[block] {
             let own_height = match item {
                 FlowBlock::Paragraph {
@@ -133,30 +209,13 @@ pub fn paginate_flow_with_keep(
                 } => item_heights.iter().sum::<f32>() + 2.0 * padding,
                 _ => return Err(PaginationError::InvalidHeight),
             };
-            if let Some(next) = blocks.get(block + 1) {
-                let next_height = match next {
-                    FlowBlock::PageBreak => page_height,
-                    FlowBlock::Box {
-                        item_heights,
-                        padding,
-                        ..
-                    } => item_heights.first().copied().unwrap_or(0.0) + 2.0 * padding,
-                    FlowBlock::Image { height }
-                    | FlowBlock::Graphic { height }
-                    | FlowBlock::Spacer { height } => *height,
-                    FlowBlock::Paragraph {
-                        line_height,
-                        padding_before,
-                        ..
-                    } => line_height + padding_before,
-                };
-                if own_height.is_finite()
-                    && next_height.is_finite()
-                    && own_height + next_height <= page_height + EPS
-                {
+            if let Some((next_index, gap)) = following_visible(blocks, block + 1, page_height)
+                && let Some(next_height) = first_visible_height(&blocks[next_index], page_height)
+            {
+                let needed = own_height + gap + next_height;
+                if own_height.is_finite() && needed.is_finite() && needed <= page_height + EPS {
                     let current = pages.last().expect("initial page exists");
-                    if current.used_height > 0.0
-                        && current.used_height + own_height + next_height > page_height + EPS
+                    if current.used_height > 0.0 && current.used_height + needed > page_height + EPS
                     {
                         pages.push(FlowPage {
                             fragments: Vec::new(),
@@ -418,17 +477,32 @@ pub fn paginate_flow_with_keep(
                 current.used_height += height;
             }
             FlowBlock::Spacer { height } => {
-                if !height.is_finite() || *height <= 0.0 || *height > page_height {
-                    return Err(PaginationError::InvalidHeight);
+                // A vertical separator belongs *between* visible blocks.
+                // If it cannot stay with the first visible content after it,
+                // start a fresh page and omit the separator there.
+                // Leading spacers and spacers after explicit PageBreak are kept.
+                if pages.last().is_some_and(|p| !p.fragments.is_empty())
+                    && let Some((next_index, gap)) = following_visible(blocks, block, page_height)
+                    && let Some(next_height) =
+                        first_visible_height(&blocks[next_index], page_height)
+                {
+                    let current = pages.last().expect("page exists");
+                    if current.used_height + gap + next_height > page_height + EPS {
+                        pages.push(FlowPage {
+                            fragments: Vec::new(),
+                            used_height: 0.0,
+                        });
+                        skipped_until = next_index;
+                        continue;
+                    }
                 }
-                let current = pages.last_mut().expect("initial page exists");
-                if current.used_height + height > page_height + EPS {
+                if pages.last().expect("page exists").used_height + height > page_height + EPS {
                     pages.push(FlowPage {
                         fragments: Vec::new(),
                         used_height: 0.0,
                     });
                 }
-                let current = pages.last_mut().expect("initial page exists");
+                let current = pages.last_mut().expect("page exists");
                 current.fragments.push(FlowFragment::Spacer {
                     block,
                     height: *height,
@@ -1026,7 +1100,180 @@ mod tests {
         ));
     }
     #[test]
-    fn spacer_moves_to_next_page_and_does_not_draw() {
+    fn keep_reserves_entire_box_when_box_itself_fits_on_fresh_page() {
+        let blocks = [
+            para(3),
+            para(1),
+            FlowBlock::Spacer { height: 5.0 },
+            FlowBlock::Box {
+                item_heights: vec![15.0, 15.0, 15.0],
+                padding: 3.0,
+                repeat_headers: vec![BoxRepeatSpan {
+                    header_item: 0,
+                    end_item: 3,
+                }],
+                nested_spans: vec![],
+                keep_together: false,
+                break_before: false,
+            },
+        ];
+        let pages = paginate_flow_with_keep(&blocks, &[false, true, false, false], 100.0).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].fragments.len(), 1);
+        assert!(matches!(
+            pages[1].fragments[0],
+            FlowFragment::Paragraph { block: 1, .. }
+        ));
+        assert!(matches!(
+            pages[1].fragments[2],
+            FlowFragment::Box { block: 3, .. }
+        ));
+    }
+    #[test]
+    fn heading_after_soft_gap_stays_with_table_header_and_first_row() {
+        let blocks = [
+            para(7),
+            para(1),
+            FlowBlock::Spacer { height: 5.0 },
+            FlowBlock::Box {
+                item_heights: vec![22.0, 25.0, 22.0],
+                padding: 3.0,
+                repeat_headers: vec![BoxRepeatSpan {
+                    header_item: 0,
+                    end_item: 3,
+                }],
+                nested_spans: vec![],
+                keep_together: false,
+                break_before: false,
+            },
+        ];
+        let pages = paginate_flow_with_keep(&blocks, &[false, true, false, false], 100.0).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].fragments.len(), 1);
+        assert!(matches!(
+            pages[1].fragments[0],
+            FlowFragment::Paragraph { block: 1, .. }
+        ));
+        assert!(matches!(
+            pages[1].fragments[1],
+            FlowFragment::Spacer { block: 2, .. }
+        ));
+        assert!(matches!(
+            pages[1].fragments[2],
+            FlowFragment::Box {
+                block: 3,
+                start_item: 0,
+                ..
+            }
+        ));
+    }
+    #[test]
+    fn heading_keep_with_next_crosses_multiple_separators() {
+        let blocks = [
+            para(7),
+            para(1),
+            FlowBlock::Spacer { height: 6.0 },
+            FlowBlock::Spacer { height: 7.0 },
+            FlowBlock::Image { height: 20.0 },
+        ];
+        // 77 + 17 + 6 + 7 + 20 cannot fit in the remaining 23pt,
+        // but 17+13+20 fits easily on a fresh 100pt page.
+        let pages =
+            paginate_flow_with_keep(&blocks, &[false, true, false, false, false], 100.0).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[0].fragments.len(), 1);
+        assert!(matches!(
+            pages[1].fragments[0],
+            FlowFragment::Paragraph { block: 1, .. }
+        ));
+        assert!(matches!(
+            pages[1].fragments[1],
+            FlowFragment::Spacer { block: 2, .. }
+        ));
+        assert!(matches!(
+            pages[1].fragments[2],
+            FlowFragment::Spacer { block: 3, .. }
+        ));
+        assert!(matches!(
+            pages[1].fragments[3],
+            FlowFragment::Image { block: 4, .. }
+        ));
+        assert_eq!(pages[1].used_height, 50.0);
+    }
+    #[test]
+    fn separator_keeps_exact_space_when_both_contents_fit() {
+        let blocks = [para(2), FlowBlock::Spacer { height: 12.0 }, para(1)];
+        let pages = paginate_flow(&blocks, 100.0).unwrap();
+        assert_eq!(pages.len(), 1);
+        assert!(matches!(
+            pages[0].fragments[1],
+            FlowFragment::Spacer { height: 12.0, .. }
+        ));
+        assert!((pages[0].used_height - (27.0 + 12.0 + 17.0)).abs() < 0.01);
+    }
+    #[test]
+    fn explicit_page_break_preserves_intentional_top_spacing() {
+        let blocks = [
+            para(7),
+            FlowBlock::PageBreak,
+            FlowBlock::Spacer { height: 14.0 },
+            para(1),
+        ];
+        let pages = paginate_flow(&blocks, 100.0).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert!(matches!(
+            pages[1].fragments[0],
+            FlowFragment::Spacer {
+                block: 2,
+                height: 14.0
+            }
+        ));
+        assert!(matches!(
+            pages[1].fragments[1],
+            FlowFragment::Paragraph { block: 3, .. }
+        ));
+    }
+    #[test]
+    fn first_page_leading_spacer_is_not_automatically_trimmed() {
+        let pages = paginate_flow(&[FlowBlock::Spacer { height: 11.0 }, para(2)], 100.0).unwrap();
+        assert_eq!(pages.len(), 1);
+        assert!(matches!(
+            pages[0].fragments[0],
+            FlowFragment::Spacer { block: 0, .. }
+        ));
+        assert_eq!(pages[0].used_height, 38.0);
+    }
+    #[test]
+    fn keep_does_not_jump_over_explicit_page_break() {
+        let blocks = [
+            para(1),
+            FlowBlock::PageBreak,
+            FlowBlock::Spacer { height: 5.0 },
+            para(1),
+        ];
+        let pages = paginate_flow_with_keep(&blocks, &[true, false, false, false], 100.0).unwrap();
+        assert_eq!(pages.len(), 2);
+        assert!(matches!(
+            pages[0].fragments[0],
+            FlowFragment::Paragraph { block: 0, .. }
+        ));
+        assert!(matches!(
+            pages[1].fragments[0],
+            FlowFragment::Spacer { block: 2, .. }
+        ));
+    }
+    #[test]
+    fn invalid_gap_in_suppressed_run_still_fails_preflight() {
+        let blocks = [
+            para(7),
+            FlowBlock::Spacer { height: 12.0 },
+            FlowBlock::Spacer { height: f32::NAN },
+            FlowBlock::Image { height: 35.0 },
+        ];
+        assert!(paginate_flow(&blocks, 100.0).is_err());
+    }
+    #[test]
+    fn separator_drops_at_implicit_page_boundary_but_validates_input() {
         let pages = paginate_flow(
             &[para(4), FlowBlock::Spacer { height: 45.0 }, para(1)],
             80.0,
@@ -1035,11 +1282,14 @@ mod tests {
         assert_eq!(pages.len(), 2);
         assert!(matches!(
             pages[1].fragments[0],
-            FlowFragment::Spacer {
-                block: 1,
-                height: 45.0
-            }
+            FlowFragment::Paragraph { block: 2, .. }
         ));
+        assert!(pages.iter().all(|p| {
+            p.fragments
+                .iter()
+                .all(|f| !matches!(f, FlowFragment::Spacer { block: 1, .. }))
+        }));
+
         assert!(pages.iter().all(|p| p.used_height <= 80.0));
         assert!(paginate_flow(&[FlowBlock::Spacer { height: f32::NAN }], 80.0).is_err());
     }

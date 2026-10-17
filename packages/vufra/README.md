@@ -203,3 +203,17 @@ Es la misma API Fluent y también funciona con
 nodos reutilizables `grid(...)` en `.add(...)`.
 Ejemplo completo: `examples/fluent-auto-flow.mjs`;
 diseño: ADR-0035.
+
+## Saltos de página visualmente coherentes
+
+Los títulos (keepWithNext por defecto) ahora permanecen unidos
+al siguiente contenido visible aunque existan `spacer()` entre
+ambos. Una tabla que cabe completa se mueve con el título;
+una tabla multipágina puede mantener el título con su
+primera sección útil.
+
+Los espaciados que cruzan una frontera implícita dejan de
+introducir margen superior accidental. Los `spacer()`
+al inicio o después de `.pageBreak()` siguen siendo explícitos.
+No cambia la API Fluent. Ver ADR-0036 y el ejemplo
+`examples/fluent-page-aware-sections.mjs`.
