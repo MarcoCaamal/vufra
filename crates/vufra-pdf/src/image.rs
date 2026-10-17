@@ -27,9 +27,17 @@ pub struct PdfImage {
     pub fit: ImageFit,
 }
 
-/// Width and height define the content box, never the intrinsic pixel count.
-impl PdfImage {
-    pub fn validate_box(&self, content_width: f32, content_height: f32) -> Result<(), RenderError> {
+/// Validated position and cropping options. No compressed image bytes needed
+/// when drawing an image already prepared by the source row.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ImagePlacement {
+    pub width: f32,
+    pub height: f32,
+    pub fit: ImageFit,
+}
+
+impl ImagePlacement {
+    pub fn validate_box(self, content_width: f32, content_height: f32) -> Result<(), RenderError> {
         if !self.width.is_finite()
             || !self.height.is_finite()
             || self.width <= 0.0
@@ -41,12 +49,28 @@ impl PdfImage {
                 "image box exceeds printable area or has invalid dimensions",
             ));
         }
+        Ok(())
+    }
+}
+
+/// Width and height define the content box, never the intrinsic pixel count.
+impl PdfImage {
+    pub fn validate_box(&self, content_width: f32, content_height: f32) -> Result<(), RenderError> {
+        self.placement()
+            .validate_box(content_width, content_height)?;
         if self.data.is_empty() || self.data.len() > MAX_IMAGE_BYTES {
             return Err(RenderError::InvalidInput(
                 "image must contain 1..8 MiB of PNG or JPEG data",
             ));
         }
         Ok(())
+    }
+    pub(crate) fn placement(&self) -> ImagePlacement {
+        ImagePlacement {
+            width: self.width,
+            height: self.height,
+            fit: self.fit,
+        }
     }
     pub fn prepare(&self) -> Result<PreparedImage, RenderError> {
         let image = if self.data.starts_with(b"\x89PNG\r\n\x1a\n") {
@@ -88,29 +112,29 @@ impl PreparedImage {
     pub fn pixel_count(&self) -> u64 {
         self.pixels
     }
-    pub fn draw(
+    pub(crate) fn draw(
         &self,
         surface: &mut Surface,
-        image: &PdfImage,
+        placement: ImagePlacement,
         left: f32,
         top: f32,
     ) -> Result<(), RenderError> {
-        let sx = image.width / self.pixels_w;
-        let sy = image.height / self.pixels_h;
-        let scale = match image.fit {
+        let sx = placement.width / self.pixels_w;
+        let sy = placement.height / self.pixels_h;
+        let scale = match placement.fit {
             ImageFit::Contain => sx.min(sy),
             ImageFit::Cover => sx.max(sy),
         };
         let render_w = self.pixels_w * scale;
         let render_h = self.pixels_h * scale;
-        let dx = (image.width - render_w) / 2.0;
-        let dy = (image.height - render_h) / 2.0;
+        let dx = (placement.width - render_w) / 2.0;
+        let dy = (placement.height - render_h) / 2.0;
         let size = Size::from_wh(render_w, render_h).ok_or(RenderError::InvalidInput(
             "image render size must be positive",
         ))?;
         surface.push_transform(&Transform::from_translate(left, top));
-        if image.fit == ImageFit::Cover {
-            let rect = Rect::from_xywh(0.0, 0.0, image.width, image.height).ok_or(
+        if placement.fit == ImageFit::Cover {
+            let rect = Rect::from_xywh(0.0, 0.0, placement.width, placement.height).ok_or(
                 RenderError::InvalidInput("invalid image clipping rectangle"),
             )?;
             let mut builder = PathBuilder::new();
@@ -123,7 +147,7 @@ impl PreparedImage {
         surface.push_transform(&Transform::from_translate(dx, dy));
         surface.draw_image(self.image.clone(), size);
         surface.pop();
-        if image.fit == ImageFit::Cover {
+        if placement.fit == ImageFit::Cover {
             surface.pop();
         }
         surface.pop();

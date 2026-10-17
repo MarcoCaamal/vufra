@@ -612,7 +612,7 @@ fn render_writer_flow(
                     if let (PreparedBlock::Image(prepared_image), PdfBlock::Image(image)) =
                         (&prepared[*block], &blocks[*block])
                     {
-                        prepared_image.draw(&mut surface, image, left, y)?;
+                        prepared_image.draw(&mut surface, image.placement(), left, y)?;
                     }
                     y += height;
                 }

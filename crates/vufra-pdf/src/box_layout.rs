@@ -824,7 +824,7 @@ impl PreparedBox {
                 }
                 PreparedContent::Image(prepared, index) => {
                     if let PdfBoxItem::Image(img) = &source.items[*index] {
-                        prepared.draw(surface, img, x + self.padding, y)?;
+                        prepared.draw(surface, img.placement(), x + self.padding, y)?;
                     }
                 }
                 PreparedContent::Graphic(index) => {

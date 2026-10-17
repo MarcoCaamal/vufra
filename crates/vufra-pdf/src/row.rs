@@ -1,7 +1,7 @@
 //! Side-by-side row with text/image/graphics in independently measured columns.
 //! Short rows stay atomic; overflowing rows use aligned item and text-line fragments.
 use crate::box_layout::{BoxAlign, BoxFragmentPosition, PdfBox, PdfBoxItem, PreparedBox};
-use crate::image::PreparedImage;
+use crate::image::{ImagePlacement, PreparedImage};
 use crate::rich_text::{FontRegistry, RichLine, prepare_rich};
 use crate::{
     PdfGraphic, PdfImage, PdfTextRun, RenderError, TextStyle, check_cancel, measure_text_lines,
@@ -12,7 +12,7 @@ use krilla::{
     text::{Font, TextDirection},
 };
 use parley::{FontContext, FontFamily, FontFamilyName, Layout, LayoutContext, StyleProperty};
-use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, atomic::AtomicBool};
 use std::{borrow::Cow, collections::VecDeque};
 
 /// Internal shaped fragment: the original caller can never manufacture
@@ -35,6 +35,24 @@ pub struct PreparedRichFragment {
     offset: Option<f32>,
 }
 
+/// An image already parsed and dimension-checked by the original source
+/// row. Only paint geometry and a shared native image survive pagination;
+/// the compressed PNG/JPEG buffer is never cloned into its fragments.
+#[derive(Clone)]
+pub struct PreparedImageFragment {
+    placement: ImagePlacement,
+    bitmap: Arc<PreparedImage>,
+}
+
+impl std::fmt::Debug for PreparedImageFragment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PreparedImageFragment")
+            .field("placement", &self.placement)
+            .field("pixels", &self.bitmap.pixel_count())
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum PdfRowItem {
     Text {
@@ -52,6 +70,9 @@ pub enum PdfRowItem {
     #[doc(hidden)]
     MeasuredTextLine(PreparedTextFragment),
     Image(PdfImage),
+    /// Private, trusted prepared bitmap generated after native image preflight.
+    #[doc(hidden)]
+    CachedImage(PreparedImageFragment),
     Box(Box<PdfBox>),
     Graphic(PdfGraphic),
     Spacer(f32),
@@ -79,7 +100,7 @@ enum PreparedItemKind {
         line_height: f32,
         offsets: Vec<f32>,
     },
-    Image(PreparedImage),
+    Image(Arc<PreparedImage>),
     Box(Box<PreparedBox>),
     Graphic,
     Spacer,
@@ -155,6 +176,17 @@ impl PdfRow {
                                 offset: Some(offset),
                             }));
                         }
+                    }
+                    PreparedItemKind::Image(bitmap) => {
+                        let placement = match source_item {
+                            PdfRowItem::Image(source) => source.placement(),
+                            PdfRowItem::CachedImage(source) => source.placement,
+                            _ => unreachable!("prepared image must originate in image input"),
+                        };
+                        expanded.push(PdfRowItem::CachedImage(PreparedImageFragment {
+                            placement,
+                            bitmap,
+                        }));
                     }
                     _ => expanded.push(source_item.clone()),
                 }
@@ -295,6 +327,13 @@ impl PdfRow {
                         }
                     }
                     PdfRowItem::Image(img) => img.validate_box(col.width, page_height)?,
+                    PdfRowItem::CachedImage(img) => {
+                        img.placement.validate_box(col.width, page_height)?;
+                        if img.bitmap.pixel_count() > crate::image::MAX_IMAGE_PIXELS {
+                            return Err(RenderError::InvalidInput("invalid cached image pixels"));
+                        }
+                    }
+
                     PdfRowItem::Box(boxed) => {
                         boxed.validate_depth(col.width, page_height, depth + 1)?
                     }
@@ -475,9 +514,16 @@ impl PdfRow {
                         )
                     }
                     PdfRowItem::Image(image) => {
-                        let bitmap = image.prepare()?;
+                        let bitmap = Arc::new(image.prepare()?);
                         image_pixels = image_pixels.saturating_add(bitmap.pixel_count());
                         (image.height, PreparedItemKind::Image(bitmap))
+                    }
+                    PdfRowItem::CachedImage(source) => {
+                        image_pixels = image_pixels.saturating_add(source.bitmap.pixel_count());
+                        (
+                            source.placement.height,
+                            PreparedItemKind::Image(Arc::clone(&source.bitmap)),
+                        )
                     }
                     PdfRowItem::Box(boxed) => {
                         let prepared = boxed.prepare_depth(
@@ -595,13 +641,18 @@ impl PreparedRow {
                         }
                     }
                     PreparedItemKind::Image(prepared) => {
-                        if let PdfRowItem::Image(source) = &row.columns[col_idx].items[item_idx] {
+                        let placement = match &row.columns[col_idx].items[item_idx] {
+                            PdfRowItem::Image(source) => Some(source.placement()),
+                            PdfRowItem::CachedImage(source) => Some(source.placement),
+                            _ => None,
+                        };
+                        if let Some(placement) = placement {
                             let x = if col.right_align {
-                                left + col.x + col.width - source.width
+                                left + col.x + col.width - placement.width
                             } else {
                                 left + col.x
                             };
-                            prepared.draw(surface, source, x, position_y)?;
+                            prepared.draw(surface, placement, x, position_y)?;
                         }
                     }
                     PreparedItemKind::Box(prepared) => {
@@ -666,6 +717,95 @@ fn line_width(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cached_png_fragment_keeps_the_exact_prepared_image_and_fit() {
+        let image_bytes = include_bytes!("../../../packages/vufra/tests/fixtures/two-tone.png");
+        for fit in [crate::ImageFit::Contain, crate::ImageFit::Cover] {
+            let original = PdfImage {
+                data: image_bytes.to_vec(),
+                width: 90.0,
+                height: 50.0,
+                fit,
+            };
+            let bitmap = Arc::new(original.prepare().expect("real valid PNG"));
+            let ptr = Arc::as_ptr(&bitmap);
+            let image_pixels = bitmap.pixel_count();
+            let source = PdfRow {
+                gap: 0.0,
+                columns: vec![
+                    PdfRowColumn {
+                        width: 180.0,
+                        right_align: true,
+                        items: vec![PdfRowItem::Image(original)],
+                    },
+                    PdfRowColumn {
+                        width: 180.0,
+                        right_align: false,
+                        items: vec![PdfRowItem::Text {
+                            text: "original long paragraph".into(),
+                            style: TextStyle::paragraph(),
+                        }],
+                    },
+                ],
+            };
+            let prepared = PreparedRow {
+                height: 1100.0,
+                image_pixels,
+                columns: vec![
+                    PreparedColumn {
+                        x: 0.0,
+                        width: 180.0,
+                        right_align: true,
+                        items: vec![PreparedItem {
+                            top: 0.0,
+                            kind: PreparedItemKind::Image(Arc::clone(&bitmap)),
+                        }],
+                    },
+                    PreparedColumn {
+                        x: 180.0,
+                        width: 180.0,
+                        right_align: false,
+                        items: vec![PreparedItem {
+                            top: 0.0,
+                            kind: PreparedItemKind::Text {
+                                lines: vec!["FIRST_FRAGMENT".into(), "SECOND_FRAGMENT".into()],
+                                offsets: vec![0.0, 0.0],
+                                style: TextStyle::paragraph(),
+                            },
+                        }],
+                    },
+                ],
+            };
+            let fragmented = source.fragments_from_prepared(prepared).unwrap();
+            assert_eq!(fragmented.items.len(), 2);
+            let PdfBoxItem::Row(first) = &fragmented.items[0] else {
+                panic!("first fragment row");
+            };
+            let PdfRowItem::CachedImage(cached) = &first.columns[0].items[0] else {
+                panic!("image must be cached, never copied as PNG bytes");
+            };
+            assert_eq!(Arc::as_ptr(&cached.bitmap), ptr);
+            assert!(Arc::ptr_eq(&cached.bitmap, &bitmap));
+            assert_eq!(cached.placement.fit, fit);
+            assert_eq!(
+                (cached.placement.width, cached.placement.height),
+                (90.0, 50.0)
+            );
+            assert_eq!(cached.bitmap.pixel_count(), image_pixels);
+            first.validate_structure(360.0, 650.0).unwrap();
+            let PdfBoxItem::Row(second) = &fragmented.items[1] else {
+                panic!("second fragment row");
+            };
+            assert!(second.columns[0].items.is_empty());
+            assert!(matches!(
+                second.columns[1].items.as_slice(),
+                [PdfRowItem::MeasuredTextLine(_)]
+            ));
+            // No clone of the bitmap allocation was performed.
+            assert_eq!(Arc::strong_count(&bitmap), 2);
+        }
+    }
+
     #[test]
     fn prepared_long_row_reuses_parley_lines_and_styled_font_offsets() {
         let style = TextStyle::paragraph();

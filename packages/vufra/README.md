@@ -104,3 +104,14 @@ Funciona en filas raíz, boxes y cuerpos de tablas enriquecidas,
 preservando estilos, colores, alineación y encabezados. La sintaxis
 Fluent no cambia. Consultar ADR-0027 y el benchmark
 `scripts/benchmark-font-rows.mjs`.
+
+## Imágenes reutilizadas al fragmentar filas
+
+El motor Rust ya no reinterpreta ni copia imágenes PNG/JPEG al
+dividir filas largas. Su objeto `PreparedImage` se reutiliza
+internamente a través de un `Arc` con la misma geometría, fit
+y controles de seguridad. Funciona en raíz, boxes y tablas styled.
+La API Fluent pública no cambia.
+
+Benchmark: `scripts/benchmark-fragmented-images.mjs`.
+Más información: ADR-0028.

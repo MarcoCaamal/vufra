@@ -206,3 +206,23 @@ una mediana de **127,48 → 85,63 ms** de render en tres procesos
 por versión. Es un resultado para esta carga, no un speedup general.
 El pico de RSS fue prácticamente igual. Ver
 [ADR-0027](docs/adr/0027-reuse-prepared-row-lines-for-pagination.md).
+
+## Unidad 27: imágenes cacheadas en filas fragmentables
+
+Las filas demasiado altas reutilizan el mismo objeto nativo
+`PreparedImage` cuando se dividen en páginas. Solo se transfieren
+la geometría de pintado y una referencia `Arc`: no se copian
+los bytes comprimidos ni se parsea otra vez el PNG/JPEG.
+
+```bash
+node scripts/benchmark-fragmented-images.mjs REGULAR.ttf BOLD.ttf 3
+```
+
+En la carga sintética de 10 PNG y 4.200 tokens (40 páginas), la
+mediana local de render bajó de **270,89 a 162,86 ms** y el
+pico RSS de **121,14 a 117,08 MiB**. Ambas versiones produjeron
+un PDF binariamente idéntico de 497.061 bytes. No es una promesa
+de velocidad en todos los PDF.
+
+La Fluent API y la protección de presupuestos siguen intactas.
+Ver [ADR-0028](docs/adr/0028-cached-image-fragments.md).

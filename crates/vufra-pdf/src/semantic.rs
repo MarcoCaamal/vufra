@@ -5,7 +5,7 @@
 use crate::{
     BoxAlign, MAX_IMAGE_BLOCKS, MAX_TOTAL_IMAGE_BYTES, PdfBlock, PdfBox, PdfBoxItem, PdfBoxTable,
     PdfGraphic, PdfImage, PdfRow, PdfRowColumn, PdfRowItem, PdfTextRun, RenderError, TextStyle,
-    row::{PreparedRichFragment, PreparedTextFragment},
+    row::{PreparedImageFragment, PreparedRichFragment, PreparedTextFragment},
 };
 
 #[derive(Clone, Debug)]
@@ -122,6 +122,8 @@ pub enum ContentNode {
     PreparedRichLine(PreparedRichFragment),
     #[doc(hidden)]
     PreparedTextLine(PreparedTextFragment),
+    #[doc(hidden)]
+    PreparedImage(PreparedImageFragment),
 }
 impl ContentNode {
     pub fn paragraph(text: impl Into<String>) -> Self {
@@ -251,6 +253,7 @@ impl From<PdfRowItem> for ContentNode {
             PdfRowItem::Spacer(h) => Self::Spacer(h),
             PdfRowItem::MeasuredRichLine(line) => Self::PreparedRichLine(line),
             PdfRowItem::MeasuredTextLine(line) => Self::PreparedTextLine(line),
+            PdfRowItem::CachedImage(img) => Self::PreparedImage(img),
         }
     }
 }
@@ -452,6 +455,7 @@ impl TryFrom<ContentNode> for PdfRowItem {
             }
             ContentNode::PreparedRichLine(f) => Ok(Self::MeasuredRichLine(f)),
             ContentNode::PreparedTextLine(f) => Ok(Self::MeasuredTextLine(f)),
+            ContentNode::PreparedImage(img) => Ok(Self::CachedImage(img)),
             _ => Err(not_allowed()),
         }
     }
@@ -509,6 +513,14 @@ impl SemanticBudget {
                     .image_bytes
                     .checked_add(image.data.len())
                     .ok_or(RenderError::InvalidInput("too much image data"))?;
+            }
+            ContentNode::PreparedImage(_) => {
+                // Only native, already preflighted fragments can construct this;
+                // they contain no duplicate PNG/JPEG buffers.
+                self.images = self
+                    .images
+                    .checked_add(1)
+                    .ok_or(RenderError::InvalidInput("too many cached images"))?;
             }
             ContentNode::Box { children, .. } => {
                 if children.len() > 500 {
