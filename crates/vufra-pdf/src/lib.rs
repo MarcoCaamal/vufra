@@ -10,7 +10,10 @@ use std::{
     borrow::Cow,
     error::Error,
     fmt,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 static NEVER_CANCELLED: AtomicBool = AtomicBool::new(false);
 pub(crate) fn check_cancel(cancel: &AtomicBool) -> Result<(), RenderError> {
@@ -115,7 +118,7 @@ impl Error for RenderError {}
 /// Cancellation is passed through from NAPI to the same native renderer.
 pub fn render_semantic_pdf(
     document: SemanticDocument,
-    font_bytes: Vec<u8>,
+    font_bytes: Arc<Vec<u8>>,
     options: RenderOptions,
 ) -> Result<Vec<u8>, RenderError> {
     render_semantic_pdf_with_cancel(document, font_bytes, options, &NEVER_CANCELLED)
@@ -123,7 +126,7 @@ pub fn render_semantic_pdf(
 
 pub fn render_semantic_pdf_with_cancel(
     document: SemanticDocument,
-    font_bytes: Vec<u8>,
+    font_bytes: Arc<Vec<u8>>,
     options: RenderOptions,
     cancel: &AtomicBool,
 ) -> Result<Vec<u8>, RenderError> {
@@ -218,13 +221,13 @@ mod tests {
     fn semantic_input_rejects_invalid_title_font_and_options() {
         let doc = SemanticDocument::new("");
         assert!(matches!(
-            render_semantic_pdf(doc, vec![1], RenderOptions::default()),
+            render_semantic_pdf(doc, Arc::new(vec![1]), RenderOptions::default()),
             Err(RenderError::InvalidInput(_))
         ));
         assert!(matches!(
             render_semantic_pdf(
                 SemanticDocument::new("Test"),
-                vec![],
+                Arc::new(vec![]),
                 RenderOptions::default()
             ),
             Err(RenderError::InvalidFont)
@@ -232,7 +235,7 @@ mod tests {
         assert!(matches!(
             render_semantic_pdf(
                 SemanticDocument::new("Test"),
-                vec![1],
+                Arc::new(vec![1]),
                 RenderOptions {
                     text_size: f32::NAN,
                     ..RenderOptions::default()
@@ -246,7 +249,12 @@ mod tests {
         let signal = AtomicBool::new(true);
         let doc = SemanticDocument::new("Cancelable");
         assert!(matches!(
-            render_semantic_pdf_with_cancel(doc, vec![0, 1, 2], RenderOptions::default(), &signal),
+            render_semantic_pdf_with_cancel(
+                doc,
+                Arc::new(vec![0, 1, 2]),
+                RenderOptions::default(),
+                &signal
+            ),
             Err(RenderError::Cancelled)
         ));
     }

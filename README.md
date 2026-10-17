@@ -248,3 +248,26 @@ Se observó maxRSS de 136,46 → 116,52 MiB con ese payload y
 Estos resultados no garantizan aceleración general.
 
 Detalles: [ADR-0029](docs/adr/0029-owned-font-buffer-and-safe-napi-snapshots.md).
+
+## Unidad 29: fuentes nativas inmutables reutilizables
+
+Una misma instancia `createVufra({font})` conserva una fuente en un
+recurso inmutable de Rust, compartido mediante `Arc<Vec<u8>>` entre
+sus documentos. Se hace **una copia al registrar la fuente** y
+no otra por cada render. Las opciones `document({font})` generan
+otro snapshot aislado; las colas siguen copiando inputs al admitirlos.
+
+Esto **no es zero-copy** desde el `Buffer` de JavaScript: ciertos
+Buffer comparten memoria del pool de Node y no pueden transferirse
+con seguridad. Nunca prestamos memoria mutable de JS a un worker.
+
+```bash
+node scripts/benchmark-reused-native-font.mjs REGULAR.ttf BOLD.ttf 3 10
+```
+
+Con una TTF válida rellenada artificialmente a 10 MiB, nueve
+documentos sucesivos dieron una mediana de maxRSS de
+172,57 → 110,74 MiB (tres procesos por versión). Es una carga
+sintética dirigida a copias de buffers, no una ganancia universal.
+
+Más detalles: [ADR-0030](docs/adr/0030-immutable-native-font-assets.md).

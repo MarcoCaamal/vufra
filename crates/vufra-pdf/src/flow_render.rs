@@ -26,12 +26,6 @@ use std::{
 };
 use vufra_layout::flow::{FlowBlock, FlowFragment, paginate_flow_with_keep};
 
-/// Wrap the owned snapshot without copying the font bytes again.
-/// Krilla, Fontique, and the rich registry share references to this Arc.
-fn shared_regular_font(font_bytes: Vec<u8>) -> Arc<Vec<u8>> {
-    Arc::new(font_bytes)
-}
-
 enum PreparedBlock {
     Text {
         lines: Vec<String>,
@@ -146,7 +140,7 @@ fn validate_writer_blocks(blocks: &[PdfBlock]) -> Result<(), RenderError> {
 pub(crate) fn render_semantic_flow(
     title: &str,
     canonical: Vec<ContentNode>,
-    font_bytes: Vec<u8>,
+    font_bytes: Arc<Vec<u8>>,
     options: RenderOptions,
     geometry: PageGeometry,
     extra_fonts: Vec<PdfFontFace>,
@@ -179,7 +173,7 @@ pub(crate) fn render_semantic_flow(
 fn render_writer_flow(
     title: &str,
     blocks: &[PdfBlock],
-    font_bytes: Vec<u8>,
+    font_bytes: Arc<Vec<u8>>,
     options: RenderOptions,
     mut geometry: PageGeometry,
     extra_fonts: Vec<PdfFontFace>,
@@ -187,7 +181,7 @@ fn render_writer_flow(
     cancel: &AtomicBool,
 ) -> Result<Vec<u8>, RenderError> {
     // One font payload is shared between Krilla, Parley and glyph coverage.
-    let regular_bytes = shared_regular_font(font_bytes);
+    let regular_bytes = font_bytes;
     let font = Font::new(regular_bytes.clone().into(), 0).ok_or(RenderError::InvalidFont)?;
     let mut fonts = FontContext {
         collection: Collection::new(CollectionOptions {
@@ -727,7 +721,7 @@ mod owned_font_tests {
     fn owned_font_vec_moves_to_single_krilla_fontique_allocation() {
         let bytes = vec![7u8; 3 * 1024 * 1024];
         let address = bytes.as_ptr();
-        let shared = shared_regular_font(bytes);
+        let shared = Arc::new(bytes);
         assert_eq!(
             shared.as_ptr(),
             address,

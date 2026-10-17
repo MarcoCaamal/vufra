@@ -189,14 +189,24 @@ interface NativeToken {
   readonly isCancelled: boolean;
 }
 interface NativeFontFace {name:string;data:Uint8Array}
+/** Opaque native-owned immutable bytes; JS receives no mutable view. */
+export interface NativeFontResource {readonly byteLength:number}
+export function prepareFont(data:Uint8Array):NativeFontResource {
+  if(!(data instanceof Uint8Array)||data.byteLength===0||data.byteLength>12*1024*1024)
+    throw new TypeError('native font must contain 1..12 MiB of bytes');
+  return new native.NativeFont(data);
+}
+type FontInput=Uint8Array|NativeFontResource;
+
 interface NativeBinding {
   PdfCancellationToken: new () => NativeToken;
+  NativeFont: new (bytes:Uint8Array) => NativeFontResource;
   renderPdfNative(
-    title:string,blocks:NativeBlock[],font:Uint8Array,page?:NativePage,
+    title:string,blocks:NativeBlock[],font:NativeFontResource,page?:NativePage,
     fontFaces?:NativeFontFace[],chrome?:NativeChrome
   ):Uint8Array;
   renderPdfAsyncNative(
-    title:string,blocks:NativeBlock[],font:Uint8Array,page?:NativePage,
+    title:string,blocks:NativeBlock[],font:NativeFontResource,page?:NativePage,
     token?:NativeToken,fontFaces?:NativeFontFace[],chrome?:NativeChrome
   ):Promise<{pdf:Uint8Array;renderMs:number}>;
 }
@@ -247,18 +257,18 @@ function normalizeStyle(style: Partial<PdfTextStyle>): PdfTextStyle {
 }
 
 type NativeArguments=[
-  title:string,blocks:NativeBlock[],font:Uint8Array,
+  title:string,blocks:NativeBlock[],font:NativeFontResource,
   page?:NativePage,fontFaces?:NativeFontFace[],chrome?:NativeChrome
 ];
 
 /** Shared preflight/normalization for both the synchronous and asynchronous API. */
-function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments {
+function normalizePdf(document: PdfDocument, font: FontInput): NativeArguments {
   if (!document || typeof document.title !== 'string' || !document.title.trim()) {
     throw new TypeError('Vufra requires a nonempty document.title');
   }
-  if (!(font instanceof Uint8Array) || font.byteLength === 0) {
-    throw new TypeError('Vufra requires font data as a nonempty Uint8Array / Buffer');
-  }
+  if(!(font instanceof Uint8Array) && !(font instanceof native.NativeFont))
+    throw new TypeError('Vufra requires a Uint8Array or immutable native font resource');
+  if(font.byteLength===0)throw new TypeError('Vufra requires a nonempty font');
   if(!Array.isArray(document.blocks))
     throw new TypeError('document.blocks must be an array');
   const page = document.page === undefined ? undefined : normalizePage(document.page);
@@ -597,11 +607,13 @@ function normalizePdf(document: PdfDocument, font: Uint8Array): NativeArguments 
       }
     }
   }
-  return [document.title,blocks,font,page,fontFaces,normalizedChrome];
+  return [document.title,blocks,
+    font instanceof native.NativeFont?font:prepareFont(font),
+    page,fontFaces,normalizedChrome];
 }
 
 /** Synchronous native render. Blocks the Node.js event loop until the PDF is ready. */
-export function renderPdf(document: PdfDocument, font: Uint8Array): Uint8Array {
+export function renderPdf(document: PdfDocument, font: FontInput): Uint8Array {
   return native.renderPdfNative(...normalizePdf(document, font));
 }
 
@@ -611,7 +623,7 @@ export function renderPdf(document: PdfDocument, font: Uint8Array): Uint8Array {
  * No force-killing of a thread; one third-party shaping call cannot be preempted.
  */
 export async function renderPdfAsyncMeasured(
-  document: PdfDocument, font: Uint8Array, options: PdfAsyncOptions = {},
+  document: PdfDocument, font: FontInput, options: PdfAsyncOptions = {},
 ): Promise<PdfRenderMeasurement> {
   const args = normalizePdf(document, font);
   const token = new native.PdfCancellationToken();
@@ -641,7 +653,7 @@ export async function renderPdfAsyncMeasured(
 
 /** Same PDF as renderPdf(), with native cooperative cancellation support. */
 export async function renderPdfAsync(
-  document: PdfDocument, font: Uint8Array, options: PdfAsyncOptions = {},
+  document: PdfDocument, font: FontInput, options: PdfAsyncOptions = {},
 ): Promise<Uint8Array> {
   const result = await renderPdfAsyncMeasured(document, font, options);
   return result.pdf;

@@ -663,18 +663,44 @@ fn parse_document(
     Ok(doc)
 }
 
+/// Snapshot caller-mutable bytes exactly once into a reusable immutable
+/// native font resource. JavaScript receives no mutable view of its Arc.
+#[napi]
+pub struct NativeFont {
+    bytes: Arc<Vec<u8>>,
+}
+#[napi]
+impl NativeFont {
+    #[napi(constructor)]
+    pub fn new(data: Buffer) -> napi::Result<Self> {
+        if data.is_empty() || data.len() > 12 * 1024 * 1024 {
+            return Err(napi::Error::from_reason(
+                "native font resource needs 1..12 MiB of bytes",
+            ));
+        }
+        Ok(Self {
+            bytes: Arc::new(data.to_vec()),
+        })
+    }
+
+    #[napi(getter)]
+    pub fn byte_length(&self) -> u32 {
+        self.bytes.len() as u32
+    }
+}
+
 /// Synchronous render of the canonical authored document.
 #[napi]
 pub fn render_pdf_native(
     title: String,
     blocks: Vec<NodeBlock>,
-    font_data: Buffer,
+    font_data: &NativeFont,
     page: Option<NodePage>,
     font_faces: Option<Vec<NodeFontFace>>,
     chrome: Option<NodePageChrome>,
 ) -> napi::Result<Buffer> {
     let doc = parse_document(title, blocks, page, font_faces, chrome)?;
-    vufra_pdf::render_semantic_pdf(doc, font_data.to_vec(), RenderOptions::default())
+    vufra_pdf::render_semantic_pdf(doc, Arc::clone(&font_data.bytes), RenderOptions::default())
         .map(Buffer::from)
         .map_err(|e| napi::Error::from_reason(e.to_string()))
 }
@@ -716,7 +742,7 @@ pub struct NativePdfResult {
 /// Owned input, moved off the JS thread before CPU-heavy layout and rendering.
 pub struct PdfRenderTask {
     doc: Option<SemanticDocument>,
-    font_data: Vec<u8>,
+    font_data: Option<Arc<Vec<u8>>>,
     cancelled: Arc<AtomicBool>,
 }
 impl Task for PdfRenderTask {
@@ -731,7 +757,9 @@ impl Task for PdfRenderTask {
             .ok_or_else(|| napi::Error::from_reason("native render task already consumed"))?;
         let bytes = vufra_pdf::render_semantic_pdf_with_cancel(
             doc,
-            std::mem::take(&mut self.font_data),
+            self.font_data
+                .take()
+                .ok_or_else(|| napi::Error::from_reason("native font task already consumed"))?,
             RenderOptions::default(),
             &self.cancelled,
         )
@@ -752,7 +780,7 @@ impl Task for PdfRenderTask {
 pub fn render_pdf_async_native(
     title: String,
     blocks: Vec<NodeBlock>,
-    font_data: Buffer,
+    font_data: &NativeFont,
     page: Option<NodePage>,
     token: Option<&PdfCancellationToken>,
     font_faces: Option<Vec<NodeFontFace>>,
@@ -761,7 +789,7 @@ pub fn render_pdf_async_native(
     let doc = parse_document(title, blocks, page, font_faces, chrome)?;
     Ok(AsyncTask::new(PdfRenderTask {
         doc: Some(doc),
-        font_data: font_data.to_vec(),
+        font_data: Some(Arc::clone(&font_data.bytes)),
         cancelled: token.map_or_else(|| Arc::new(AtomicBool::new(false)), |t| t.cancelled.clone()),
     }))
 }

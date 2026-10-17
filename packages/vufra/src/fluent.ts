@@ -5,7 +5,7 @@
  * callback, then sealed; both produce the same low-level AST used by the native
  * renderer. No implicit font lookup or hidden browser.
  */
-import { renderPdf, renderPdfAsync, type PdfAsyncOptions, type PdfBlock,
+import { renderPdf, renderPdfAsync, prepareFont, type NativeFontResource, type PdfAsyncOptions, type PdfBlock,
   type PdfDocument, type PdfPageOptions, type PdfBox, type PdfBoxItem, type PdfRow, type PdfRowColumn,
   type PdfRowItem, type PdfRichRun, type PdfTextStyle, type PdfPageChrome, type PdfBoxTable
 } from './renderer';
@@ -244,7 +244,8 @@ function ensureText(text:unknown):asserts text is string{
 }
 
 type BuilderContext = {
-  font?:Uint8Array;fonts:Record<string,Uint8Array>;theme?:VufraTheme;
+  font?:Uint8Array;nativeFont?:NativeFontResource;
+  fonts:Record<string,Uint8Array>;theme?:VufraTheme;
   page:PdfPageOptions;title:string;
 };
 function cloneConfig(config:VufraConfig):VufraConfig{
@@ -912,11 +913,11 @@ export class DocumentBuilder {
   }
   async render(options:PdfAsyncOptions={}):Promise<Uint8Array>{
     if(!this.ctx.font)fail('no font configured; use createVufra({font}) or document({font})');
-    return renderPdfAsync(this.renderInput(),this.ctx.font,options);
+    return renderPdfAsync(this.renderInput(),this.ctx.nativeFont??this.ctx.font,options);
   }
   renderSync():Uint8Array{
     if(!this.ctx.font)fail('no font configured; use createVufra({font}) or document({font})');
-    return renderPdf(this.renderInput(),this.ctx.font);
+    return renderPdf(this.renderInput(),this.ctx.nativeFont??this.ctx.font);
   }
   enqueue(queue:PdfRenderQueue,options:PdfEnqueueOptions={}):Promise<Uint8Array>{
     if(!this.ctx.font)fail('no font configured; use createVufra({font}) or document({font})');
@@ -925,19 +926,23 @@ export class DocumentBuilder {
 }
 export class Vufra {
   private readonly defaults:VufraConfig;
+  private readonly defaultFontResource?:NativeFontResource;
   constructor(defaults:VufraConfig={}) {
     this.defaults=cloneConfig(defaults);
+    // One isolated native-owned snapshot per Vufra instance, reused by all
+    // documents built with the default font. No mutable caller buffer retained.
+    this.defaultFontResource=this.defaults.font?prepareFont(this.defaults.font):undefined;
   }
   document(options:DocumentOptions={}):DocumentBuilder{
     if(options===null || typeof options!=='object')fail('document options must be an object');
-    const snapshot=cloneConfig({...this.defaults,
-      fonts:{...this.defaults.fonts,...options.fonts},
-      font:options.font??this.defaults.font,
-      theme:options.theme??this.defaults.theme});
-    const fonts=snapshot.fonts??{};
-    const theme=snapshot.theme;
+    // Clone only caller-provided overrides; defaults are already private
+    // snapshots and cannot be reached through toDocument() or fluent builders.
+    const override=cloneConfig({font:options.font,fonts:options.fonts,theme:options.theme});
+    const fonts={...(this.defaults.fonts??{}),...(override.fonts??{})};
+    const font=override.font??this.defaults.font;
+    const nativeFont=override.font?prepareFont(override.font):this.defaultFontResource;
     const ctx:BuilderContext={
-      font:snapshot.font,fonts,theme,
+      font,nativeFont,fonts,theme:override.theme??this.defaults.theme,
       title:options.title??'Documento Vufra',
       page:pageOptions(options),
     };

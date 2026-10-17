@@ -125,3 +125,14 @@ para evitar carreras con el worker asíncrono. También se mantiene
 el aislamiento de `PdfRenderQueue` y sus cancelaciones.
 
 Benchmark: `scripts/benchmark-napi-font-ownership.mjs`, ADR-0029.
+
+## Reutilización automática de fuente nativa
+
+`createVufra({font})` crea un snapshot inmutable en Rust y
+reutiliza el mismo recurso `NativeFont` en documentos Fluent
+sucesivos. Una fuente de override crea su propio recurso. No cambia
+la sintaxis pública ni los snapshots y límites de `PdfRenderQueue`.
+
+El primer paso JS→NAPI sigue copiando los bytes por seguridad:
+no es zero-copy de buffers arbitrarios de Node. Benchmark
+`scripts/benchmark-reused-native-font.mjs` y ADR-0030.
