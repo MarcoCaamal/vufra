@@ -1,3 +1,4 @@
+import {massiveFlow} from './fixtures/flow.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -7,7 +8,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const require = createRequire(import.meta.url);
-const {renderPdf, renderPdfAsync, PdfRenderQueue} = require('../dist/index.js');
+const {renderPdf, renderPdfAsync, PdfRenderQueue} = ({...require('../dist/index.js'),...require('../dist/renderer.js')});
 const png=readFileSync(new URL('./fixtures/two-tone.png',import.meta.url));
 const jpeg=readFileSync(new URL('./fixtures/two-tone.jpg',import.meta.url));
 const alpha=readFileSync(new URL('./fixtures/transparent.png',import.meta.url));
@@ -54,7 +55,7 @@ function ppmPixel(path,x,y) {
 test('PNG and JPEG are embedded, and mixed-flow text remains selectable and in order',()=>{
   const result=inspect(renderPdf({
     title:'PNG and JPEG',
-    blocks:[{type:'paragraph',text:'BEFOREIMAGE'},{type:'image',image:{data:png,width:80,height:80,fit:'contain'}},
+    blocks:[{type:'paragraph',text:'BEFOREIMAGE'},{type:'image',data:png,width:80,height:80,fit:'contain'},
       {type:'paragraph',text:'BETWEENIMAGES'},img(jpeg),
       {type:'paragraph',text:'AFTERIMAGE'}]
   },font));
@@ -123,7 +124,7 @@ test('async and bounded queue preserve image data after caller mutation',async()
   const src=Buffer.from(jpeg);
   const doc={title:'Snapshot of embedded image',blocks:[img(src),{type:'paragraph',text:'MUTATIONSAFE'}]};
   const queue=new PdfRenderQueue({maxConcurrent:1,maxQueued:1});
-  const first=queue.render({title:'Background',rows:Array.from({length:2000},(_,i)=>'ROW'+i)},font);
+  const first=queue.render(massiveFlow('Background','ROW',2000,''),font);
   const second=queue.render(doc,font);
   const stats=queue.stats;
   assert.equal(stats.queued,1);

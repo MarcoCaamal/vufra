@@ -1,60 +1,62 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
-const require = createRequire(import.meta.url);
-const { renderPdf } = require('../dist/index.js');
-
-const fontPath = process.env.VUFRA_FONT || execFileSync('fc-match', ['Noto Sans', '-f', '%{file}\n'], { encoding: 'utf8' }).trim();
-const font = readFileSync(fontPath);
-
-function inspect(pdf) {
-  const dir = mkdtempSync(join(tmpdir(), 'vufra-sdk-test-'));
-  const path = join(dir, 'generated.pdf');
-  writeFileSync(path, pdf);
-  const info = execFileSync('pdfinfo', [path], { encoding: 'utf8' });
-  const text = execFileSync('pdftotext', ['-layout', path, '-'], { encoding: 'utf8' });
-  return { info, text };
+import {createRequire} from 'node:module';
+import {execFileSync} from 'node:child_process';
+import {readFileSync,writeFileSync,mkdtempSync} from 'node:fs';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+const require=createRequire(import.meta.url);
+const {createVufra}=require('../dist/index.js');
+const font=readFileSync(process.env.VUFRA_FONT ||
+  execFileSync('fc-match',['Noto Sans','-f','%{file}\n'],{encoding:'utf8'}).trim());
+const engine=createVufra({font});
+function inspect(pdf){
+  const path=join(mkdtempSync(join(tmpdir(),'vufra-sdk-')),'pdf.pdf');
+  writeFileSync(path,pdf);
+  return {
+    pages:+execFileSync('pdfinfo',[path],{encoding:'utf8'}).match(/Pages:\s+(\d+)/)[1],
+    text:execFileSync('pdftotext',['-raw',path,'-'],{encoding:'utf8'})
+  };
 }
-
-test('Node -> Rust -> PDF with Latin unicode and multiple pages', () => {
-  const pdf = renderPdf({
-    title: 'Vufra desde TypeScript',
-    paragraphs: ['¡Hola, Cancún! Niño, acción, México y ¿Qué?', 'Un párrafo largo que debe partirse en muchas líneas. '.repeat(32)],
-    rows: ['Fila uno', 'Fila dos', ...Array.from({ length: 130 }, (_, i) => 'Registro ' + i)]
-  }, font);
-  assert.equal(Buffer.isBuffer(pdf), true);
-  assert.ok(pdf.subarray(0, 5).equals(Buffer.from('%PDF-')));
-  const { info, text } = inspect(pdf);
-  assert.match(info, /Pages:\s+([2-9]|\d{2,})/);
-  for (const word of ['Cancún', 'Niño', 'acción', 'México', '¿Qué', 'Registro 129']) assert.ok(text.includes(word), word);
-  console.log('SDK smoke PDF pages:', info.match(/Pages:\s+(\d+)/)?.[1]);
+test('Fluent renders unicode, multiple paragraphs and pages from Rust',()=>{
+  const pdf=engine.document({title:'Desde Fluent'})
+    .paragraph('¡Hola, Cancún! Niño, acción, México y ¿Qué?')
+    .paragraph('Un párrafo extenso que debe partirse en muchas líneas. '.repeat(32))
+    .section(s=>{
+      for(let i=0;i<130;i++)s.paragraph('REGISTRO_'+String(i).padStart(4,'0'));
+    }).renderSync();
+  assert.equal(Buffer.from(pdf).subarray(0,5).toString(),'%PDF-');
+  const out=inspect(pdf);
+  assert.ok(out.pages>=2);
+  for(const word of ['Cancún','Niño','acción','México','REGISTRO_0129'])
+    assert.ok(out.text.includes(word),word);
 });
-
-test('1000 rows survive PDF pagination and extraction in order', () => {
-  const pdf = renderPdf({ title: '1000 registros', rows: Array.from({length: 1000}, (_,i) => 'Elemento ' + String(i + 1).padStart(4, '0')) }, font);
-  const { info, text } = inspect(pdf);
-  const numbers = [...text.matchAll(/\b(\d{4})\s+\|\s+Elemento\s+(\d{4})/g)].map((m) => Number(m[1]));
-  assert.deepEqual(numbers, Array.from({length: 1000}, (_,i) => i + 1));
-  assert.ok(Number(info.match(/Pages:\s+(\d+)/)?.[1]) > 1);
+test('1000 Fluent entries preserve exact order and paginate',()=>{
+  const pdf=engine.document({title:'Mil entradas'}).section(s=>{
+    for(let i=1;i<=1000;i++)s.paragraph('ENTRY_'+String(i).padStart(4,'0'));
+  }).renderSync();
+  const out=inspect(pdf);
+  assert.ok(out.pages>5);
+  assert.deepEqual([...out.text.matchAll(/ENTRY_(\d{4})/g)].map(x=>+x[1]),
+    Array.from({length:1000},(_,i)=>i+1));
 });
-
-test('invalid title/font/paragraphs are rejected', () => {
-  assert.throws(() => renderPdf({ title: '' }, font), /title/);
-  assert.throws(() => renderPdf({ title: 'valid' }, new Uint8Array()), /font/);
-  assert.throws(() => renderPdf({ title: 'valid', paragraphs: [123] }, font), /paragraphs/);
-  assert.throws(() => renderPdf({ title: 'valid' }, Uint8Array.of(0, 1, 2)), /Font/);
+test('invalid Fluent title, fonts, or paragraph values reject',()=>{
+  assert.throws(()=>engine.document({title:''}).paragraph('text').renderSync(),/title/);
+  assert.throws(()=>createVufra({font:new Uint8Array()})
+    .document({title:'ok'}).paragraph('text').renderSync(),/font/);
+  assert.throws(()=>engine.document({title:'ok'}).paragraph(123),/text/);
+  assert.throws(()=>createVufra({font:Uint8Array.of(0,1,2)})
+    .document({title:'ok'}).paragraph('valid').renderSync(),/Font/);
 });
-
-test('overlong title and unbreakable paragraph are rejected', () => {
-  assert.throws(() => renderPdf({ title: 'W'.repeat(500) }, font), /title exceeds printable width/);
-  assert.throws(() => renderPdf({ title: 'normal', paragraphs: ['W'.repeat(1200)] }, font),
-    /unbreakable text exceeds printable width|exceeds one printable page/);
+test('unbreakable titles and words reject instead of drawing outside page',()=>{
+  assert.throws(()=>engine.document({title:'W'.repeat(500)})
+    .paragraph('ok').renderSync(),/title exceeds printable width/);
+  assert.throws(()=>engine.document({title:'normal'})
+    .paragraph('W'.repeat(1200)).renderSync(),/unbreakable text exceeds printable width/);
 });
-
-test('overlong indivisible row returns error', () => {
-  assert.throws(() => renderPdf({ title: 'long', rows: ['mucho texto '.repeat(2000)] }, font), /exceeds one printable page/);
+test('indivisible huge image in Fluent row fails rather than clipping',()=>{
+  const bytes=readFileSync(new URL('./fixtures/two-tone.png',import.meta.url));
+  assert.throws(()=>engine.document({title:'Big image'})
+    .row(r=>r.column(c=>c.image(bytes,{width:80,height:900})))
+    .renderSync(),/invalid row image|image.*exceeds|row.*height/i);
 });

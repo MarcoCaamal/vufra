@@ -5,7 +5,7 @@
  */
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
 import { readFileSync } from 'node:fs';
-import { PdfRenderQueue } from 'vufra';
+import { createVufra, PdfRenderQueue } from 'vufra';
 
 @Injectable()
 export class PdfService implements OnModuleDestroy {
@@ -38,20 +38,19 @@ export class PdfService implements OnModuleDestroy {
   private readonly font = readFileSync(process.env.VUFRA_FONT_PATH ?? '/path/to/NotoSans-Regular.ttf');
 
   async generateInventory(items: ReadonlyArray<{ code: string; name: string; amount: number }>, signal?: AbortSignal): Promise<Buffer> {
-    const bytes = await this.queue.render({
-      title: 'Reporte de inventario',
-      blocks: [
-        { type: 'heading', level: 1, text: 'Inventario actualizado' },
-        { type: 'table', table: {
-          columns: [
-            { header: 'Código', width: 110 },
-            { header: 'Descripción', width: 270 },
-            { header: 'Precio', width: 117 },
-          ],
-          rows: items.map(item => [item.code, item.name, String(item.amount)])
-        } }
-      ]
-    }, this.font, { signal, waitTimeoutMs: 5_000 });
+    const vufra = createVufra({font:this.font});
+    const report = vufra.document({title:'Reporte de inventario',page:'Letter'})
+      .heading('Inventario actualizado')
+      .table(items.map(item => [
+        item.code,item.name,String(item.amount)
+      ]),{columns:[
+        {title:'Código',width:110},
+        {title:'Descripción',width:270},
+        {title:'Precio',width:117},
+      ]});
+    const bytes = await report.enqueue(this.queue,{
+      signal,waitTimeoutMs:5_000
+    });
 
     // The native addon resolves with Buffer today, while the public type is Uint8Array.
     return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);

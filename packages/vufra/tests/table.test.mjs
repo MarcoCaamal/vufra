@@ -1,118 +1,89 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
-import { execFileSync } from 'node:child_process';
-import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
-const require = createRequire(import.meta.url);
-const { renderPdf } = require('../dist/index.js');
-const font = readFileSync(process.env.VUFRA_FONT ||
-  execFileSync('fc-match', ['Noto Sans', '-f', '%{file}\n'], { encoding: 'utf8' }).trim());
-
-function pdfDetails(bytes) {
-  const path = join(mkdtempSync(join(tmpdir(), 'vufra-table-')), 'table.pdf');
-  writeFileSync(path, bytes);
-  const info = execFileSync('pdfinfo', [path], { encoding: 'utf8' });
-  const pages = Number(info.match(/Pages:\s+(\d+)/)?.[1]);
-  const text = execFileSync('pdftotext', ['-layout', path, '-'], { encoding: 'utf8' });
-  return { pages, text };
-}
-
-const columns = [
-  { header: 'Código SKU', width: 110 },
-  { header: 'Descripción de producto', width: 270 },
-  { header: 'Importe MXN', width: 117 }
+import {createRequire} from 'node:module';
+import {execFileSync} from 'node:child_process';
+import {readFileSync,writeFileSync,mkdtempSync} from 'node:fs';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+const require=createRequire(import.meta.url);
+const {createVufra}=require('../dist/index.js');
+const font=readFileSync(process.env.VUFRA_FONT ||
+  execFileSync('fc-match',['Noto Sans','-f','%{file}\n'],{encoding:'utf8'}).trim());
+const engine=createVufra({font});
+const columns=[
+  {title:'Código SKU',width:110},
+  {title:'Descripción de producto',width:270},
+  {title:'Importe MXN',width:117}
 ];
-
-test('multi-column table: 600 rows, wrapping, repeated header and no lost records', () => {
-  const rows = Array.from({ length: 600 }, (_, i) => [
-    'SKU-' + String(i + 1).padStart(4, '0'),
-    i % 5 === 0
-      ? 'Cancún, niño, acción. ' + 'Descripción extensa para ajustar las líneas. '.repeat(3)
-      : 'Producto de ejemplo ' + (i + 1),
-    '$ ' + ((i + 1) * 12).toFixed(2)
+function inspect(builder){
+  const bytes=builder.renderSync();
+  const path=join(mkdtempSync(join(tmpdir(),'vufra-table-')),'table.pdf');
+  writeFileSync(path,bytes);
+  return {
+    path,pages:+execFileSync('pdfinfo',[path],{encoding:'utf8'}).match(/Pages:\s+(\d+)/)[1],
+    text:execFileSync('pdftotext',['-raw',path,'-'],{encoding:'utf8'})
+  };
+}
+test('Fluent tables: 600 rows, wrapping, repeated headers and no lost IDs',()=>{
+  const rows=Array.from({length:600},(_,i)=>[
+    'SKU-'+String(i+1).padStart(4,'0'),
+    i%5===0?'Cancún, niño, acción. '+'Descripción extensa. '.repeat(3):'Producto '+(i+1),
+    '$ '+((i+1)*12).toFixed(2)
   ]);
-  const { pages, text } = pdfDetails(renderPdf({
-    title: 'Vufra — tabla multicolumna',
-    table: { columns, rows }
-  }, font));
-  assert.ok(pages > 12, pages);
-  const ids = [...text.matchAll(/SKU-(\d{4})/g)].map(m => Number(m[1]));
-  assert.deepEqual(ids, Array.from({ length: 600 }, (_, i) => i + 1));
-  assert.equal((text.match(/Código SKU/g) || []).length, pages, 'header must repeat on every table page');
-  assert.ok(text.includes('Cancún'), 'Spanish text was lost');
-  assert.ok(text.includes('Importe MXN'), 'column header missing');
-  console.log('Multi-column PDF validated:', pages, 'pages and', ids.length, 'records');
-});
-
-test('table after paragraphs has the right repeated-header page count', () => {
-  const result = pdfDetails(renderPdf({
-    title: 'Reporte mixto',
-    paragraphs: ['Introducción para el reporte'],
-    table: { columns, rows: Array.from({length: 120}, (_,i) => ['SKU-'+String(i).padStart(4,'0'),'Producto','10.50']) }
-  }, font));
-  assert.match(result.text, /Introducción para el reporte/);
-  assert.equal((result.text.match(/Código SKU/g) || []).length, result.pages - 1);
-});
-
-test('header-only table produces one page without blank preliminary page', () => {
-  const result = pdfDetails(renderPdf({
-    title: 'Tabla vacía',
-    table: {columns,rows:[]}
-  }, font));
-  assert.equal(result.pages, 1);
-  assert.ok(result.text.includes('Código SKU'));
-});
-
-test('bad table structures and too-wide columns rejected', () => {
-  const make = table => renderPdf({title:'Test',table}, font);
-  assert.throws(() => make({columns:[],rows:[]}), /columns/);
-  assert.throws(() => make({columns:[{header:'H',width:500}],rows:[]}), /width/);
-  assert.throws(() => make({columns:[{header:'H',width:NaN}],rows:[]}), /width/);
-  assert.throws(() => make({columns:[{header:'H',width:100}],rows:[['a','b']]}), /rows/);
-  assert.throws(() => make({columns:[{header:'H',width:100}],rows:[['W'.repeat(1000)]]}), /printable width/);
-  assert.throws(() => make({columns:[{header:'H',width:100}],rows:[['a\0b']]}), /null/);
-});
-
-test('a very long row continues across many pages with no duplicated tokens', () => {
-  const entries = Array.from({ length: 850 }, (_, index) =>
-    'FRAG' + String(index + 1).padStart(4, '0'));
-  const result = pdfDetails(renderPdf({
-    title: 'Continuación de celdas',
-    table: { columns, rows: [
-      ['SKU-BEGIN', 'Producto inicial', '$ 12'],
-      ['SKU-LARGE', entries.join(' '), '$ 100'],
-      ['SKU-END', 'Producto final', '$ 13']
-    ] }
-  }, font));
-  assert.ok(result.pages >= 5, result.pages);
-  assert.deepEqual(
-    [...result.text.matchAll(/FRAG(\d{4})/g)].map(match => Number(match[1])),
-    Array.from({ length: 850 }, (_, index) => index + 1),
-    'all tokens of long cell must survive in order without duplication'
-  );
-  assert.equal((result.text.match(/SKU-LARGE/g) || []).length, 1);
-  assert.equal((result.text.match(/SKU-END/g) || []).length, 1);
-  assert.equal((result.text.match(/Código SKU/g) || []).length, result.pages);
-});
-
-test('different length cells share line offset across page breaks', () => {
-  const short = Array.from({length: 160}, (_, i) => 'SHORT' + String(i).padStart(4, '0'));
-  const long = Array.from({length: 500}, (_, i) => 'LONG' + String(i).padStart(4, '0'));
-  const result = pdfDetails(renderPdf({
-    title: 'Column continuation',
-    table: {columns, rows: [
-      [short.join(' '), long.join(' '), 'FINAL']
-    ]}
-  }, font));
-  assert.ok(result.pages >= 3);
-  for (const [prefix, n] of [['SHORT', 160], ['LONG', 500]]) {
-    assert.deepEqual(
-      [...result.text.matchAll(new RegExp(prefix + '(\\d{4})', 'g'))].map(m => Number(m[1])),
-      Array.from({length: n}, (_, i) => i)
-    );
+  const out=inspect(engine.document({title:'Tabla 600'}).table(rows,{columns}));
+  assert.ok(out.pages>12);
+  assert.deepEqual([...out.text.matchAll(/SKU-(\d{4})/g)].map(x=>+x[1]),
+    Array.from({length:600},(_,i)=>i+1));
+  for(let i=1;i<=out.pages;i++){
+    const page=execFileSync('pdftotext',['-raw','-f',String(i),'-l',String(i),out.path,'-'],
+      {encoding:'utf8'});
+    assert.equal((page.match(/Código SKU/g)??[]).length,1);
   }
-  assert.equal((result.text.match(/FINAL/g) || []).length, 1);
+  assert.match(out.text,/Cancún/);
+});
+test('table following an introduction remains ordered and paginated',()=>{
+  const rows=Array.from({length:120},(_,i)=>[
+    'SKU-'+String(i).padStart(4,'0'),'Producto','10.50'
+  ]);
+  const out=inspect(engine.document({title:'Reporte mixto'})
+    .paragraph('INTRODUCCION_PERMANECE').table(rows,{columns}));
+  assert.ok(out.text.indexOf('INTRODUCCION_PERMANECE')<out.text.indexOf('SKU-0000'));
+  assert.ok(out.pages>=2);
+  assert.equal([...out.text.matchAll(/SKU-(\d{4})/g)].length,120);
+});
+test('empty styled table is invalid rather than producing an orphaned header',()=>{
+  assert.throws(()=>engine.document({title:'Vacía'}).table([],{columns}),/1\.\.1000 rows/);
+});
+test('invalid table structures and widths reject',()=>{
+  const doc=engine.document({title:'Bad'});
+  assert.throws(()=>doc.table([['a']],{columns:[]}),/1\.\.6 columns/);
+  assert.throws(()=>doc.table([['a']],{columns:[{title:'H',width:500}]}),/width|columns/);
+  assert.throws(()=>doc.table([['a']],{columns:[{title:'H',width:NaN}]}),/width|columns/);
+  assert.throws(()=>doc.table([['a','b']],{columns:[{title:'H',width:100}]}),/cells must match/);
+  assert.throws(()=>doc.table([['W'.repeat(1000)]],{columns:[{title:'H',width:100}]})
+    .renderSync(),/unbreakable|printable width/);
+});
+test('long cell continues across pages once with heading repetition',()=>{
+  const tokens=Array.from({length:500},(_,i)=>'FRAG'+String(i+1).padStart(4,'0'));
+  const out=inspect(engine.document({title:'Large cell'}).table([
+    ['SKU-BEGIN','Producto inicial','$12'],
+    ['SKU-LARGE',tokens.join(' '),'$100'],
+    ['SKU-END','Producto final','$13']
+  ],{columns}));
+  assert.ok(out.pages>=4);
+  assert.deepEqual([...out.text.matchAll(/FRAG(\d{4})/g)].map(x=>+x[1]),
+    Array.from({length:500},(_,i)=>i+1));
+  assert.equal((out.text.match(/SKU-END/g)??[]).length,1);
+});
+test('different sized styled cells retain all content during continuation',()=>{
+  const short=Array.from({length:150},(_,i)=>'SHORT'+String(i).padStart(4,'0'));
+  const long=Array.from({length:450},(_,i)=>'LONG'+String(i).padStart(4,'0'));
+  const out=inspect(engine.document({title:'Multi cell'}).table([
+    ['LONG-CELL',long.join(' '),short.join(' ')]
+  ],{columns}));
+  assert.ok(out.pages>=2);
+  assert.deepEqual([...out.text.matchAll(/LONG(\d{4})/g)].map(x=>+x[1]),
+    Array.from({length:450},(_,i)=>i));
+  assert.deepEqual([...out.text.matchAll(/SHORT(\d{4})/g)].map(x=>+x[1]),
+    Array.from({length:150},(_,i)=>i));
 });

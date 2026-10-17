@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 
 const require=createRequire(import.meta.url);
-const {createVufra,renderPdf,PdfRenderQueue}=require('../dist/index.js');
+const {createVufra,renderPdf,PdfRenderQueue}=({...require('../dist/index.js'),...require('../dist/renderer.js')});
 const font=readFileSync(execFileSync('fc-match',['Noto Sans','-f','%{file}\\n'],{encoding:'utf8'}).trim());
 const img=readFileSync(new URL('./fixtures/two-tone.png',import.meta.url));
 const vufra=createVufra({font,theme:{colors:{blue:'#1F4BA8',light:'#E8F1FF',red:'#D42030'}}});
@@ -164,8 +164,7 @@ test('native binding enforces recursive image count before copying boxed buffers
      kind:'image',image:{data:img,width:80,height:40,fit:'contain'}
    }))
  }};
- assert.throws(()=>native.renderPdfNative('Preflight',[],[],font,
-   undefined,[overLimit]),/too many images or too much image data/);
+ assert.throws(()=>native.renderPdfNative('Preflight',[overLimit],font),/too many images or too much image data/);
 });
 test('async and bounded queue render boxed content with binary image snapshots',async()=>{
  const q=new PdfRenderQueue({maxConcurrent:1,maxQueued:1,

@@ -2,9 +2,9 @@
 //! cargo run -p vufra-pdf --example owned-semantic -- <regular.ttf> <bold.ttf> <output.pdf>
 use std::{error::Error, fs, path::PathBuf};
 use vufra_pdf::{
-    BoxAlign, ContentColumn, ContentFrame, ContentNode, ContentTableColumn, ImageFit, PageGeometry,
-    PdfFontFace, PdfImage, PdfTextRun, RenderOptions, SemanticDocument, TextPresentation,
-    TextStyle, render_semantic_pdf,
+    BoxAlign, ContentColumn, ContentFrame, ContentNode, ImageFit, PageGeometry, PdfFontFace,
+    PdfImage, PdfTextRun, RenderOptions, SemanticDocument, TextPresentation, TextStyle,
+    render_semantic_pdf,
 };
 fn tokens(prefix: &str, n: usize) -> String {
     (1..=n)
@@ -108,22 +108,6 @@ fn main() -> Result<(), Box<dyn Error>> {
             ),
         ],
     ));
-    doc.nodes.push(ContentNode::PlainTable {
-        columns: vec![
-            ContentTableColumn {
-                header: "Key".into(),
-                width: 150.,
-            },
-            ContentTableColumn {
-                header: "Value".into(),
-                width: 200.,
-            },
-        ],
-        rows: vec![vec![
-            ContentNode::paragraph("PLAIN_TABLE_FOLIO"),
-            ContentNode::paragraph("PLAIN_TABLE_VALUE"),
-        ]],
-    });
     doc.nodes.push(ContentNode::List {
         ordered: false,
         items: vec![

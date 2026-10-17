@@ -50,10 +50,10 @@ const doc=app.document({title:'Vufra - Enterprise Invoice',page:'Letter',
      b.heading('MXN 44,980.00',{level:2,color:'#795522'});
  })
  .heading('Detailed services')
- .table(services,{columns:[
-   {key:'service',title:'Service',width:'*'},
-   {key:'units',title:'Units',width:75},
-   {key:'amount',title:'Amount',width:120}
+ .table(services.map(p=>[p.service,p.units,p.amount]),{columns:[
+   {title:'Service',width:'*'},
+   {title:'Units',width:75},
+   {title:'Amount',width:120}
  ]})
  .box({padding:15,background:'soft',border:{width:1,color:'primary'}},b=>{
    b.heading('Additional service conditions',{level:2,color:'primary'});

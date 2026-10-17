@@ -1,3 +1,4 @@
+import {massiveFlow,textFlow} from './fixtures/flow.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -11,13 +12,7 @@ const { PdfRenderQueue, PdfQueueError } = require('../dist/index.js');
 const font = readFileSync(process.env.VUFRA_FONT ||
   execFileSync('fc-match', ['Noto Sans', '-f', '%{file}\n'], {encoding:'utf8'}).trim());
 
-function heavyDoc() {
-  return {
-    title: 'Large PDF job',
-    rows: Array.from({length:9000}, (_,i) =>
-      'ITEM' + String(i+1).padStart(4,'0') + ' texto grande para ejecutar la tarea nativa'),
-  };
-}
+function heavyDoc(){return massiveFlow('Large PDF job','ITEM',9000);}
 
 function textOf(bytes) {
   assert.equal(bytes.subarray(0,5).toString(),'%PDF-');
@@ -38,14 +33,14 @@ test('FIFO and bounded slots: third waiting job rejected, others finish in order
   const q = new PdfRenderQueue({maxConcurrent:1,maxQueued:2});
   const completed=[];
   const first=q.render(heavyDoc(),font).then(result=>{completed.push('A');return result;});
-  const second=q.render({title:'SECOND',paragraphs:['QUEUED SECOND']},font)
+  const second=q.render(textFlow('SECOND','QUEUED SECOND'),font)
     .then(result=>{completed.push('B');return result;});
-  const third=q.render({title:'THIRD',paragraphs:['QUEUED THIRD']},font)
+  const third=q.render(textFlow('THIRD','QUEUED THIRD'),font)
     .then(result=>{completed.push('C');return result;});
   assert.equal(q.stats.active,1);
   assert.equal(q.stats.queued,2);
   assert.ok(q.stats.queuedBytes>0);
-  await queueRejects(q.render({title:'FOURTH'},font),'QUEUE_FULL');
+  await queueRejects(q.render({title:'FOURTH',blocks:[]},font),'QUEUE_FULL');
   assert.equal(q.stats.rejected,1);
   const results=await Promise.all([first,second,third]);
   assert.deepEqual(completed,['A','B','C']);
@@ -61,8 +56,8 @@ test('waiting abort and waiting deadline leave unrelated active Rust render runn
   const q=new PdfRenderQueue({maxConcurrent:1,maxQueued:4});
   const controller=new AbortController();
   const active=q.render(heavyDoc(),font);
-  const waiting=q.render({title:'Aborted'},font,{signal:controller.signal});
-  const timed=q.render({title:'Timed out'},font,{waitTimeoutMs:5});
+  const waiting=q.render({title:'Aborted',blocks:[]},font,{signal:controller.signal});
+  const timed=q.render({title:'Timed out',blocks:[]},font,{waitTimeoutMs:5});
   assert.equal(q.stats.queued,2);
   controller.abort();
   await queueRejects(waiting,'ABORTED');
@@ -93,8 +88,8 @@ test('the queued snapshot is independent of caller document and font mutations',
 
 test('releases capacity after a native failure, then processes next job', async () => {
   const q=new PdfRenderQueue({maxConcurrent:1,maxQueued:1});
-  const bad=q.render({title:'Bad font'},Uint8Array.of(0,1,2));
-  const next=q.render({title:'Recovered',paragraphs:['RECOVERED OK']},font);
+  const bad=q.render({title:'Bad font',blocks:[]},Uint8Array.of(0,1,2));
+  const next=q.render(textFlow('Recovered','RECOVERED OK'),font);
   await assert.rejects(bad,/Font/);
   assert.match(textOf(await next),/RECOVERED OK/);
   assert.equal(q.stats.failed,1);
@@ -106,11 +101,11 @@ test('releases capacity after a native failure, then processes next job', async 
 test('close rejects waiting/new jobs but lets active jobs finish normally', async () => {
   const q=new PdfRenderQueue({maxConcurrent:1,maxQueued:1});
   const active=q.render(heavyDoc(),font);
-  const queued=q.render({title:'Waiting'},font);
+  const queued=q.render({title:'Waiting',blocks:[]},font);
   q.close();
   q.close(); // idempotent
   await queueRejects(queued,'CLOSED');
-  await queueRejects(q.render({title:'Another'},font),'CLOSED');
+  await queueRejects(q.render({title:'Another',blocks:[]},font),'CLOSED');
   assert.ok((await active).length>10000);
   assert.equal(q.stats.active,0);
   assert.equal(q.stats.queued,0);
@@ -122,15 +117,15 @@ test('budget limits reject large input before copying into the queue', async () 
   assert.throws(()=>new PdfRenderQueue({maxQueued:-1}),/maxQueued/);
   assert.throws(()=>new PdfRenderQueue({maxJobBytes:Infinity}),/maxJobBytes/);
   const tooSmall=new PdfRenderQueue({maxJobBytes:1});
-  await queueRejects(tooSmall.render({title:'Too large'},font),'JOB_TOO_LARGE');
+  await queueRejects(tooSmall.render({title:'Too large',blocks:[]},font),'JOB_TOO_LARGE');
   tooSmall.close();
 
   const q=new PdfRenderQueue({maxConcurrent:1,maxQueued:2,maxQueuedBytes:1});
   const active=q.render(heavyDoc(),font);
-  await queueRejects(q.render({title:'Waiting'},font),'QUEUE_FULL');
+  await queueRejects(q.render({title:'Waiting',blocks:[]},font),'QUEUE_FULL');
   assert.equal(q.stats.queued,0);
   assert.equal(q.stats.queuedBytes,0);
-  await assert.rejects(q.render({title:'Bad timeout'},font,{waitTimeoutMs:0}),/waitTimeoutMs/);
+  await assert.rejects(q.render({title:'Bad timeout',blocks:[]},font,{waitTimeoutMs:0}),/waitTimeoutMs/);
   await active;
   q.close();
 });
@@ -139,8 +134,8 @@ test('multiple instances maintain separate local counters', async()=>{
   const a=new PdfRenderQueue({maxConcurrent:1,maxQueued:0});
   const b=new PdfRenderQueue({maxConcurrent:1,maxQueued:0});
   const [first,second]=await Promise.all([
-    a.render({title:'Q-A',paragraphs:['LOCAL A']},font),
-    b.render({title:'Q-B',paragraphs:['LOCAL B']},font),
+    a.render(textFlow('Q-A','LOCAL A'),font),
+    b.render(textFlow('Q-B','LOCAL B'),font),
   ]);
   assert.match(textOf(first),/LOCAL A/);
   assert.match(textOf(second),/LOCAL B/);

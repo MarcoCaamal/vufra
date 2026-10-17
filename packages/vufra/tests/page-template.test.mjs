@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 
 const require = createRequire(import.meta.url);
-const {createVufra, renderPdf, PdfRenderQueue} = require('../dist/index.js');
+const {createVufra, renderPdf, PdfRenderQueue} = ({...require('../dist/index.js'),...require('../dist/renderer.js')});
 const regular = readFileSync(execFileSync('fc-match', ['Noto Sans', '-f', '%{file}\n'], {encoding:'utf8'}).trim());
 const bold = readFileSync(execFileSync('fc-match', ['Noto Sans:style=Bold', '-f', '%{file}\n'], {encoding:'utf8'}).trim());
 const logo = readFileSync(new URL('./fixtures/two-tone.png', import.meta.url));
@@ -65,7 +65,7 @@ test('different first-page bands, with page count retained in all variants', () 
   assert.match(out.page(2),/STANDARD_2_2/);
 });
 
-test('firstHeader(null) hides only first header; footer(null) disables legacy numbering', () => {
+test('firstHeader(null) hides only first header; footer(null) disables default numbering', () => {
   const out = inspect(engine.document({title:'Suppression',page:'Letter'})
     .header(h=>h.text('BODY_HEADER'))
     .firstHeader(null)

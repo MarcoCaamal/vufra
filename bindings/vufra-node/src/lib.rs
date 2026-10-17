@@ -12,30 +12,17 @@ use std::{
     time::Instant,
 };
 use vufra_pdf::{
-    BoxAlign, GraphicKind, ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES,
-    PageGeometry, PdfBlock, PdfBox, PdfBoxItem, PdfBoxTable, PdfColumn, PdfDocument, PdfFontFace,
-    PdfGraphic, PdfImage, PdfPageChrome, PdfRow, PdfRowColumn, PdfRowItem, PdfTable, PdfTextRun,
-    RenderOptions, TextStyle,
+    BoxAlign, ContentNode, GraphicKind, ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES,
+    MAX_TOTAL_IMAGE_BYTES, PageGeometry, PdfBlock, PdfBox, PdfBoxItem, PdfBoxTable, PdfFontFace,
+    PdfGraphic, PdfImage, PdfPageChrome, PdfRow, PdfRowColumn, PdfRowItem, PdfTextRun,
+    RenderOptions, SemanticDocument, TextStyle,
 };
-
-#[napi(object)]
-pub struct NodeTableColumn {
-    pub header: String,
-    pub width: f64,
-}
-
-#[napi(object)]
-pub struct NodeTable {
-    pub columns: Vec<NodeTableColumn>,
-    pub rows: Vec<Vec<String>>,
-}
 
 #[napi(object)]
 pub struct NodeBlock {
     pub kind: String,
     pub text: Option<String>,
     pub runs: Option<Vec<NodeRichRun>>,
-    pub table: Option<NodeTable>,
     pub image: Option<NodeImage>,
     pub items: Option<Vec<String>>,
     pub ordered: Option<bool>,
@@ -428,19 +415,6 @@ fn to_image(input: NodeImage) -> napi::Result<PdfImage> {
         fit,
     })
 }
-fn to_table(input: NodeTable) -> PdfTable {
-    PdfTable {
-        columns: input
-            .columns
-            .into_iter()
-            .map(|column| PdfColumn {
-                header: column.header,
-                width: column.width as f32,
-            })
-            .collect(),
-        rows: input.rows,
-    }
-}
 
 fn preflight_image(image: &NodeImage, count: &mut usize, total: &mut usize) -> napi::Result<()> {
     if image.data.is_empty() || image.data.len() > MAX_IMAGE_BYTES {
@@ -514,21 +488,18 @@ fn preflight_box_images(
 #[allow(clippy::too_many_arguments)]
 fn parse_document(
     title: String,
-    paragraphs: Vec<String>,
-    rows: Vec<String>,
-    table: Option<NodeTable>,
-    blocks: Option<Vec<NodeBlock>>,
+    blocks: Vec<NodeBlock>,
     page: Option<NodePage>,
     font_faces: Option<Vec<NodeFontFace>>,
     chrome: Option<NodePageChrome>,
-) -> napi::Result<PdfDocument> {
+) -> napi::Result<SemanticDocument> {
     // Verify image budgets recursively before copying native input buffers.
     // Covers regular images, rows, and decorated boxes (including row items
     // within a boxed content block).
     let mut count = 0usize;
     let mut bytes = 0usize;
-    if let Some(items) = &blocks {
-        for block in items {
+    {
+        for block in &blocks {
             if let Some(image) = &block.image {
                 preflight_image(image, &mut count, &mut bytes)?;
             }
@@ -565,11 +536,8 @@ fn parse_document(
             "font faces exceed count or byte limits",
         ));
     }
-    let doc = PdfDocument {
+    let doc = SemanticDocument {
         title,
-        paragraphs,
-        rows,
-        table: table.map(to_table),
         page: page.map(Into::into),
         chrome: chrome
             .map(|c| {
@@ -593,164 +561,122 @@ fn parse_document(
                 data: f.data.to_vec(),
             })
             .collect(),
-        blocks: blocks
-            .map(|items| {
-                items
-                    .into_iter()
-                    .map(|item| match item.kind.as_str() {
-                        "image"
-                            if item.image.is_some()
-                                && item.text.is_none()
-                                && item.table.is_none() =>
-                        {
-                            Ok(PdfBlock::Image(to_image(
-                                item.image.expect("image checked"),
-                            )?))
-                        }
-                        "page-break" if item.row.is_none() && item.text.is_none() => {
-                            Ok(PdfBlock::PageBreak)
-                        }
-                        "box" if item.box_data.is_some() && item.table.is_none() => {
-                            Ok(PdfBlock::Box(to_box(item.box_data.expect("box checked"))?))
-                        }
-                        "row" if item.row.is_some() && item.table.is_none() => {
-                            Ok(PdfBlock::Row(to_row(item.row.expect("row checked"))?))
-                        }
-                        "list"
-                            if item.items.is_some()
-                                && item.table.is_none()
-                                && item.image.is_none() =>
-                        {
-                            Ok(PdfBlock::List {
-                                items: item.items.expect("items checked"),
-                                ordered: item.ordered.unwrap_or(false),
-                            })
-                        }
-                        "graphic"
-                            if item.graphic.is_some()
-                                && item.table.is_none()
-                                && item.image.is_none() =>
-                        {
-                            Ok(PdfBlock::Graphic(to_graphic(
-                                item.graphic.expect("graphic checked"),
-                            )?))
-                        }
-                        "rich-paragraph"
-                            if item.runs.is_some()
-                                && item.style.is_some()
-                                && item.text.is_none()
-                                && item.table.is_none() =>
-                        {
-                            Ok(PdfBlock::RichParagraph {
-                                runs: item
-                                    .runs
-                                    .expect("runs checked")
-                                    .into_iter()
-                                    .map(|r| {
-                                        Ok(PdfTextRun {
-                                            text: r.text,
-                                            font: r.font,
-                                            font_size: r.font_size.map(|s| s as f32),
-                                            fallback_fonts: r.fallback_fonts.unwrap_or_default(),
-                                            color: r
-                                                .color
-                                                .map(|c| {
-                                                    let b = c.as_bytes();
-                                                    if b.len() != 7
-                                                        || b[0] != b'#'
-                                                        || !b[1..].iter().all(u8::is_ascii_hexdigit)
-                                                    {
-                                                        return Err(napi::Error::from_reason(
-                                                            "rich text color must be #RRGGBB",
-                                                        ));
-                                                    }
-                                                    let mut rgb = [0u8; 3];
-                                                    for (i, v) in rgb.iter_mut().enumerate() {
-                                                        *v = u8::from_str_radix(
-                                                            &c[(1 + 2 * i)..(3 + 2 * i)],
-                                                            16,
-                                                        )
-                                                        .map_err(|_| {
-                                                            napi::Error::from_reason(
-                                                                "invalid rich text color",
-                                                            )
-                                                        })?;
-                                                    }
-                                                    Ok(rgb)
-                                                })
-                                                .transpose()?,
+        nodes: blocks
+            .into_iter()
+            .map(|item| match item.kind.as_str() {
+                "image" if item.image.is_some() && item.text.is_none() => Ok(PdfBlock::Image(
+                    to_image(item.image.expect("image checked"))?,
+                )),
+                "page-break" if item.row.is_none() && item.text.is_none() => {
+                    Ok(PdfBlock::PageBreak)
+                }
+                "box" if item.box_data.is_some() => {
+                    Ok(PdfBlock::Box(to_box(item.box_data.expect("box checked"))?))
+                }
+                "row" if item.row.is_some() => {
+                    Ok(PdfBlock::Row(to_row(item.row.expect("row checked"))?))
+                }
+                "list" if item.items.is_some() && item.image.is_none() => Ok(PdfBlock::List {
+                    items: item.items.expect("items checked"),
+                    ordered: item.ordered.unwrap_or(false),
+                }),
+                "graphic" if item.graphic.is_some() && item.image.is_none() => Ok(
+                    PdfBlock::Graphic(to_graphic(item.graphic.expect("graphic checked"))?),
+                ),
+                "rich-paragraph"
+                    if item.runs.is_some() && item.style.is_some() && item.text.is_none() =>
+                {
+                    Ok(PdfBlock::RichParagraph {
+                        runs: item
+                            .runs
+                            .expect("runs checked")
+                            .into_iter()
+                            .map(|r| {
+                                Ok(PdfTextRun {
+                                    text: r.text,
+                                    font: r.font,
+                                    font_size: r.font_size.map(|s| s as f32),
+                                    fallback_fonts: r.fallback_fonts.unwrap_or_default(),
+                                    color: r
+                                        .color
+                                        .map(|c| {
+                                            let b = c.as_bytes();
+                                            if b.len() != 7
+                                                || b[0] != b'#'
+                                                || !b[1..].iter().all(u8::is_ascii_hexdigit)
+                                            {
+                                                return Err(napi::Error::from_reason(
+                                                    "rich text color must be #RRGGBB",
+                                                ));
+                                            }
+                                            let mut rgb = [0u8; 3];
+                                            for (i, v) in rgb.iter_mut().enumerate() {
+                                                *v = u8::from_str_radix(
+                                                    &c[(1 + 2 * i)..(3 + 2 * i)],
+                                                    16,
+                                                )
+                                                .map_err(|_| {
+                                                    napi::Error::from_reason(
+                                                        "invalid rich text color",
+                                                    )
+                                                })?;
+                                            }
+                                            Ok(rgb)
                                         })
-                                    })
-                                    .collect::<napi::Result<Vec<_>>>()?,
-                                style: item.style.expect("style checked").into(),
-                                keep_with_next: item.keep_with_next.unwrap_or(false),
+                                        .transpose()?,
+                                })
                             })
-                        }
-                        "paragraph" if item.text.is_some() && item.table.is_none() => {
-                            Ok(PdfBlock::Paragraph(item.text.unwrap_or_default()))
-                        }
-                        "heading" if item.text.is_some() && item.table.is_none() => {
-                            Ok(PdfBlock::Heading {
-                                text: item.text.unwrap_or_default(),
-                                keep_with_next: item.keep_with_next.unwrap_or(true),
-                                level: item.level.and_then(|v| u8::try_from(v).ok()).ok_or_else(
-                                    || napi::Error::from_reason("Invalid heading level"),
-                                )?,
-                            })
-                        }
-                        "styled-paragraph"
-                            if item.text.is_some()
-                                && item.style.is_some()
-                                && item.table.is_none() =>
-                        {
-                            Ok(PdfBlock::StyledParagraph {
-                                text: item.text.unwrap_or_default(),
-                                style: item.style.expect("style checked").into(),
-                            })
-                        }
-                        "spacer"
-                            if item.height.is_some()
-                                && item.text.is_none()
-                                && item.table.is_none() =>
-                        {
-                            Ok(PdfBlock::Spacer {
-                                height: item.height.unwrap_or_default() as f32,
-                            })
-                        }
-                        "table" if item.table.is_some() && item.text.is_none() => Ok(
-                            PdfBlock::Table(to_table(item.table.expect("table checked"))),
-                        ),
-                        _ => Err(napi::Error::from_reason(
-                            "Invalid flow block kind or payload",
-                        )),
+                            .collect::<napi::Result<Vec<_>>>()?,
+                        style: item.style.expect("style checked").into(),
+                        keep_with_next: item.keep_with_next.unwrap_or(false),
                     })
-                    .collect::<napi::Result<Vec<_>>>()
+                }
+                "paragraph" if item.text.is_some() => {
+                    Ok(PdfBlock::Paragraph(item.text.unwrap_or_default()))
+                }
+                "heading" if item.text.is_some() => Ok(PdfBlock::Heading {
+                    text: item.text.unwrap_or_default(),
+                    keep_with_next: item.keep_with_next.unwrap_or(true),
+                    level: item
+                        .level
+                        .and_then(|v| u8::try_from(v).ok())
+                        .ok_or_else(|| napi::Error::from_reason("Invalid heading level"))?,
+                }),
+                "styled-paragraph" if item.text.is_some() && item.style.is_some() => {
+                    Ok(PdfBlock::StyledParagraph {
+                        text: item.text.unwrap_or_default(),
+                        style: item.style.expect("style checked").into(),
+                    })
+                }
+                "spacer" if item.height.is_some() && item.text.is_none() => Ok(PdfBlock::Spacer {
+                    height: item.height.unwrap_or_default() as f32,
+                }),
+                _ => Err(napi::Error::from_reason(
+                    "Invalid flow block kind or payload",
+                )),
             })
-            .transpose()?,
+            .collect::<napi::Result<Vec<_>>>()?
+            .into_iter()
+            .map(ContentNode::from)
+            .collect(),
     };
     Ok(doc)
 }
 
-/// Synchronous API: unchanged for existing callers.
-#[allow(clippy::too_many_arguments)]
+/// Synchronous render of the canonical authored document.
 #[napi]
 pub fn render_pdf_native(
     title: String,
-    paragraphs: Vec<String>,
-    rows: Vec<String>,
+    blocks: Vec<NodeBlock>,
     font_data: Buffer,
-    table: Option<NodeTable>,
-    blocks: Option<Vec<NodeBlock>>,
     page: Option<NodePage>,
     font_faces: Option<Vec<NodeFontFace>>,
     chrome: Option<NodePageChrome>,
 ) -> napi::Result<Buffer> {
-    let doc = parse_document(
-        title, paragraphs, rows, table, blocks, page, font_faces, chrome,
-    )?;
-    vufra_pdf::render_pdf(&doc, font_data.as_ref(), RenderOptions::default())
+    let doc = parse_document(title, blocks, page, font_faces, chrome)?;
+    vufra_pdf::render_semantic_pdf(&doc, font_data.as_ref(), RenderOptions::default())
         .map(Buffer::from)
-        .map_err(|error| napi::Error::from_reason(error.to_string()))
+        .map_err(|e| napi::Error::from_reason(e.to_string()))
 }
 
 /// Cancellation flag remains accessible from the Node event loop while the worker runs.
@@ -789,7 +715,7 @@ pub struct NativePdfResult {
 
 /// Owned input, moved off the JS thread before CPU-heavy layout and rendering.
 pub struct PdfRenderTask {
-    doc: PdfDocument,
+    doc: SemanticDocument,
     font_data: Vec<u8>,
     cancelled: Arc<AtomicBool>,
 }
@@ -799,7 +725,7 @@ impl Task for PdfRenderTask {
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
         let started = Instant::now();
-        let bytes = vufra_pdf::render_pdf_with_cancel(
+        let bytes = vufra_pdf::render_semantic_pdf_with_cancel(
             &self.doc,
             &self.font_data,
             RenderOptions::default(),
@@ -817,25 +743,18 @@ impl Task for PdfRenderTask {
     }
 }
 
-/// Queued using N-API/libuv async work. No Tokio runtime or JS event-loop CPU rendering.
-// Preserve the positional binding ABI: the eighth argument is the cancellation token.
-#[allow(clippy::too_many_arguments)]
+/// NAPI worker executes only the owned semantic document.
 #[napi]
 pub fn render_pdf_async_native(
     title: String,
-    paragraphs: Vec<String>,
-    rows: Vec<String>,
+    blocks: Vec<NodeBlock>,
     font_data: Buffer,
-    table: Option<NodeTable>,
-    blocks: Option<Vec<NodeBlock>>,
     page: Option<NodePage>,
     token: Option<&PdfCancellationToken>,
     font_faces: Option<Vec<NodeFontFace>>,
     chrome: Option<NodePageChrome>,
 ) -> napi::Result<AsyncTask<PdfRenderTask>> {
-    let doc = parse_document(
-        title, paragraphs, rows, table, blocks, page, font_faces, chrome,
-    )?;
+    let doc = parse_document(title, blocks, page, font_faces, chrome)?;
     Ok(AsyncTask::new(PdfRenderTask {
         doc,
         font_data: font_data.to_vec(),

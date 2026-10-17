@@ -1,3 +1,4 @@
+import {massiveFlow,textFlow} from './fixtures/flow.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -8,14 +9,12 @@ import { tmpdir } from 'node:os';
 
 const require = createRequire(import.meta.url);
 const { renderPdfAsync, renderPdfAsyncMeasured, PdfRenderQueue, PdfRenderCancelledError } =
-  require('../dist/index.js');
+  ({...require('../dist/index.js'),...require('../dist/renderer.js')});
 const font = readFileSync(process.env.VUFRA_FONT ||
   execFileSync('fc-match', ['Noto Sans', '-f', '%{file}\n'], {encoding:'utf8'}).trim());
 
-function heavyDoc() {
-  return {title:'Cancelable PDF',rows:Array.from({length:9500},(_,i)=>
-    'ROW'+String(i+1).padStart(4,'0')+' renderizado cancelable de Vufra')};
-}
+function heavyDoc(){return massiveFlow('Cancelable PDF','ROW',9500);}
+
 function inspect(pdf) {
   const file=join(mkdtempSync(join(tmpdir(),'vufra-cancellation-')),'report.pdf');
   writeFileSync(file,pdf);
@@ -29,7 +28,7 @@ test('abort already set rejects without launching native PDF work', async ()=>{
   });
 });
 
-test('abort active legacy rendering stops Rust cooperatively', async ()=>{
+test('abort active semantic rendering stops Rust cooperatively', async ()=>{
   const controller=new AbortController();
   let completed=false;
   const work=renderPdfAsync(heavyDoc(),font,{signal:controller.signal})
@@ -45,13 +44,10 @@ test('abort active legacy rendering stops Rust cooperatively', async ()=>{
 test('abort active multi-column flow work and allow a subsequent job', async ()=>{
   const q=new PdfRenderQueue({maxConcurrent:1,maxQueued:1});
   const controller=new AbortController();
-  const massive={title:'Cancel table',blocks:[{type:'table',table:{
-    columns:[{header:'ID',width:110},{header:'Concepto',width:300}],
-    rows:Array.from({length:9500},(_,i)=>['TEST'+String(i).padStart(4,'0'),
-      'Descripción amplia que requiere medición y dibujo de fila '+i])
-  }}]};
+  const massive=massiveFlow('Cancel table','TEST',9500,
+    ' Descripción amplia que requiere medición y dibujo');
   const active=q.render(massive,font,{signal:controller.signal});
-  const queued=q.render({title:'After cancellation',paragraphs:['RECOVERED AFTER CANCEL']},font);
+  const queued=q.render(textFlow('After cancellation','RECOVERED AFTER CANCEL'),font);
   await new Promise(resolve=>setTimeout(resolve,20));
   assert.equal(q.stats.active,1);
   assert.equal(q.stats.queued,1);
@@ -70,8 +66,8 @@ test('abort active multi-column flow work and allow a subsequent job', async ()=
 test('queue emits typed telemetry for immediate rejects and close', async ()=>{
   const events=[];
   const q=new PdfRenderQueue({maxConcurrent:1,maxQueued:0,onJobEvent:e=>events.push(e)});
-  const doc={title:'Bounded PDF'};
-  const inFlight=q.render({title:'Lengthy',rows:Array.from({length:9500},(_,i)=>'R'+i+' valid text')},font);
+  const doc={title:'Bounded PDF',blocks:[]};
+  const inFlight=q.render({...massiveFlow('Lengthy','R',9500,' valid text')},font);
   await assert.rejects(q.render(doc,font),err=>err?.code==='QUEUE_FULL');
   q.close();
   await assert.rejects(q.render(doc,font),err=>err?.code==='CLOSED');

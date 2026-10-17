@@ -1,3 +1,4 @@
+import {massiveFlow} from './fixtures/flow.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -7,7 +8,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const require = createRequire(import.meta.url);
-const { renderPdf, renderPdfAsync } = require('../dist/index.js');
+const { renderPdf, renderPdfAsync,createVufra } = ({...require('../dist/index.js'),...require('../dist/renderer.js')});
 const font = readFileSync(process.env.VUFRA_FONT ||
   execFileSync('fc-match', ['Noto Sans', '-f', '%{file}\n'], {encoding:'utf8'}).trim());
 
@@ -28,10 +29,10 @@ test('async and sync produce equivalent selectable text and pagination', async (
     blocks:[
       {type:'heading',level:1,text:'Resultados de octubre'},
       {type:'paragraph',text:'¡Hola, Cancún! Nativo, sin bloqueo de Node.js'},
-      {type:'table',table:{
-        columns:[{header:'Clave',width:110},{header:'Descripción',width:300}],
-        rows:Array.from({length:150},(_,i)=>['REG'+String(i+1).padStart(4,'0'),'Producto de ejemplo '+(i+1)])
-      }}
+      ...createVufra({font}).document({title:'Internal'}).table(
+        Array.from({length:150},(_,i)=>['REG'+String(i+1).padStart(4,'0'),'Producto de ejemplo '+(i+1)]),
+        {columns:[{title:'Clave',width:110},{title:'Descripción',width:300}]}
+      ).toDocument().blocks
     ]
   };
   const slow = inspect(renderPdf(doc,font));
@@ -43,8 +44,7 @@ test('async and sync produce equivalent selectable text and pagination', async (
 });
 
 test('long running native rendering does not block immediate event-loop iteration', async () => {
-  const doc={title:'Heavy native job',rows:
-    Array.from({length:9500},(_,i)=>'RUN'+String(i+1).padStart(4,'0')+' descripción con texto de ejemplo')};
+  const doc=massiveFlow('Heavy native job','RUN',9500,' descripción con texto de ejemplo');
   let completed=false;
   const task=renderPdfAsync(doc,font).finally(()=>{completed=true;});
   // A synchronous "async-looking" shim would finish CPU rendering before this
@@ -64,12 +64,11 @@ test('parallel native jobs remain isolated and return their own PDFs', async () 
     blocks:[
       {type:'heading',level:2,text:'LOTE'+i},
       {type:'paragraph',text:'Año 2026, documento '+i},
-      {type:'table',table:{
-        columns:[{header:'Folio',width:110},{header:'Detalle',width:320}],
-        rows:Array.from({length:350},(_,row)=>[
-          'J'+i+'ROW'+String(row+1).padStart(4,'0'), 'Producto '+row
-        ])
-      }}
+      ...createVufra({font}).document({title:'Internal'}).table(
+        Array.from({length:350},(_,row)=>[
+          'J'+i+'ROW'+String(row+1).padStart(4,'0'),'Producto '+row
+        ]),{columns:[{title:'Folio',width:110},{title:'Detalle',width:320}]}
+      ).toDocument().blocks
     ]
   }));
   const results=await Promise.all(docs.map(doc=>renderPdfAsync(doc,font)));
@@ -84,11 +83,11 @@ test('parallel native jobs remain isolated and return their own PDFs', async () 
 });
 
 test('async errors reject Promise with same validation and rendering diagnostics', async () => {
-  await assert.rejects(renderPdfAsync({title:''},font),/title/);
+  await assert.rejects(renderPdfAsync({title:'',blocks:[]},font),/title/);
   await assert.rejects(renderPdfAsync({title:'Valid',blocks:[
     {type:'paragraph',text:'Z'.repeat(1000)}
   ]},font),/unbreakable text exceeds printable width/);
-  await assert.rejects(renderPdfAsync({title:'Valid'},Buffer.from([0,1,2])),/Font/);
+  await assert.rejects(renderPdfAsync({title:'Valid',blocks:[]},Buffer.from([0,1,2])),/Font/);
   await assert.rejects(renderPdfAsync({title:'Valid',blocks:[], page:{format:'a4', margins:{left:595}}},font),/geometry/);
 });
 

@@ -1,11 +1,11 @@
 //! Owned, recursive semantic content AST for documents, boxes, rows and tables.
 //!
-//! Old PdfBlock/PdfBoxItem/PdfRowItem are compatibility adapters only. A
+//! PdfBlock/PdfBoxItem/PdfRowItem are internal painter wire structures. A
 //! document normalizes to this tree before budgeting or writer preparation.
 use crate::{
     BoxAlign, MAX_IMAGE_BLOCKS, MAX_TOTAL_IMAGE_BYTES, PdfBlock, PdfBox, PdfBoxItem, PdfBoxTable,
-    PdfGraphic, PdfImage, PdfRow, PdfRowColumn, PdfRowItem, PdfTable, PdfTextRun, RenderError,
-    TextStyle, row::PreparedRichFragment,
+    PdfGraphic, PdfImage, PdfRow, PdfRowColumn, PdfRowItem, PdfTextRun, RenderError, TextStyle,
+    row::PreparedRichFragment,
 };
 
 #[derive(Clone, Debug)]
@@ -66,13 +66,6 @@ impl From<&PdfBox> for ContentFrame {
         }
     }
 }
-/// Explicit metadata for a plain table; all body cells are themselves
-/// owned ContentNode::Text leaves rather than a second string-cell AST.
-#[derive(Clone, Debug)]
-pub struct ContentTableColumn {
-    pub header: String,
-    pub width: f32,
-}
 #[derive(Clone, Debug)]
 pub struct ContentColumn {
     pub width: f32,
@@ -91,7 +84,7 @@ impl ContentColumn {
 
 /// One owned semantic node tree, independent of its enclosing document,
 /// decorated box, row column, or table cell. The rendering backend retains
-/// legacy-shaped writer adapters, not an independent semantic source of truth.
+/// specialized painter representations, not an independent semantic source of truth.
 #[derive(Clone, Debug)]
 pub enum ContentNode {
     Text {
@@ -118,10 +111,6 @@ pub enum ContentNode {
         header: Box<ContentNode>,
         rows: Vec<ContentNode>,
         fills: Vec<Vec<Option<[u8; 3]>>>,
-    },
-    PlainTable {
-        columns: Vec<ContentTableColumn>,
-        rows: Vec<Vec<ContentNode>>,
     },
     List {
         items: Vec<ContentNode>,
@@ -152,135 +141,113 @@ impl ContentNode {
         Self::Row { gap, columns }
     }
 }
-impl From<&PdfBlock> for ContentNode {
-    fn from(b: &PdfBlock) -> Self {
-        match b {
-            PdfBlock::Paragraph(s) => Self::paragraph(s.clone()),
+/// Consume bridge inputs without copying image/font payload bytes while
+/// converting the NAPI wire objects into the canonical semantic AST.
+impl From<PdfBlock> for ContentNode {
+    fn from(block: PdfBlock) -> Self {
+        match block {
+            PdfBlock::Paragraph(text) => Self::paragraph(text),
             PdfBlock::Heading {
                 text,
                 level,
                 keep_with_next,
             } => Self::Text {
-                text: text.clone(),
+                text,
                 presentation: TextPresentation::Heading {
-                    level: *level,
-                    keep_with_next: *keep_with_next,
+                    level,
+                    keep_with_next,
                 },
             },
-            PdfBlock::StyledParagraph { text, style } => Self::styled_text(text.clone(), *style),
+            PdfBlock::StyledParagraph { text, style } => Self::styled_text(text, style),
             PdfBlock::RichParagraph {
                 runs,
                 style,
                 keep_with_next,
             } => Self::Rich {
-                runs: runs.clone(),
-                style: *style,
-                keep_with_next: *keep_with_next,
+                runs,
+                style,
+                keep_with_next,
             },
-            PdfBlock::Image(i) => Self::Image(i.clone()),
-            PdfBlock::Graphic(g) => Self::Graphic(*g),
-            PdfBlock::Spacer { height } => Self::Spacer(*height),
-            PdfBlock::Row(r) => Self::from(r),
-            PdfBlock::Box(b) => Self::from(b),
-            PdfBlock::Table(t) => Self::PlainTable {
-                columns: t
-                    .columns
-                    .iter()
-                    .map(|col| ContentTableColumn {
-                        header: col.header.clone(),
-                        width: col.width,
-                    })
-                    .collect(),
-                rows: t
-                    .rows
-                    .iter()
-                    .map(|row| {
-                        row.iter()
-                            .map(|text| Self::paragraph(text.clone()))
-                            .collect()
-                    })
-                    .collect(),
-            },
+            PdfBlock::Image(img) => Self::Image(img),
+            PdfBlock::Graphic(graphic) => Self::Graphic(graphic),
+            PdfBlock::Spacer { height } => Self::Spacer(height),
+            PdfBlock::Row(row) => Self::from(row),
+            PdfBlock::Box(boxed) => Self::from(boxed),
             PdfBlock::List { items, ordered } => Self::List {
-                items: items
-                    .iter()
-                    .map(|text| Self::paragraph(text.clone()))
-                    .collect(),
-                ordered: *ordered,
+                items: items.into_iter().map(Self::paragraph).collect(),
+                ordered,
             },
             PdfBlock::PageBreak => Self::PageBreak,
         }
     }
 }
-impl From<&PdfBox> for ContentNode {
-    fn from(b: &PdfBox) -> Self {
+impl From<PdfBox> for ContentNode {
+    fn from(boxed: PdfBox) -> Self {
+        let frame = ContentFrame::from(&boxed);
         Self::Box {
-            frame: ContentFrame::from(b),
-            children: b.items.iter().map(Self::from).collect(),
+            frame,
+            children: boxed.items.into_iter().map(Self::from).collect(),
         }
     }
 }
-impl From<&PdfRow> for ContentNode {
-    fn from(row: &PdfRow) -> Self {
+impl From<PdfRow> for ContentNode {
+    fn from(row: PdfRow) -> Self {
         Self::Row {
             gap: row.gap,
             columns: row
                 .columns
-                .iter()
+                .into_iter()
                 .map(|col| ContentColumn {
                     width: col.width,
                     right_align: col.right_align,
-                    children: col.items.iter().map(Self::from).collect(),
+                    children: col.items.into_iter().map(Self::from).collect(),
                 })
                 .collect(),
         }
     }
 }
-impl From<&PdfBoxItem> for ContentNode {
-    fn from(item: &PdfBoxItem) -> Self {
+impl From<PdfBoxItem> for ContentNode {
+    fn from(item: PdfBoxItem) -> Self {
         match item {
             PdfBoxItem::Text { text, style, color } => Self::Text {
-                text: text.clone(),
-                presentation: TextPresentation::Box {
-                    style: *style,
-                    color: *color,
-                },
+                text,
+                presentation: TextPresentation::Box { style, color },
             },
             PdfBoxItem::RichText { runs, style } => Self::Rich {
-                runs: runs.clone(),
-                style: *style,
+                runs,
+                style,
                 keep_with_next: false,
             },
-            PdfBoxItem::Image(i) => Self::Image(i.clone()),
-            PdfBoxItem::Graphic(g) => Self::Graphic(*g),
-            PdfBoxItem::Row(r) => Self::from(r),
-            PdfBoxItem::Box(b) => Self::from(b.as_ref()),
-            PdfBoxItem::Table(t) => Self::StyledTable {
-                header: Box::new(Self::from(&t.header)),
-                rows: t.rows.iter().map(Self::from).collect(),
-                fills: t.fills.clone(),
+            PdfBoxItem::Image(img) => Self::Image(img),
+            PdfBoxItem::Graphic(graphic) => Self::Graphic(graphic),
+            PdfBoxItem::Row(row) => Self::from(row),
+            PdfBoxItem::Box(boxed) => Self::from(*boxed),
+            PdfBoxItem::Table(table) => Self::StyledTable {
+                header: Box::new(Self::from(table.header)),
+                rows: table.rows.into_iter().map(Self::from).collect(),
+                fills: table.fills,
             },
-            PdfBoxItem::Spacer(h) => Self::Spacer(*h),
+            PdfBoxItem::Spacer(h) => Self::Spacer(h),
         }
     }
 }
-impl From<&PdfRowItem> for ContentNode {
-    fn from(item: &PdfRowItem) -> Self {
+impl From<PdfRowItem> for ContentNode {
+    fn from(item: PdfRowItem) -> Self {
         match item {
             PdfRowItem::Text { text, style } => Self::Text {
-                text: text.clone(),
-                presentation: TextPresentation::Row(*style),
+                text,
+                presentation: TextPresentation::Row(style),
             },
             PdfRowItem::RichText { runs, style } => Self::Rich {
-                runs: runs.clone(),
-                style: *style,
+                runs,
+                style,
                 keep_with_next: false,
             },
-            PdfRowItem::Image(i) => Self::Image(i.clone()),
-            PdfRowItem::Graphic(g) => Self::Graphic(*g),
-            PdfRowItem::Box(b) => Self::from(b.as_ref()),
-            PdfRowItem::Spacer(h) => Self::Spacer(*h),
-            PdfRowItem::MeasuredRichLine(f) => Self::PreparedRichLine(f.clone()),
+            PdfRowItem::Image(img) => Self::Image(img),
+            PdfRowItem::Graphic(graphic) => Self::Graphic(graphic),
+            PdfRowItem::Box(boxed) => Self::from(*boxed),
+            PdfRowItem::Spacer(h) => Self::Spacer(h),
+            PdfRowItem::MeasuredRichLine(line) => Self::PreparedRichLine(line),
         }
     }
 }
@@ -324,23 +291,6 @@ impl TryFrom<ContentNode> for PdfBlock {
             ContentNode::Spacer(h) => Ok(Self::Spacer { height: h }),
             ContentNode::Row { gap, columns } => Ok(Self::Row(row_from_parts(gap, columns)?)),
             ContentNode::Box { frame, children } => Ok(Self::Box(box_from_parts(frame, children)?)),
-            ContentNode::PlainTable { columns, rows } => Ok(Self::Table(PdfTable {
-                columns: columns
-                    .into_iter()
-                    .map(|col| crate::PdfColumn {
-                        header: col.header,
-                        width: col.width,
-                    })
-                    .collect(),
-                rows: rows
-                    .into_iter()
-                    .map(|row| {
-                        row.into_iter()
-                            .map(plain_cell_text)
-                            .collect::<Result<Vec<_>, _>>()
-                    })
-                    .collect::<Result<Vec<_>, _>>()?,
-            })),
             ContentNode::List { items, ordered } => Ok(Self::List {
                 items: items
                     .into_iter()
@@ -582,16 +532,6 @@ impl SemanticBudget {
                     self.visit(item, depth + 1)?;
                 }
             }
-            ContentNode::PlainTable { columns, rows } => {
-                for col in columns {
-                    self.add_text(col.header.len())?;
-                }
-                for row in rows {
-                    for cell in row {
-                        self.visit(cell, depth + 1)?;
-                    }
-                }
-            }
             _ => {}
         }
         if self.images > MAX_IMAGE_BLOCKS || self.image_bytes > MAX_TOTAL_IMAGE_BYTES {
@@ -613,7 +553,22 @@ impl SemanticBudget {
 mod tests {
     use super::*;
     #[test]
-    fn canonical_text_works_for_all_legacy_origins() {
+    fn owned_input_moves_image_buffer_without_copying() {
+        let payload = vec![1, 2, 3, 4, 5];
+        let address = payload.as_ptr();
+        let input = PdfBlock::Image(PdfImage {
+            data: payload,
+            width: 20.,
+            height: 20.,
+            fit: crate::ImageFit::Contain,
+        });
+        let ContentNode::Image(img) = ContentNode::from(input) else {
+            panic!("image must be owned")
+        };
+        assert_eq!(img.data.as_ptr(), address);
+    }
+    #[test]
+    fn canonical_text_works_for_all_rendering_contexts() {
         let style = TextStyle::paragraph();
         let root = PdfBlock::StyledParagraph {
             text: "abc".into(),
@@ -628,9 +583,9 @@ mod tests {
             text: "abc".into(),
             style,
         };
-        let n1 = ContentNode::from(&root);
-        let n2 = ContentNode::from(&boxed);
-        let n3 = ContentNode::from(&row);
+        let n1 = ContentNode::from(root);
+        let n2 = ContentNode::from(boxed);
+        let n3 = ContentNode::from(row);
         let mut budget = SemanticBudget::default();
         for node in [&n1, &n2, &n3] {
             budget.visit(node, 0).unwrap();
@@ -674,7 +629,7 @@ mod tests {
                 }],
             })],
         };
-        let canonical = ContentNode::from(&original);
+        let canonical = ContentNode::from(original);
         let mut budget = SemanticBudget::default();
         budget.visit(&canonical, 0).unwrap();
         assert_eq!(budget.text_bytes, 5);
@@ -736,13 +691,6 @@ mod tests {
                 items: vec!["A".into(), "B".into()],
                 ordered: true,
             },
-            PdfBlock::Table(PdfTable {
-                columns: vec![crate::PdfColumn {
-                    header: "A".into(),
-                    width: 90.,
-                }],
-                rows: vec![vec!["ONE".into()], vec!["TWO".into()]],
-            }),
             PdfBlock::Row(PdfRow {
                 gap: 0.,
                 columns: vec![PdfRowColumn {
@@ -778,7 +726,7 @@ mod tests {
         ];
         for input in inputs {
             let expected = format!("{input:?}");
-            let canonical = ContentNode::from(&input);
+            let canonical = ContentNode::from(input.clone());
             let actual = PdfBlock::try_from(canonical).unwrap();
             assert_eq!(format!("{actual:?}"), expected);
         }
@@ -813,16 +761,6 @@ mod tests {
             PdfBlock::try_from(ContentNode::List {
                 items: vec![ContentNode::styled_text("colored", style)],
                 ordered: false,
-            })
-            .is_err()
-        );
-        assert!(
-            PdfBlock::try_from(ContentNode::PlainTable {
-                columns: vec![ContentTableColumn {
-                    header: "H".into(),
-                    width: 100.
-                }],
-                rows: vec![vec![ContentNode::styled_text("styled", style)]]
             })
             .is_err()
         );

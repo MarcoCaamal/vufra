@@ -47,10 +47,10 @@ const invoice=vufra
  })
  .heading('Invoice line items')
  .paragraph('Every row is paginated automatically; headers repeat on subsequent pages.')
- .table(products,{columns:[
-   {key:'description',title:'Description',width:'*'},
-   {key:'quantity',title:'Qty',width:70},
-   {key:'unitPrice',title:'Price (MXN)',width:120}
+ .table(products.map(p=>[p.description,p.quantity,p.unitPrice]),{columns:[
+   {title:'Description',width:'*'},
+   {title:'Qty',width:70},
+   {title:'Price (MXN)',width:120}
  ]})
  .divider({height:2,color:'#255aa9'})
  .row(row=>{

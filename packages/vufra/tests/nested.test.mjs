@@ -6,7 +6,7 @@ import {readFileSync,writeFileSync,mkdtempSync} from 'node:fs';
 import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 const require=createRequire(import.meta.url);
-const {createVufra,renderPdf}=require('../dist/index.js');
+const {createVufra,renderPdf}=({...require('../dist/index.js'),...require('../dist/renderer.js')});
 const regular=readFileSync(execFileSync('fc-match',['Noto Sans','-f','%{file}\n'],{encoding:'utf8'}).trim());
 const bold=readFileSync(execFileSync('fc-match',['Noto Sans:style=Bold','-f','%{file}\n'],{encoding:'utf8'}).trim());
 const logo=readFileSync(new URL('./fixtures/two-tone.png',import.meta.url));

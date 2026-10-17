@@ -1,4 +1,4 @@
-import { renderPdfAsyncMeasured, PdfRenderCancelledError, type PdfDocument } from './index';
+import { renderPdfAsyncMeasured, PdfRenderCancelledError, type PdfDocument } from './renderer';
 
 /** Minimal AbortSignal contract, compatible with the built-in Node AbortController. */
 export interface PdfAbortSignal {

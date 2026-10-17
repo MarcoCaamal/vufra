@@ -15,7 +15,7 @@ const pdf=await engine.document({title:'Rich financial report',page:'Letter'})
   .header(h=>h.text('ACME / Rich report 2026',{bold:true}))
   .footer(f=>f.text(({page,total})=>'Page '+page+' of '+total))
   .heading('Styled ledger / multipage cells')
-  .box({padding:14,background:'#FAFCFF'},b=>b.tableStyled([
+  .box({padding:14,background:'#FAFCFF'},b=>b.table([
     ['LEDGER_1',{runs:[
       {text:seq('ITEMRED_',count),bold:true,color:'#BB3344'},
       {text:seq('ITEMREG_',count)}

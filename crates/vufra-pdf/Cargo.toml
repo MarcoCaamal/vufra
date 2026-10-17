@@ -7,7 +7,6 @@ rust-version.workspace = true
 description = "Experimental native PDF renderer of Vufra"
 
 [dependencies]
-vufra-core.workspace = true
 vufra-layout.workspace = true
 krilla.workspace = true
 parley.workspace = true

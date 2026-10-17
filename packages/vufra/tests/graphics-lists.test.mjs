@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const require=createRequire(import.meta.url);
-const {renderPdf,renderPdfAsync,PdfRenderQueue}=require('../dist/index.js');
+const {renderPdf,renderPdfAsync,PdfRenderQueue}=({...require('../dist/index.js'),...require('../dist/renderer.js')});
 const font=readFileSync(process.env.VUFRA_FONT ||
   execFileSync('fc-match',['Noto Sans','-f','%{file}\n'],{encoding:'utf8'}).trim());
 const png=readFileSync(new URL('./fixtures/two-tone.png',import.meta.url));
@@ -98,14 +98,14 @@ test('keepWithNext default keeps heading and image together, false restores sepa
   assert.match(kept.imageList,/\b160\s+80\b/);
 });
 
-test('keepWithNext keeps heading with first table row on next page',()=>{
-  const doc={title:'Keep table',page:{format:'letter'},blocks:[
-    {type:'spacer',height:515},
-    {type:'heading',level:2,text:'STICKYTABLETITLE'},
-    {type:'table',table:{columns:[{header:'SKU',width:110},{header:'Item',width:340}],
-      rows:Array.from({length:28},(_,i)=>['ID'+String(i+1).padStart(3,'0'),'Item '+i])}}
-  ]};
-  const out=inspect(renderPdf(doc,font));
+test('keepWithNext keeps heading alongside the styled table on next page',()=>{
+  const {createVufra}=require('../dist/index.js');
+  const out=inspect(createVufra({font}).document({title:'Keep table',page:'Letter'})
+    .spacer(555).heading('STICKYTABLETITLE',{level:2,keepWithNext:true})
+    .table(Array.from({length:28},(_,i)=>[
+      'ID'+String(i+1).padStart(3,'0'),'Item '+i
+    ]),{columns:[{title:'SKU',width:110},{title:'Item',width:340}]})
+    .renderSync());
   assert.ok(out.pages>=2);
   assert.ok(!out.firstPage.includes('STICKYTABLETITLE'));
   const page2=execFileSync('pdftotext',['-f','2','-l','2','-layout',out.file,'-'],{encoding:'utf8'});

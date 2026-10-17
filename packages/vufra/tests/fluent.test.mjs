@@ -1,3 +1,4 @@
+import {massiveFlow} from './fixtures/flow.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
@@ -7,7 +8,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 
 const require=createRequire(import.meta.url);
-const {vufra,createVufra,PdfRenderQueue,renderPdf}=require('../dist/index.js');
+const {vufra,createVufra,PdfRenderQueue,renderPdf}=({...require('../dist/index.js'),...require('../dist/renderer.js')});
 const regular=readFileSync(execFileSync('fc-match',['Noto Sans','-f','%{file}\n'],{encoding:'utf8'}).trim());
 const bold=readFileSync(execFileSync('fc-match',['Noto Sans:style=Bold','-f','%{file}\n'],{encoding:'utf8'}).trim());
 const image=readFileSync(new URL('./fixtures/two-tone.png',import.meta.url));
@@ -135,10 +136,10 @@ test('long invoice tables keep every row and repeat headers across pages',async(
      r.column({width:'60%',align:'right'},c=>c.heading('INVOICE_2026').paragraph('PAID'));
    })
    .section('Bill to',s=>s.paragraph('CLIENT NAME'))
-   .table(products,{columns:[
-     {key:'concept',title:'Concept',width:'*'},
-     {key:'units',title:'Qty',width:75},
-     {key:'amount',title:'Amount',width:125}
+   .table(products.map(p=>[p.concept,p.units,p.amount]),{columns:[
+     {title:'Concept',width:'*'},
+     {title:'Qty',width:75},
+     {title:'Amount',width:125}
    ]})
    .row(r=>{
      r.column({width:'*'},c=>c.paragraph('THANK YOU'));
@@ -184,7 +185,7 @@ test('invalid nested layouts reject rather than silently flatten',()=>{
    c.paragraph('too tall '.repeat(850)))).renderSync());
  assert.ok(longRow.pages>=2);
  assert.equal((longRow.raw.match(/too/g)??[]).length,850);
- assert.throws(()=>doc.table([{id:1}],{columns:[{key:'id',width:20}]}),/less than 36pt/);
+ assert.throws(()=>doc.table([['a']],{columns:[{title:'id',width:20}]}),/60pt minimum/);
  assert.throws(()=>doc.heading('INVALID',{color:'unknown'}),/color/);
  assert.throws(()=>vufra.document({title:'Missing'}).paragraph('TEXT').renderSync(),/no font configured/);
  assert.throws(()=>doc.row(async r=>{r.column(c=>c.paragraph('TEXT'));}),/callbacks must be synchronous/);
@@ -192,8 +193,7 @@ test('invalid nested layouts reject rather than silently flatten',()=>{
 
 test('queued Fluent row with nested PNG counts binary inputs without expanding JSON',async()=>{
  const q=new PdfRenderQueue({maxConcurrent:1,maxQueued:1});
- const first=q.render({title:'Long first render',
-   rows:Array.from({length:3000},(_,i)=>'ROW'+i)},regular);
+ const first=q.render(massiveFlow('Long first render','ROW',3000,''),regular);
  const second=configured.document({title:'Nested binary row'}).row(r=>{
    r.column({width:'*'},c=>c.image(image,{width:150,height:75}));
  }).enqueue(q);

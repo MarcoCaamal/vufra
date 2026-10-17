@@ -5,6 +5,9 @@
   "description": "Experimental native PDF renderer for Node.js with TypeScript types",
   "license": "(MIT OR Apache-2.0)",
   "main": "./dist/index.js",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "require": "./dist/index.js", "default": "./dist/index.js" }
+  },
   "types": "./dist/index.d.ts",
   "files": ["dist", "native/*.node", "README.md", "LICENSE-MIT", "LICENSE-APACHE"],
   "scripts": {

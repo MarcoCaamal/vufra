@@ -1,3 +1,4 @@
+import {massiveFlow} from './fixtures/flow.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -7,7 +8,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
 const require=createRequire(import.meta.url);
-const {renderPdf,renderPdfAsync,PdfRenderQueue}=require('../dist/index.js');
+const {renderPdf,renderPdfAsync,PdfRenderQueue}=({...require('../dist/index.js'),...require('../dist/renderer.js')});
 const locate=family=>execFileSync('fc-match',[family,'-f','%{file}\n'],{encoding:'utf8'}).trim();
 const regular=readFileSync(process.env.VUFRA_FONT || locate('Noto Sans'));
 const bold=readFileSync(locate('Noto Sans:style=Bold'));
@@ -102,7 +103,7 @@ test('errors are explicit for unknown faces, invalid bytes, duplicate identifier
 test('async and queue render rich text safely even when caller mutates font buffers',async()=>{
   const extraBold=Buffer.from(bold);
   const q=new PdfRenderQueue({maxConcurrent:1,maxQueued:1});
-  const first=q.render({title:'Long job',rows:Array.from({length:6500},(_,i)=>'LOAD'+i)},regular);
+  const first=q.render(massiveFlow('Long job','LOAD',6500,''),regular);
   const doc={title:'Snapshot face',fontFaces:{bold:extraBold},
     blocks:[p([{text:'FONTSNAPSHOT ',font:'bold'},{text:'REMAINS ORIGINAL'}])]};
   const waiting=q.render(doc,regular);

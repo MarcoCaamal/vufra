@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import {tmpdir} from 'node:os';
 
 const require=createRequire(import.meta.url);
-const {createVufra,renderPdf,PdfRenderQueue}=require('../dist/index.js');
+const {createVufra,renderPdf,PdfRenderQueue}=({...require('../dist/index.js'),...require('../dist/renderer.js')});
 const font=readFileSync(execFileSync('fc-match',['Noto Sans','-f','%{file}\n'],{encoding:'utf8'}).trim());
 const bold=readFileSync(execFileSync('fc-match',['Noto Sans:style=Bold','-f','%{file}\n'],{encoding:'utf8'}).trim());
 const app=createVufra({font,fonts:{bold},theme:{colors:{accent:'#C6F2C3'}}});
@@ -50,7 +50,7 @@ test('nested styled table repeats measured header and conserves 210 records acro
 });
 test('single row with inline mixed runs has genuine font and text color',()=>{
   const out=inspect(app.document({title:'Rich cells',page:'Letter'})
-    .tableStyled(records(2),{columns}).renderSync());
+    .table(records(2),{columns}).renderSync());
   assert.match(out.raw,/IMPORTANT/);
   assert.match(out.raw,/service item/);
   assert.match(out.fonts,/NotoSans-Bold/);
@@ -71,31 +71,33 @@ test('narrow box table columns measure against inner box width',()=>{
     ]});
   }),/columns exceed/);
 });
-test('oversized plain-text styled row fragments and previous table API stays unchanged',()=>{
+test('oversized plain-text styled row fragments and canonical table still works',()=>{
   const huge='SUPERTOKEN '.repeat(640);
-  const continued=inspect(app.document({title:'Continued',page:'Letter'}).tableStyled([
+  const continued=inspect(app.document({title:'Continued',page:'Letter'}).table([
     ['OK',huge,'$1']
   ],{columns}).renderSync());
   assert.ok(continued.pages>=3);
   assert.equal((continued.raw.match(/SUPERTOKEN/g)??[]).length,640);
   for(let pg=1;pg<=continued.pages;pg++)
     assert.equal((continued.page(pg).match(/\bITEM\b/g)??[]).length,1);
-  assert.throws(()=>app.document({title:'Over budget',page:'Letter'}).tableStyled([
+  assert.throws(()=>app.document({title:'Over budget',page:'Letter'}).table([
     ['OK','SUPERTOKEN '.repeat(2600),'$1']
   ],{columns}).renderSync(),/more than 500 line fragments/);
-  const standard=inspect(app.document({title:'Legacy unaffected'})
-    .table([{service:'OLD_TABLE_ROW',amount:22}]).renderSync());
-  assert.match(standard.raw,/OLD_TABLE_ROW/);
+  const standard=inspect(app.document({title:'Unified table'})
+    .table([['UNIFIED_TABLE_ROW','22']],{columns:[
+      {title:'Service',width:'70%'},{title:'Amount',width:'30%'}
+    ]}).renderSync());
+  assert.match(standard.raw,/UNIFIED_TABLE_ROW/);
 });
 test('validates styled cells, missing faces, bad fills and row mismatch',()=>{
   const doc=app.document({title:'Bad table'});
-  assert.throws(()=>doc.tableStyled([['A']],{columns}),/row cells must match/);
-  assert.throws(()=>doc.tableStyled([['A','B','C']],{columns:[
+  assert.throws(()=>doc.table([['A']],{columns}),/row cells must match/);
+  assert.throws(()=>doc.table([['A','B','C']],{columns:[
     {...columns[0],width:500},columns[1],columns[2]
   ]}),/columns exceed/);
-  assert.throws(()=>doc.tableStyled([[{text:'A',font:'unconfigured'},'B','C']],{columns}),
+  assert.throws(()=>doc.table([[{text:'A',font:'unconfigured'},'B','C']],{columns}),
     /must be configured/);
-  assert.throws(()=>doc.tableStyled([[{text:'A',background:'invalid'},'B','C']],{columns}),
+  assert.throws(()=>doc.table([[{text:'A',background:'invalid'},'B','C']],{columns}),
     /color/i);
   assert.throws(()=>renderPdf({title:'Low-level invalid',blocks:[{type:'box',box:{
     items:[{type:'table',table:{header:{columns:[]},rows:[],fills:[]}}]}}]},font),
@@ -126,14 +128,14 @@ test('PNG in a styled cell is embedded, and impossible image dimensions reject',
   assert.match(out.raw,/LOGO_CELL/);
   assert.match(execFileSync('pdfimages',['-list',out.path],{encoding:'utf8'}),
     /\b160\s+80\b/);
-  assert.throws(()=>app.document({title:'Oversized image'}).tableStyled([
+  assert.throws(()=>app.document({title:'Oversized image'}).table([
     ['A',{image:logo,width:999,height:30},'B']
   ],{columns}),/invalid styled table cell image/);
 });
 
 test('styled cell background is a real PDF pixel fill, not styling metadata',()=>{
   const out=inspect(app.document({title:'Cell fill',page:'Letter'})
-    .tableStyled([['COLOR_ROW',{text:'GREEN_VALUE',background:'accent'},'$42']],
+    .table([['COLOR_ROW',{text:'GREEN_VALUE',background:'accent'},'$42']],
       {columns}).renderSync());
   const bbox=execFileSync('pdftotext',['-bbox',out.path,'-'],{encoding:'utf8'});
   const word=bbox.match(/<word xMin="([\d.]+)" yMin="([\d.]+)" xMax="([\d.]+)" yMax="([\d.]+)">GREEN_VALUE<\/word>/);
@@ -179,7 +181,7 @@ test('nested table PNGs count towards native image preflight (65 rejected)',()=>
   const imageRows=Array.from({length:65},(_,i)=>[
     {image:logo,width:30,height:15}, 'IMAGE_'+i
   ]);
-  assert.throws(()=>app.document({title:'Images budget'}).tableStyled(imageRows,{
+  assert.throws(()=>app.document({title:'Images budget'}).table(imageRows,{
     columns:[{title:'Artwork',width:'50%'},{title:'Description',width:'50%'}]
   }).renderSync(),/too many images|image bytes/i);
 });

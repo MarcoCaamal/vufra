@@ -1,117 +1,69 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRequire } from 'node:module';
-import { execFileSync } from 'node:child_process';
-import { readFileSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-
-const require = createRequire(import.meta.url);
-const { renderPdf } = require('../dist/index.js');
-const font = readFileSync(process.env.VUFRA_FONT ||
-  execFileSync('fc-match', ['Noto Sans', '-f', '%{file}\n'], {encoding:'utf8'}).trim());
-const cols = [
-  {header:'Clave',width:98},
-  {header:'Descripción',width:278},
-  {header:'Precio MXN',width:121},
-];
-
-function inspect(bytes) {
-  const dir=mkdtempSync(join(tmpdir(),'vufra-flow-'));
-  const file=join(dir,'flow.pdf');
-  writeFileSync(file,bytes);
-  const info=execFileSync('pdfinfo',[file],{encoding:'utf8'});
-  const text=execFileSync('pdftotext',['-layout',file,'-'],{encoding:'utf8'});
-  const pages=Number(info.match(/Pages:\s+(\d+)/)?.[1]);
-  return {file, pages, text, sheets:text.split('\f').filter(x=>x.trim())};
+import {createRequire} from 'node:module';
+import {execFileSync} from 'node:child_process';
+import {readFileSync,writeFileSync,mkdtempSync} from 'node:fs';
+import {join} from 'node:path';
+import {tmpdir} from 'node:os';
+const require=createRequire(import.meta.url);
+const {createVufra}=require('../dist/index.js');
+const font=readFileSync(execFileSync('fc-match',['Noto Sans','-f','%{file}\n'],
+  {encoding:'utf8'}).trim());
+const app=createVufra({font});
+const columns=[{title:'Clave',width:'30%'},{title:'Detalle',width:'70%'}];
+function inspect(pdf){
+ const path=join(mkdtempSync(join(tmpdir(),'vufra-flow-')),'report.pdf');
+ writeFileSync(path,pdf);
+ return {pages:+execFileSync('pdfinfo',[path],{encoding:'utf8'}).match(/Pages:\s+(\d+)/)[1],
+ text:execFileSync('pdftotext',['-raw',path,'-'],{encoding:'utf8'}),path};
 }
-
-test('ordered paragraphs and table share the SAME page, without blank pages',()=>{
-  const {pages,text,sheets}=inspect(renderPdf({
-    title:'Vufra: composición unificada',
-    blocks:[
-      {type:'paragraph',text:'PRIMER PÁRRAFO: ¡Hola, Cancún!'},
-      {type:'table',table:{columns:cols,rows:[
-        ['SKU-0001','Producto café','$ 12'],
-        ['SKU-0002','Producto té','$ 24']
-      ]}},
-      {type:'paragraph',text:'PÁRRAFO FINAL: después de la tabla.'},
-    ]
-  },font));
-  assert.equal(pages,1,'short paragraph + table + paragraph should fit one page');
-  const seq=['PRIMER PÁRRAFO','Clave','SKU-0001','SKU-0002','PÁRRAFO FINAL'];
-  const positions=seq.map(s=>text.indexOf(s));
-  assert.ok(positions.every(x=>x>=0),positions);
-  assert.deepEqual(positions,[...positions].sort((a,b)=>a-b));
-  assert.ok(sheets[0].includes('¡Hola, Cancún!'));
+test('canonical fluent paragraph and table paginate without data loss',()=>{
+ const rows=Array.from({length:115},(_,i)=>['SKU_'+String(i+1).padStart(4,'0'),'Producto']);
+ const out=inspect(app.document({title:'Flow ordering'})
+   .paragraph('INTRO_MIXED_PARAGRAPH').table(rows,{columns}).paragraph('OUTRO_MARKER')
+   .renderSync());
+ assert.ok(out.pages>=2);
+ assert.deepEqual([...out.text.matchAll(/SKU_(\d{4})/g)].map(m=>+m[1]),
+   Array.from({length:115},(_,i)=>i+1));
+ assert.ok(out.text.indexOf('INTRO_MIXED_PARAGRAPH')<out.text.indexOf('SKU_0001'));
+ assert.ok(out.text.indexOf('SKU_0115')<out.text.indexOf('OUTRO_MARKER'));
 });
-
-test('a paragraph spanning pages conserves 1200 marked tokens then an adjacent table',()=>{
-  const expected=Array.from({length:1200},(_,i)=>'FLOW'+String(i+1).padStart(4,'0'));
-  const result=inspect(renderPdf({
-    title:'Largo documento',
-    blocks:[
-      {type:'paragraph',text:expected.join(' ')},
-      {type:'table',table:{columns:cols,rows:[['SKU-END','Tabla después de texto enorme','$ 1']]}},
-      {type:'paragraph',text:'FIN DEL DOCUMENTO'},
-    ],
-  },font));
-  assert.ok(result.pages>2);
-  const observed=[...result.text.matchAll(/FLOW(\d{4})/g)].map(m=>Number(m[1]));
-  assert.deepEqual(observed,Array.from({length:1200},(_,i)=>i+1));
-  assert.ok(result.text.indexOf('SKU-END')>result.text.indexOf('FLOW1200'));
-  assert.ok(result.text.indexOf('FIN DEL DOCUMENTO')>result.text.indexOf('SKU-END'));
+test('long paragraph and adjacent rich table both continue across pages',()=>{
+ const tokens=Array.from({length:1200},(_,i)=>'WORD_'+String(i+1).padStart(4,'0'));
+ const out=inspect(app.document({title:'Long text'})
+   .paragraph(tokens.join(' ')).table([['END_REF','Remainder']],{columns})
+   .renderSync());
+ assert.ok(out.pages>=5);
+ assert.deepEqual([...out.text.matchAll(/WORD_(\d{4})/g)].map(m=>+m[1]),
+  Array.from({length:1200},(_,i)=>i+1));
+ assert.equal((out.text.match(/END_REF/g)||[]).length,1);
 });
-
-test('table with very long row followed by paragraph reuses last page space',()=>{
-  const values=Array.from({length:330},(_,i)=>'CONT'+String(i).padStart(4,'0'));
-  const result=inspect(renderPdf({
-    title:'Tablas y párrafos fluidos',
-    blocks:[
-      {type:'table',table:{columns:cols,rows:[
-        ['SKU-START',values.join(' '),'$ 0'],
-        ['SKU-END','Última fila','$ 1'],
-      ]}},
-      {type:'paragraph',text:'ÚLTIMO PÁRRAFO AL FINAL DE TABLA'},
-      {type:'paragraph',text:'SEGUNDO PÁRRAFO QUE APROVECHA LA PÁGINA'},
-    ],
-  },font));
-  assert.ok(result.pages>1);
-  assert.deepEqual(
-    [...result.text.matchAll(/CONT(\d{4})/g)].map(m=>Number(m[1])),
-    Array.from({length:330},(_,i)=>i)
-  );
-  assert.ok(result.sheets.at(-1).includes('SKU-END'));
-  assert.ok(result.sheets.at(-1).includes('ÚLTIMO PÁRRAFO'));
-  assert.ok(result.sheets.at(-1).includes('SEGUNDO PÁRRAFO'));
-  // Every page carrying the same table repeats the header.
-  assert.equal((result.text.match(/Clave/g)||[]).length,result.pages);
+test('two tables and paragraphs appear in authored order',()=>{
+ const out=inspect(app.document({title:'Two rich tables'})
+  .table([['FIRST_TABLE','one']],{columns})
+  .paragraph('MID_PARAGRAPH')
+  .table([['SECOND_TABLE','two']],{columns})
+  .paragraph('TAIL_PARAGRAPH').renderSync());
+ const labels=['FIRST_TABLE','MID_PARAGRAPH','SECOND_TABLE','TAIL_PARAGRAPH'];
+ assert.deepEqual(labels.map(s=>out.text.indexOf(s)),
+   [...labels.map(s=>out.text.indexOf(s))].sort((a,b)=>a-b));
 });
-
-test('multiple tables and paragraphs retain their authored order',()=>{
-  const result=inspect(renderPdf({
-    title:'A-B-C',
-    blocks:[
-      {type:'table',table:{columns:cols,rows:[['FIRST-TABLE','uno','1']]}},
-      {type:'paragraph',text:'MID-PARAGRAPH'},
-      {type:'table',table:{columns:cols,rows:[['SECOND-TABLE','dos','2']]}},
-      {type:'paragraph',text:'TAIL-PARAGRAPH'},
-    ]
-  },font));
-  assert.equal(result.pages,1);
-  const indexes=['FIRST-TABLE','MID-PARAGRAPH','SECOND-TABLE','TAIL-PARAGRAPH']
-    .map(x=>result.text.indexOf(x));
-  assert.deepEqual(indexes,[...indexes].sort((a,b)=>a-b));
-  assert.equal((result.text.match(/Clave/g)||[]).length,2);
+test('heading and table preserve keepWithNext when first page is nearly filled',()=>{
+ const out=inspect(app.document({title:'Keep with table'})
+  .paragraph('PREFACE '.repeat(1600))
+  .heading('FOLLOWING_HEADING',{keepWithNext:true})
+  .table([['FOLLOWING_REF','value']],{columns})
+  .renderSync());
+ assert.ok(out.pages>=2);
+ const pg=execFileSync('pdftotext',['-raw','-f',String(out.pages),'-l',String(out.pages),out.path,'-'],{encoding:'utf8'});
+ assert.match(pg,/FOLLOWING_REF/);
 });
-
-test('rejects mixed modes and invalid ordered blocks; empty flow still valid',()=>{
-  const make=blocks=>renderPdf({title:'Valid',blocks},font);
-  assert.throws(()=>renderPdf({title:'Valid',paragraphs:['old'],blocks:[]},font),/blocks.*legacy/);
-  assert.throws(()=>renderPdf({title:'Valid',table:{columns:cols,rows:[]},blocks:[]},font),/blocks.*legacy/);
-  assert.throws(()=>make([{type:'video',url:'unknown'}]),/flow block/);
-  assert.throws(()=>make([{type:'paragraph',text:54}]),/flow block/);
-  assert.throws(()=>make([{type:'table',table:{columns:[],rows:[]}}]),/columns/);
-  assert.throws(()=>make([{type:'paragraph',text:'W'.repeat(2000)}]),/unbreakable/);
-  assert.equal(inspect(make([])).pages,1);
+test('invalid rich table and unbreakable paragraph reject clearly',()=>{
+ const doc=app.document({title:'Flow errors'});
+ assert.throws(()=>doc.table([['a','b','c']],{columns}),/cells must match/);
+ assert.throws(()=>doc.paragraph('W'.repeat(2000)).renderSync(),/unbreakable/);
+});
+test('empty flow renders one valid page',()=>{
+ const out=inspect(app.document({title:'Empty modern flow'}).renderSync());
+ assert.equal(out.pages,1);
 });

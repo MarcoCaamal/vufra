@@ -2,9 +2,9 @@
 use super::check_cancel;
 use super::{
     MAX_FONT_BYTES, MAX_TOTAL_TEXT_BYTES, PageGeometry, PdfBlock, PdfPageChrome, RenderError,
-    RenderOptions, TextStyle, draw_table_fragment,
+    RenderOptions, TextStyle,
     image::{MAX_IMAGE_BLOCKS, MAX_TOTAL_IMAGE_BYTES, MAX_TOTAL_IMAGE_PIXELS, PreparedImage},
-    measure_text_lines, prepare_table,
+    measure_text_lines,
     rich_text::{FontRegistry, PdfFontFace, RichLine, prepare_rich},
     semantic::{ContentNode, SemanticBudget},
 };
@@ -31,7 +31,6 @@ enum PreparedBlock {
         lines: Vec<String>,
         style: TextStyle,
     },
-    Table(super::table::PreparedTable),
     Spacer,
     Image(PreparedImage),
     Graphic,
@@ -73,7 +72,6 @@ fn validate_flow(
         text_bytes: title.len(),
         ..SemanticBudget::default()
     };
-    let mut rows = 0usize;
     for (block, node) in blocks.iter().zip(canonical) {
         budget.visit(node, 0)?;
         match block {
@@ -108,14 +106,8 @@ fn validate_flow(
                     return Err(RenderError::InvalidInput("invalid spacer height"));
                 }
             }
-            PdfBlock::Table(table) => {
-                rows = rows
-                    .checked_add(table.rows.len())
-                    .ok_or(RenderError::InvalidInput("too many rows"))?;
-                // Headers/cells are accounted by the same owned AST visitor.
-            }
         }
-        if budget.text_bytes > MAX_TOTAL_TEXT_BYTES || rows > 10_000 {
+        if budget.text_bytes > MAX_TOTAL_TEXT_BYTES {
             return Err(RenderError::InvalidInput("too many rows or too much text"));
         }
     }
@@ -131,7 +123,7 @@ fn validate_flow(
         {
             for col in &row.columns {
                 for item in &col.items {
-                    budget.visit(&ContentNode::from(item), 0)?;
+                    budget.visit(&ContentNode::from(item.clone()), 0)?;
                 }
             }
         }
@@ -145,32 +137,6 @@ fn validate_flow(
         ));
     }
     Ok(())
-}
-
-/// Normalize every legacy document to one owned semantic tree *before*
-/// validation, pagination, font preparation or PDF painting.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn render_flow(
-    title: &str,
-    blocks: &[PdfBlock],
-    font_bytes: &[u8],
-    options: RenderOptions,
-    geometry: PageGeometry,
-    extra_fonts: &[PdfFontFace],
-    chrome: Option<&PdfPageChrome>,
-    cancel: &AtomicBool,
-) -> Result<Vec<u8>, RenderError> {
-    let canonical = blocks.iter().map(ContentNode::from).collect::<Vec<_>>();
-    render_semantic_flow(
-        title,
-        &canonical,
-        font_bytes,
-        options,
-        geometry,
-        extra_fonts,
-        chrome,
-        cancel,
-    )
 }
 
 /// The owned semantic nodes are the single input of preparation. Writer
@@ -512,24 +478,6 @@ fn render_writer_flow(
                 measurements.push(FlowBlock::Spacer { height: *height });
                 prepared.push(PreparedBlock::Spacer);
             }
-            PdfBlock::Table(table) => {
-                let layout = prepare_table(
-                    table,
-                    &family,
-                    &mut fonts,
-                    &mut context,
-                    options,
-                    (geometry.content_width(), geometry.content_height()),
-                    cancel,
-                )?;
-                measurements.push(FlowBlock::Table {
-                    line_counts: layout.rows.iter().map(|r| r.line_count).collect(),
-                    header_height: layout.header_height,
-                    line_height: options.line_height,
-                    padding: 6.0,
-                });
-                prepared.push(PreparedBlock::Table(layout));
-            }
         }
     }
     let keeps = blocks
@@ -560,7 +508,7 @@ fn render_writer_flow(
         let mut page = output.start_page_with(settings);
         let mut surface = page.surface();
         let left = geometry.margin_left;
-        if chrome.is_none_or(|c| c.should_draw_legacy_header(index)) {
+        if chrome.is_none_or(|c| c.should_draw_default_header(index)) {
             surface.draw_text(
                 Point::from_xy(left, geometry.margin_top - 69.0),
                 font.clone(),
@@ -578,7 +526,7 @@ fn render_writer_flow(
                 TextDirection::Auto,
             );
         }
-        if chrome.is_none_or(|c| c.should_draw_legacy_footer(index)) {
+        if chrome.is_none_or(|c| c.should_draw_default_footer(index)) {
             surface.draw_text(
                 Point::from_xy(left, geometry.height - geometry.margin_bottom * 0.4),
                 font.clone(),
@@ -760,12 +708,6 @@ fn render_writer_flow(
                         }
                     }
                     y += height;
-                }
-                FlowFragment::Table { block, page } => {
-                    if let PreparedBlock::Table(table) = &prepared[*block] {
-                        draw_table_fragment(&mut surface, table, page, &font, options, y, left);
-                    }
-                    y += page.used_height;
                 }
             }
         }

@@ -44,11 +44,11 @@ impl PdfPageChrome {
             self.footer.as_ref()
         }
     }
-    pub(crate) fn should_draw_legacy_header(&self, page: usize) -> bool {
+    pub(crate) fn should_draw_default_header(&self, page: usize) -> bool {
         !(self.hide_header || page == 0 && self.hide_first_header)
             && self.band(page == 0, true).is_none()
     }
-    pub(crate) fn should_draw_legacy_footer(&self, page: usize) -> bool {
+    pub(crate) fn should_draw_default_footer(&self, page: usize) -> bool {
         !(self.hide_footer || page == 0 && self.hide_first_footer)
             && self.band(page == 0, false).is_none()
     }
@@ -206,12 +206,12 @@ mod tests {
             hide_first_footer: true,
             ..Default::default()
         };
-        assert!(!c.should_draw_legacy_header(0));
+        assert!(!c.should_draw_default_header(0));
         assert!(c.band(true, true).is_some());
         assert!(c.band(false, true).is_some());
         assert!(c.band(true, false).is_none());
-        assert!(!c.should_draw_legacy_footer(0));
-        assert!(c.should_draw_legacy_footer(1));
+        assert!(!c.should_draw_default_footer(0));
+        assert!(c.should_draw_default_footer(1));
     }
     #[test]
     fn page_number_expansion_is_literal_and_nonrecursive() {

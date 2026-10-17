@@ -7,8 +7,8 @@
  */
 import { renderPdf, renderPdfAsync, type PdfAsyncOptions, type PdfBlock,
   type PdfDocument, type PdfPageOptions, type PdfBox, type PdfBoxItem, type PdfRow, type PdfRowColumn,
-  type PdfRowItem, type PdfRichRun, type PdfTable, type PdfTextStyle, type PdfPageChrome, type PdfBoxTable
-} from './index';
+  type PdfRowItem, type PdfRichRun, type PdfTextStyle, type PdfPageChrome, type PdfBoxTable
+} from './renderer';
 import { PdfRenderQueue, type PdfEnqueueOptions } from './queue';
 declare const structuredClone: <T>(value:T)=>T;
 
@@ -43,17 +43,6 @@ export interface DocumentOptions extends VufraConfig {
 export interface HeadingOptions extends VufraStyle {
   level?: 1 | 2 | 3;
   keepWithNext?: boolean;
-}
-export interface TableColumn<T> {
-  key: keyof T & string;
-  title?: string;
-  width?: number | '*';
-}
-export interface TableOptions<T> {
-  columns?: TableColumn<T>[];
-  /** Existing native table automatically stripes and repeats headers. */
-  striped?: boolean;
-  repeatHeader?: boolean;
 }
 /** Tokens resolved by Rust once the final page count is known; not JS per-page callbacks. */
 export interface PageNumberTokens { page: string; total: string }
@@ -253,34 +242,7 @@ function richStyle(style:VufraStyle):Partial<PdfTextStyle>{
 function ensureText(text:unknown):asserts text is string{
   if(typeof text!=='string' || !text.trim()) fail('text must be a nonempty string');
 }
-function asTable<T extends object>(
- data:readonly T[]|PdfTable,options:TableOptions<T>|undefined,contentWidth:number
-):PdfTable {
-  if(plainObject(data) && Array.isArray(data.columns) && Array.isArray(data.rows)) {
-    if(options?.columns) fail('table column definitions were provided twice');
-    return data as unknown as PdfTable;
-  }
-  if(!Array.isArray(data)) fail('table needs an array of objects or native PdfTable');
-  if(!data.length && !options?.columns?.length) fail('empty table needs explicit columns');
-  if(options?.striped===false || options?.repeatHeader===false){
-    fail('custom table stripes/header repetition are not implemented yet');
-  }
-  const cols:TableColumn<T>[]=options?.columns??Object.keys(data[0]??{}).map(key=>({key:key as keyof T & string}));
-  if(cols.length<1 || cols.length>12)fail('tables require between 1 and 12 columns');
-  const fixed=cols.reduce((n,c)=>n+(typeof c.width==='number'?c.width:0),0);
-  const stars=cols.filter(c=>c.width===undefined||c.width==='*').length;
-  const auto=stars?(contentWidth-fixed)/stars:0;
-  const columns=cols.map(c=>({header:c.title??String(c.key),width:typeof c.width==='number'?c.width:auto}));
-  if(columns.some(c=>!validNumber(c.width)||c.width<36) ||
-    columns.reduce((a,c)=>a+c.width,0)>contentWidth+0.02) {
-    fail('table widths exceed printable page or a column is less than 36pt');
-  }
-  const rows=data.map(row=>cols.map(c=>{
-    const val=(row as Record<string,unknown>)[c.key];
-    return val===null||val===undefined?'':String(val);
-  }));
-  return {columns,rows};
-}
+
 type BuilderContext = {
   font?:Uint8Array;fonts:Record<string,Uint8Array>;theme?:VufraTheme;
   page:PdfPageOptions;title:string;
@@ -398,7 +360,7 @@ class ColumnScope {
   }
   table(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):this{
     this.assertActive();
-    this.items.push({__vufraBuild:content=>{content.tableStyled(rows,options);}});
+    this.items.push({__vufraBuild:content=>{content.table(rows,options);}});
     return this;
   }
   row(options:RowOptions,callback:(row:RowScope)=>void):this;
@@ -690,7 +652,7 @@ export class ContentBuilder {
       case 'rich-paragraph':
         return this.pushBoxItem({type:'rich',runs:block.runs,style:block.style});
       case 'image':
-        return this.pushBoxItem('image' in block ? {type:'image',...block.image} : block);
+        return this.pushBoxItem(block);
       case 'rule': case 'rectangle': case 'spacer':
         return this.pushBoxItem(block);
       case 'row':
@@ -702,11 +664,6 @@ export class ContentBuilder {
           this.append({type:'paragraph',text:(block.ordered?String(i+1)+'. ':'• ')+text});
         }
         return this;
-      case 'table':
-        return this.pushBoxItem({type:'table',table:styledTable(this.ctx,this.width,
-          block.table.rows, {columns:block.table.columns.map(c=>({
-            title:c.header,width:c.width
-          }))})});
       default:
         fail('this component cannot be nested inside a box');
     }
@@ -721,7 +678,7 @@ export class ContentBuilder {
         case 'paragraph': this.paragraph(node.text,node.style);break;
         case 'heading': this.heading(node.text,node.options);break;
         case 'image': this.image(node.data,node.options);break;
-        case 'table': this.tableStyled(node.rows,node.options);break;
+        case 'table': this.table(node.rows,node.options);break;
         case 'flow': this.add(node.children);break;
         case 'box': this.box(node.options,b=>b.add(node.children));break;
         case 'row': this.row(node.options,r=>{
@@ -791,34 +748,11 @@ export class ContentBuilder {
     };
     return this.append({type:'box',box:boxed});
   }
-  /** In a Box this is the rich table; at document root it remains the legacy table. */
-  table(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):this;
-  table<T extends object>(data:readonly T[]|PdfTable,options?:TableOptions<T>):this;
-  table(data:readonly object[]|PdfTable,
-    options?:StyledTableOptions|TableOptions<object>):this{
-    const styled=Array.isArray(data) && data.every(Array.isArray)
-      && !!options?.columns
-      && options.columns.every(c=>typeof (c as StyledTableColumn).title==='string'
-        && !('key' in c));
-    if(styled){
-      return this.tableStyled(data as readonly (readonly StyledTableCell[])[],
-        options as StyledTableOptions);
-    }
-    if(this.inBox){
-      const plain=asTable(data as readonly object[]|PdfTable,
-        options as TableOptions<object>|undefined,this.width);
-      return this.tableStyled(plain.rows,{columns:plain.columns.map(c=>({
-        title:c.header,width:c.width
-      }))});
-    }
-    return this.append({type:'table',table:asTable(
-      data as readonly object[]|PdfTable,options as TableOptions<object>|undefined,this.width)});
-  }
-  tableStyled(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):this{
+  table(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):this{
     if(this.inBox) return this.pushBoxItem({
       type:'table',table:styledTable(this.ctx,this.width,rows,options)
     });
-    return this.box({padding:0},box=>box.tableStyled(rows,options));
+    return this.box({padding:0},content=>content.table(rows,options));
   }
   row(options:RowOptions,callback:(row:RowScope)=>void):this;
   row(callback:(row:RowScope)=>void):this;
@@ -946,15 +880,8 @@ export class DocumentBuilder {
     return this.append(s=>{if(typeof optionsOrCb==='function')s.box(optionsOrCb);
       else s.box(optionsOrCb,cb!);});
   }
-  table(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):DocumentBuilder;
-  table<T extends object>(data:readonly T[]|PdfTable,opts?:TableOptions<T>):DocumentBuilder;
-  table(data:readonly object[]|PdfTable,
-    opts?:TableOptions<object>|StyledTableOptions):DocumentBuilder{
-    return this.append(s=>{s.table(data as readonly object[],
-      opts as TableOptions<object>);});
-  }
-  tableStyled(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):DocumentBuilder{
-    return this.append(s=>{s.tableStyled(rows,options);});
+  table(rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions):DocumentBuilder{
+    return this.append(s=>{s.table(rows,options);});
   }
   row(opts:RowOptions,callback:(r:RowScope)=>void):DocumentBuilder;
   row(callback:(r:RowScope)=>void):DocumentBuilder;
@@ -971,23 +898,29 @@ export class DocumentBuilder {
     return this.append(s=>{if(typeof titleOrCb==='string')s.section(titleOrCb,cb!);
       else s.section(titleOrCb);});
   }
-  /** Inspect the exact AST passed to the existing renderer; copy to isolate inputs. */
-  toDocument():PdfDocument{
-    return structuredClone({title:this.ctx.title,blocks:[...this.blocks],
+  /** Internal immutable builder tree; the native bridge consumes it immediately.
+   * Never expose this reference to callers: toDocument returns an isolated copy.
+   */
+  private renderInput():PdfDocument {
+    return {title:this.ctx.title,blocks:this.blocks as PdfBlock[],
       page:this.ctx.page,fontFaces:this.ctx.fonts,
-      ...(Object.keys(this.chrome).length ? {pageChrome:this.chrome} : {})});
+      ...(Object.keys(this.chrome).length?{pageChrome:this.chrome}:{})};
+  }
+  /** Deep snapshot for inspection or mutation without changing the builder. */
+  toDocument():PdfDocument {
+    return structuredClone(this.renderInput());
   }
   async render(options:PdfAsyncOptions={}):Promise<Uint8Array>{
     if(!this.ctx.font)fail('no font configured; use createVufra({font}) or document({font})');
-    return renderPdfAsync(this.toDocument(),this.ctx.font,options);
+    return renderPdfAsync(this.renderInput(),this.ctx.font,options);
   }
   renderSync():Uint8Array{
     if(!this.ctx.font)fail('no font configured; use createVufra({font}) or document({font})');
-    return renderPdf(this.toDocument(),this.ctx.font);
+    return renderPdf(this.renderInput(),this.ctx.font);
   }
   enqueue(queue:PdfRenderQueue,options:PdfEnqueueOptions={}):Promise<Uint8Array>{
     if(!this.ctx.font)fail('no font configured; use createVufra({font}) or document({font})');
-    return queue.render(this.toDocument(),this.ctx.font,options);
+    return queue.render(this.renderInput(),this.ctx.font,options);
   }
 }
 export class Vufra {

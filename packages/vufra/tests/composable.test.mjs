@@ -80,7 +80,7 @@ test('same ContentBuilder interface works for chained nested boxes and callbacks
         .cell(c=>c.paragraph('CELL_1'))
         .cell(c=>c.paragraph('CELL_2'))
       )
-      .tableStyled([['VALUE_1','VALUE_2']],{columns:cols})
+      .table([['VALUE_1','VALUE_2']],{columns:cols})
     ).renderSync());
   for(const s of ['ONE','TWO','THREE','ROW_LEFT','ROW_RIGHT','CELL_1','CELL_2','VALUE_1','VALUE_2'])
     assert.match(o.raw,new RegExp(s));
@@ -412,7 +412,7 @@ test('split rich table cell repaints its RGB background on continuation page',()
   const rich=Array.from({length:150},(_,i)=>
     'CELLCOLOR_'+String(i+1).padStart(4,'0')).join(' ');
   const out=inspect(engine.document({title:'Rich cell continuity',page:'Letter'})
-    .tableStyled([
+    .table([
       ['RICH_CELL',{runs:[{text:rich,bold:true,color:'#AA2244'}],
         background:'#E1F4DC'}]
     ],{columns:[
