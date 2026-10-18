@@ -1,0 +1,124 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-18T18:46:24.505Z",
+  "revision": "17baa7a",
+  "identity": {
+    "platform": "linux",
+    "arch": "x64",
+    "release": "7.2.6-arch2-1",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "cores": 12,
+    "node": "v24.11.1",
+    "ramBytes": 33356722176,
+    "fontBytes": 621572
+  },
+  "runs": 5,
+  "caseOrder": [
+    "table-250",
+    "nested-50",
+    "mixed-150",
+    "flex-100"
+  ],
+  "scenarios": {
+    "table-250": {
+      "scenario": "table-250",
+      "runs": 5,
+      "medianMs": 23.843,
+      "p95Ms": 24.464,
+      "minMs": 23.667,
+      "maxMs": 24.464,
+      "samplesMs": [
+        23.667,
+        23.843,
+        23.834,
+        24.103,
+        24.464
+      ],
+      "peakRssMiB": 91.91,
+      "finalRssMiB": 91.594,
+      "pdfBytes": 36439
+    },
+    "nested-50": {
+      "scenario": "nested-50",
+      "runs": 5,
+      "medianMs": 5.258,
+      "p95Ms": 5.354,
+      "minMs": 5.23,
+      "maxMs": 5.354,
+      "samplesMs": [
+        5.354,
+        5.258,
+        5.23,
+        5.286,
+        5.234
+      ],
+      "peakRssMiB": 86.855,
+      "finalRssMiB": 86.207,
+      "pdfBytes": 16726
+    },
+    "mixed-150": {
+      "scenario": "mixed-150",
+      "runs": 5,
+      "medianMs": 15.431,
+      "p95Ms": 15.625,
+      "minMs": 15.373,
+      "maxMs": 15.625,
+      "samplesMs": [
+        15.428,
+        15.564,
+        15.625,
+        15.431,
+        15.373
+      ],
+      "peakRssMiB": 89.051,
+      "finalRssMiB": 89,
+      "pdfBytes": 30078
+    },
+    "flex-100": {
+      "scenario": "flex-100",
+      "runs": 5,
+      "medianMs": 7.958,
+      "p95Ms": 8.128,
+      "minMs": 7.943,
+      "maxMs": 8.128,
+      "samplesMs": [
+        7.999,
+        7.958,
+        7.946,
+        7.943,
+        8.128
+      ],
+      "peakRssMiB": 87.309,
+      "finalRssMiB": 86.902,
+      "pdfBytes": 14700
+    }
+  },
+  "methodology": "Fresh child per case; 2 warmups + N sequential sync renders, GC before each sample, peak RSS is process max (including fonts and warmup). No CI threshold by default.",
+  "comparison": {
+    "baselineRevision": "a65e9d9",
+    "sameMachine": true,
+    "deltas": {
+      "table-250": {
+        "medianPercent": 0.71,
+        "p95Percent": 2.85,
+        "peakRssPercent": -0.225,
+        "pdfBytesPercent": 0
+      },
+      "nested-50": {
+        "medianPercent": -1.756,
+        "p95Percent": -37.365,
+        "peakRssPercent": 0.013,
+        "pdfBytesPercent": 0
+      },
+      "mixed-150": {
+        "medianPercent": -5.43,
+        "p95Percent": -8.449,
+        "peakRssPercent": 0.101,
+        "pdfBytesPercent": 0
+      },
+      "flex-100": {
+        "status": "new-scenario"
+      }
+    }
+  }
+}

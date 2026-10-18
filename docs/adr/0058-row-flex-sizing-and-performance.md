@@ -42,3 +42,9 @@ Los JSON incluyen revisión, sistema, CPU, núcleos, versión Node, RAM y longit
 CI: cada ejecución tras compilar/validar SDK guarda `artifacts/performance-ci.json` y lo sube mediante `actions/upload-artifact@v4` con retención 60 días. **La latencia no actúa como umbral rígido de CI por defecto** (runners de GitHub cambian de hardware/ruido de carga); `--enforce --max-regression 20` es opcional y sólo adecuado en hardware estable y con evidencia estadística suficiente.
 
 Limitaciones: el benchmark de render síncrono no sustituye carga simultánea/concurrencia, prueba de throughput de red ni profiling de allocations Rust. Antes de cualquier optimización, se debe comparar en la **misma máquina y perfil** y repetir rondas frente al baseline para distinguir ruido de diferencia reproducible.
+
+## Primera comparación registrada
+
+Después de implementar el solver, en el mismo host Linux x64, Node 24.11.1, fuente Noto Sans y 5 muestras, las medianas fueron: tabla 250 **23,675→23,843 ms** (+0,7 %), 50 cajas **5,352→5,258 ms** (−1,8 %), secciones mixtas **16,317→15,431 ms** (−5,4 %). Los tres tamaños PDF permanecieron idénticos. El nuevo escenario flex-100 obtuvo mediana **7,958 ms** y pico RSS **87,309 MiB**; no tiene comparación previa válida porque la capacidad no existía.
+
+La variación es compatible con ruido de máquina y tamaño de muestra; **no anunciamos una mejora de rendimiento** ni introducimos caché o concurrencia nuevos. Los perfiles JSON están en `docs/performance/` junto a una guía para dar continuidad a cada feature. El addon probado fue el mismo perfil de build en ambas revisiones; los tests y muestras no incluyen tiempo de construcción del AST.
