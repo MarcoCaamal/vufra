@@ -8,3 +8,6 @@ export type {VufraStyle,VufraTheme,VufraConfig,DocumentOptions,HeadingOptions,
 export {PdfRenderQueue,PdfQueueError} from './queue';
 export type {PdfAbortSignal,PdfEnqueueOptions,PdfQueueErrorCode,
   PdfRenderQueueOptions,PdfRenderQueueStats,PdfJobEvent,PdfJobOutcome} from './queue';
+
+export {defineTemplate} from './template';
+export type {TemplateText,TemplateNode,TemplateDefinition} from './template';

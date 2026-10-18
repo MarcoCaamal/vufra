@@ -557,3 +557,13 @@ produce **dos celdas físicas**, siendo la primera tan ancha como las dos
 columnas declaradas. Los saltos de página y cabeceras repetidas siguen siendo
 nativos. `rowSpan` no está disponible; véase
 [ADR-0041](docs/adr/0041-colspan-and-page-safe-table-tracks.md).
+
+## Fundamentos de plantillas JSON versionadas (Unidad 43)
+
+`defineTemplate({schemaVersion:1,title,content})` compila una plantilla JSON
+con nodos de texto, cajas, tablas, condiciones booleanas y repeticiones.
+`template.document(vufra,data)` retorna el mismo `DocumentBuilder` que Fluent.
+No admite código ejecutable ni expresiones arbitrarias en JSON. Véanse
+[ADR-0042](docs/adr/0042-json-template-bindings-v1.md) y
+`examples/fluent-json-template.mjs`. Son fundamentos experimentales:
+faltan schema de datos rico, formatos y migraciones.

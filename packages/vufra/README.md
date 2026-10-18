@@ -272,3 +272,12 @@ No hay `colSpan`/`rowSpan` ni cálculo monetario implícito.
 Las celdas también admiten `colSpan`, por ejemplo:
 `[{text:'Sección norte',colSpan:2}, {text:'MXN 1,500',align:'right'}]`
 para una tabla con tres columnas. No se admite todavía `rowSpan`.
+
+## Plantillas JSON tipadas sin código ejecutable
+
+`defineTemplate()` crea un contrato serializable `schemaVersion:1` con
+`heading`, `paragraph`, `box`, `table`, `if`, `each`. Los `bind` son rutas de
+propiedades propias de datos, sin evaluación. El resultado de
+`.document(vufra,data)` es un `DocumentBuilder` normal. Véase
+`examples/fluent-json-template.mjs` y ADR-0042. Sin dataSchema completo,
+formateadores de moneda/fecha o modo streaming.
