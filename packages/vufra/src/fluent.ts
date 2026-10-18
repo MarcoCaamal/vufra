@@ -77,6 +77,8 @@ export type StyledTableCell = string | number | {
   border?: CellBorder;
   /** Merge this cell across adjacent table columns. No rowSpan yet. */
   colSpan?: number;
+  /** Keep this group-heading row with the first following row when it fits a page. */
+  keepWithNext?: boolean;
 };
 export interface CellBorder {width?:number;color?:string}
 export interface StyledTableColumn {
@@ -772,6 +774,7 @@ function styledTable(
   const alternate=[options.headerBackground,options.oddRowBackground,options.evenRowBackground]
     .map(value=>colorHex(value,ctx.theme));
   const borders:{width:number;color:string}[][]=[];
+  const keepWithNext:number[]=[];
   const fills:(string|undefined)[][]=[];
   const line=(cells:readonly StyledTableCell[], rowIndex:number)=>{
     if(!Array.isArray(cells)||cells.length<1||cells.length>columns.length) {
@@ -794,6 +797,13 @@ function styledTable(
       return {value,index,width};
     });
     if(cursor!==columns.length)fail('styled table row colSpan does not cover all columns');
+    for(const {value,index} of slots){
+      if(value.keepWithNext!==undefined){
+        if(typeof value.keepWithNext!=='boolean' || (value.keepWithNext && (index!==0 || slots.length!==1 || rowIndex===0)))
+          fail('keepWithNext requires a merged heading covering the whole body row');
+        if(value.keepWithNext)keepWithNext.push(rowIndex-1);
+      }
+    }
     const backgrounds:(string|undefined)[]=[];
     const edge:{width:number;color:string}[]=[];
     const cols:PdfRow['columns']=slots.map(({value,index:i,width})=>{
@@ -851,7 +861,9 @@ function styledTable(
     color:c.color,background:c.background,align:c.align,
     padding:c.padding,verticalAlign:c.verticalAlign,border:c.border})),0);
   const body=rows.map((r,i)=>line(r,i+1));
-  return {header:head,rows:body,fills,borders};
+  if(keepWithNext.includes(rows.length-1))
+    fail('keepWithNext requires a following body row');
+  return {header:head,rows:body,fills,borders,keepWithNext};
 }
 
 /** Flatten grouped records into a single paginated table with a merged group title.
@@ -873,7 +885,8 @@ export function groupTableRows(groups:readonly {
       fail('groupTableRows group requires title and rows');
     const fill=options.groupBackground;
     result.push([{
-      text:group.title,colSpan:columnCount,bold:options.bold??false,background:fill
+      text:group.title,colSpan:columnCount,keepWithNext:true,
+      bold:options.bold??false,background:fill
     }]);
     for(const row of group.rows){
       if(!Array.isArray(row)||row.length!==columnCount)

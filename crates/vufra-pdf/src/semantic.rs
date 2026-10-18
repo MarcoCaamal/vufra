@@ -113,6 +113,7 @@ pub enum ContentNode {
         children: Vec<ContentNode>,
     },
     StyledTable {
+        keep_with_next: Vec<usize>,
         header: Box<ContentNode>,
         rows: Vec<ContentNode>,
         fills: Vec<Vec<Option<[u8; 3]>>>,
@@ -234,6 +235,7 @@ impl From<PdfBoxItem> for ContentNode {
             PdfBoxItem::Row(row) => Self::from(row),
             PdfBoxItem::Box(boxed) => Self::from(*boxed),
             PdfBoxItem::Table(table) => Self::StyledTable {
+                keep_with_next: table.keep_with_next,
                 header: Box::new(Self::from(table.header)),
                 rows: table.rows.into_iter().map(Self::from).collect(),
                 fills: table.fills,
@@ -406,6 +408,7 @@ impl TryFrom<ContentNode> for PdfBoxItem {
                 rows,
                 fills,
                 borders,
+                keep_with_next,
             } => {
                 let header = match *header {
                     ContentNode::Row { gap, columns } => row_from_parts(gap, columns)?,
@@ -423,6 +426,7 @@ impl TryFrom<ContentNode> for PdfBoxItem {
                     rows,
                     fills,
                     borders,
+                    keep_with_next,
                 }))
             }
             _ => Err(not_allowed()),
@@ -633,6 +637,7 @@ mod tests {
                     )],
                     fills: vec![vec![None], vec![None]],
                     borders: None,
+                    keep_with_next: vec![],
                 },
             ],
         );
@@ -885,7 +890,8 @@ mod tests {
                 header: Box::new(ContentNode::paragraph("not a header")),
                 rows: vec![],
                 fills: vec![],
-                borders: None
+                borders: None,
+                keep_with_next: vec![]
             })
             .is_err()
         );

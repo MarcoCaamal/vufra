@@ -93,6 +93,7 @@ pub struct NodeCellBorder {
 }
 #[napi(object)]
 pub struct NodeBoxTable {
+    pub keep_with_next: Option<Vec<u32>>,
     pub header: NodeRow,
     pub rows: Vec<NodeRow>,
     pub fills: Vec<Vec<Option<String>>>,
@@ -318,6 +319,12 @@ fn to_box_depth(input: NodeBox, depth: usize, assets: &NativeAssets) -> napi::Re
                     .table_data
                     .ok_or_else(|| napi::Error::from_reason("boxed table required"))?;
                 Ok(PdfBoxItem::Table(PdfBoxTable {
+                    keep_with_next: table
+                        .keep_with_next
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|index| index as usize)
+                        .collect(),
                     header: to_row_depth(table.header, depth + 1, assets)?,
                     rows: table
                         .rows

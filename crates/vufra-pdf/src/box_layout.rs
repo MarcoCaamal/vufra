@@ -66,6 +66,8 @@ pub struct CellBorder {
 }
 #[derive(Debug, Clone)]
 pub struct PdfBoxTable {
+    /// Zero-based body row indices whose group heading must stay with its next row.
+    pub keep_with_next: Vec<usize>,
     pub header: PdfRow,
     pub rows: Vec<PdfRow>,
     /// RGB fills: header at index zero, then each body row, one per column.
@@ -84,6 +86,19 @@ impl PdfBoxTable {
         {
             return Err(RenderError::InvalidInput(
                 "styled table requires 1..1000 rows and fills",
+            ));
+        }
+        if self
+            .keep_with_next
+            .windows(2)
+            .any(|items| items[0] >= items[1])
+            || self
+                .keep_with_next
+                .iter()
+                .any(|&i| i + 1 >= self.rows.len())
+        {
+            return Err(RenderError::InvalidInput(
+                "invalid table group keepWithNext indices",
             ));
         }
         let cols = self.header.columns.len();
@@ -583,11 +598,72 @@ impl PdfBox {
                 "measured tree leaf range mismatch",
             ));
         }
+        // Keep short group headings with the first following data row using
+        // the existing native keep-together pagination rule. Zero padding
+        // introduces no extra geometry or painting. Oversized pairs degrade
+        // to ordinary pagination rather than failing a valid long report.
+        let mut nested_spans = flattened.groups;
+        for (idx, item) in items.iter().enumerate() {
+            if let PreparedContent::TableRow(_, table_idx, row_idx) = &item.kind {
+                if *row_idx == 0 {
+                    continue;
+                }
+                let Some(PdfBoxItem::Table(table)) = self.items.get(*table_idx) else {
+                    continue;
+                };
+                if !table.keep_with_next.contains(&(*row_idx - 1)) {
+                    continue;
+                }
+                let Some(next) = items.get(idx + 1) else {
+                    continue;
+                };
+                let next_row = match &next.kind {
+                    PreparedContent::TableRow(_, source, next_row)
+                    | PreparedContent::TableRowFragment(_, _, source, next_row) => {
+                        *source == *table_idx && *next_row == *row_idx + 1
+                    }
+                    _ => false,
+                };
+                if !next_row {
+                    continue;
+                }
+                let combined = item.height + next.height + 2.0 * self.padding;
+                if combined <= page_height + 0.001 {
+                    nested_spans.push(vufra_layout::flow::BoxNestedSpan {
+                        start_item: item.flat_start,
+                        end_item: next.flat_end,
+                        padding: 0.0,
+                        keep_together: true,
+                        break_before: false,
+                    });
+                }
+            }
+        }
+        // Nested boxes may also have group spans, which need to reach the
+        // top-level page paginator in their correct parent-local DFS range.
+        for item in &items {
+            if let PreparedContent::Box(nested, _) = &item.kind {
+                for group in &nested.nested_spans {
+                    if group.padding == 0.0 && group.keep_together {
+                        nested_spans.push(vufra_layout::flow::BoxNestedSpan {
+                            start_item: item.flat_start + group.start_item,
+                            end_item: item.flat_start + group.end_item,
+                            ..*group
+                        });
+                    }
+                }
+            }
+        }
+        nested_spans.sort_by(|a, b| {
+            a.start_item
+                .cmp(&b.start_item)
+                .then(b.end_item.cmp(&a.end_item))
+        });
         Ok(PreparedBox {
             item_heights: flattened.heights,
             image_pixels: pixels,
             repeat_headers: flattened.headers,
-            nested_spans: flattened.groups,
+            nested_spans,
             layout_nodes,
             width,
             x,
@@ -1128,6 +1204,32 @@ mod tests {
                 color: None,
             }],
         }
+    }
+    #[test]
+    fn table_group_keep_next_indices_are_bounded_ordered_and_require_a_successor() {
+        let row = || PdfRow {
+            gap: 0.0,
+            columns: vec![crate::PdfRowColumn {
+                width: 180.0,
+                right_align: false,
+                cell: None,
+                items: vec![crate::PdfRowItem::Spacer(16.0)],
+            }],
+        };
+        let mut table = PdfBoxTable {
+            header: row(),
+            rows: vec![row(), row(), row()],
+            fills: vec![vec![None]; 4],
+            borders: None,
+            keep_with_next: vec![0, 1],
+        };
+        assert!(table.validate(180.0, 600.0, 0).is_ok());
+        table.keep_with_next = vec![1, 0];
+        assert!(table.validate(180.0, 600.0, 0).is_err());
+        table.keep_with_next = vec![0, 0];
+        assert!(table.validate(180.0, 600.0, 0).is_err());
+        table.keep_with_next = vec![2];
+        assert!(table.validate(180.0, 600.0, 0).is_err());
     }
     #[test]
     fn bounded_nested_boxes_allow_eight_levels_and_reject_ninth() {

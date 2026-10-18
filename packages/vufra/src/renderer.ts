@@ -49,6 +49,7 @@ export interface PdfRow {
 /** Rich table rendered inside a decorated box; rows remain atomic across pages. */
 export interface PdfBoxTable {
   borders?: Array<Array<{width:number;color:string}>>;
+  keepWithNext?:number[];
   header: PdfRow;
   rows: PdfRow[];
   /** Backgrounds: header first, then every data row, per column. */
@@ -477,7 +478,11 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
               });
             });
             if(borders && borders.length!==rows.length+1)throw new TypeError('table border rows mismatch');
-            return {kind:'table',tableData:{header,rows,fills,borders}};
+            const keepWithNext=t.keepWithNext??[];
+            if(!Array.isArray(keepWithNext)||keepWithNext.some((i,j)=>
+              !Number.isInteger(i)||i<0||i>=rows.length-1||(j>0&&i<=keepWithNext[j-1])))
+              throw new TypeError('invalid table group keepWithNext indices');
+            return {kind:'table',tableData:{header,rows,fills,borders,keepWithNext}};
           }
           if(item?.type==='text' && typeof item.text==='string'){
             return {kind:'text',text:item.text,style:normalizeStyle(

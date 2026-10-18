@@ -291,3 +291,8 @@ genera portada como primer bloque, sin header/footer en la portada y con salto
 permite barras horizontales vectoriales con texto real de etiquetas/valores.
 Ejemplo ejecutable: `examples/fluent-visual-report.mjs`. Las variantes de
 maestras par/impar, line/pie/QR y box model general siguen pendientes.
+
+Las agrupaciones generadas por `groupTableRows()` mantienen el título con su
+primera fila de datos cuando cabe en una página. También se puede usar
+`{text:'Grupo',colSpan:2,keepWithNext:true}` como primera y única celda
+de una fila de grupo (seguida de al menos una fila). `rowSpan` sigue pendiente.

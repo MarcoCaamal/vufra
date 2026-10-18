@@ -583,3 +583,11 @@ Véanse [ADR-0043](docs/adr/0043-native-bar-charts-and-column-alignment.md),
 [ADR-0044](docs/adr/0044-cover-page-composition.md) y
 `examples/fluent-visual-report.mjs`. Estos son **hitos parciales**: faltan
 Flexbox avanzado, maestros por sección, charts de línea/pie, QR y códigos.
+
+### Encabezados de grupo sin quedar huérfanos
+
+`groupTableRows(...)` marca cada título fusionado con `keepWithNext:true`:
+si el encabezado y la primera fila caben juntos en una nueva página,
+el paginador Rust los conserva juntos, también en tablas dentro de cajas.
+Si juntos exceden una página, se mantiene el comportamiento fragmentable.
+Consulta [ADR-0045](docs/adr/0045-page-aware-group-headings.md).
