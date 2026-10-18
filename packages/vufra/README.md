@@ -315,3 +315,8 @@ La siguiente fila omite los tracks cubiertos y el renderizador conserva la
 continuidad del fondo/borde incluso al cambiar de página. La celda combinada
 usa alineación vertical superior, y las filas participantes han de caber
 individualmente en una página. Véase ADR-0048 del repositorio.
+
+Las cajas soportan `padding` numérico o por lados `{top,right,bottom,left}`
+(12pt de base por lado), y `minHeight` para altura mínima decorada sin recortar
+contenido. Estas medidas afectan tanto la distribución como la paginación
+real, también en cajas anidadas. Ejemplo en ADR-0049.

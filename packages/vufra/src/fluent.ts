@@ -145,7 +145,9 @@ export interface BoxOptions {
   preset?:string;
   width?:number;
   align?:'left'|'center'|'right';
-  padding?:number;
+  padding?:CellPadding;
+  /** Minimum decorated height (including padding), in PDF points. */
+  minHeight?:number;
   /** Corner radius in PDF points (0..24, no larger than padding). */
   radius?:number;
   background?:string;
@@ -743,6 +745,17 @@ function tableBorder(ctx:BuilderContext, override:CellBorder|undefined, fallback
   if(rawColor!==undefined && typeof rawColor!=='string')fail('invalid table border color');
   return {width,color:colorHex(typeof rawColor==='string'?rawColor:'#BBC5CF',ctx.theme)!};
 }
+function boxPadding(value:CellPadding|undefined):{top:number;right:number;bottom:number;left:number}{
+  const base={top:12,right:12,bottom:12,left:12};
+  if(value===undefined)return base;
+  const source=typeof value==='number'?{top:value,right:value,bottom:value,left:value}:value;
+  if(!plainObject(source)||Object.keys(source).some(k=>!['top','right','bottom','left'].includes(k)))
+    fail('box padding requires four valid sides');
+  const resolved={...base,...source};
+  if(Object.values(resolved).some(x=>!validNumber(x)||x<0||x>60))
+    fail('box padding sides must be between 0 and 60pt');
+  return resolved;
+}
 function styledTable(
   ctx:BuilderContext, innerWidth:number, rows:readonly (readonly StyledTableCell[])[],
   options:StyledTableOptions
@@ -1108,8 +1121,10 @@ export class ContentBuilder {
     const cb=typeof optionsOrCb==='function'?optionsOrCb:callback;
     if(typeof cb!=='function')fail('box requires a synchronous callback');
     const opts=resolveBoxOptions(this.ctx.theme,provided);
-    const padding=opts.padding??12;
-    const innerWidth=(opts.width??this.width)-2*padding;
+    const padding=boxPadding(opts.padding);
+    if(opts.minHeight!==undefined && (!validNumber(opts.minHeight)||opts.minHeight<0))
+      fail('box minHeight must be finite and nonnegative');
+    const innerWidth=(opts.width??this.width)-padding.left-padding.right;
     if(!Number.isFinite(innerWidth)||innerWidth<60)fail('box content width must be at least 60pt');
     const scope=new ContentBuilder(this.ctx,innerWidth,true);
     try{requireSyncResult(cb(scope));}

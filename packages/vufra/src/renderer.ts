@@ -68,7 +68,8 @@ export type PdfBoxItem =
 export interface PdfBox {
   width?:number;
   align?:'left'|'center'|'right';
-  padding?:number;
+  padding?:number|Partial<{top:number;right:number;bottom:number;left:number}>;
+  minHeight?:number;
   radius?:number;
   background?:string;
   border?:{width?:number;color?:string};
@@ -142,7 +143,9 @@ type NativeBlock = {
   keepWithNext?: boolean; items?: string[]; ordered?: boolean;
   graphic?: {kind:string;width:number;height:number;color:string};
   image?: { data?: Uint8Array; assetId?:number; width: number; height: number; fit: 'contain' | 'cover' };
-  boxData?: {width?:number;align:string;padding:number;radius:number;borderWidth:number;
+  boxData?: {width?:number;align:string;padding:number;
+    paddingSides?:{top:number;right:number;bottom:number;left:number};
+    minHeight?:number;radius:number;borderWidth:number;
     borderColor?:string;background?:string;
     keepTogether?:boolean;breakBefore?:boolean;keepWithNext?:boolean;items:Array<{
       kind:string;text?:string;style?:PdfTextStyle;color?:string;height?:number;
@@ -420,16 +423,26 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
     const normalizeBox=(boxed:PdfBox,printableWidth:number,
       printableHeight:number,depth=0):NonNullable<NativeBlock['boxData']>=>{
       if(depth>8)throw new TypeError('nested box depth exceeds 8');
-        const innerWidth=(boxed?.width ?? printableWidth)-2*(boxed?.padding??12);
-        const padding=boxed?.padding??12;
+        const raw=boxed?.padding??12;
+        const sideSource=typeof raw==='number'?{top:raw,right:raw,bottom:raw,left:raw}:raw;
+        if(!sideSource || typeof sideSource!=='object'||Array.isArray(sideSource)||
+           Object.keys(sideSource).some(k=>!['top','right','bottom','left'].includes(k)))
+          throw new TypeError('invalid box padding sides');
+        const paddingSides={top:sideSource.top??12,right:sideSource.right??12,
+          bottom:sideSource.bottom??12,left:sideSource.left??12};
+        const padding=(paddingSides.top+paddingSides.bottom)/2;
+        const innerWidth=(boxed?.width ?? printableWidth)-paddingSides.left-paddingSides.right;
+        const minHeight=boxed?.minHeight;
         const borderWidth=boxed?.border?.width??0;
         const radius=boxed?.radius??0;
         if (!boxed || !Array.isArray(boxed.items) || boxed.items.length<1 ||
             boxed.items.length>500 ||
+            Object.values(paddingSides).some(v=>!Number.isFinite(v)||v<0||v>60) ||
             !Number.isFinite(padding) || padding<0 || padding>60 ||
+            (minHeight!==undefined && (!Number.isFinite(minHeight) || minHeight<0 || minHeight>printableHeight)) ||
             !Number.isFinite(borderWidth) || borderWidth<0 || borderWidth>6 ||
-            borderWidth>padding ||
-            !Number.isFinite(radius) || radius<0 || radius>24 || radius>padding ||
+            borderWidth>Math.min(...Object.values(paddingSides)) ||
+            !Number.isFinite(radius) || radius<0 || radius>24 || radius>Math.min(...Object.values(paddingSides)) ||
             !Number.isFinite(boxed.width??printableWidth) ||
             (boxed.width??printableWidth)<100 ||
             (boxed.width??printableWidth)>printableWidth ||
@@ -549,7 +562,7 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
           throw new TypeError('unsupported or invalid box item');
         });
         return {
-          width:boxed.width,align:boxed.align??'left',padding,
+          width:boxed.width,align:boxed.align??'left',padding,paddingSides,minHeight,
           radius,borderWidth,borderColor:rgb(boxed.border?.color),
           background:rgb(boxed.background),keepTogether:boxed.keepTogether,
           breakBefore:boxed.breakBefore,keepWithNext:boxed.keepWithNext,items

@@ -48,6 +48,8 @@ pub struct PdfBox {
     pub width: Option<f32>,
     pub align: BoxAlign,
     pub padding: f32,
+    pub padding_sides: Option<crate::CellPadding>,
+    pub min_height: Option<f32>,
     pub border_width: f32,
     pub radius: f32,
     pub border_color: Option<[u8; 3]>,
@@ -254,6 +256,8 @@ pub struct PreparedBox {
     width: f32,
     x: f32,
     padding: f32,
+    padding_top: f32,
+    padding_left: f32,
     border_width: f32,
     radius: f32,
     border_color: Option<[u8; 3]>,
@@ -262,6 +266,14 @@ pub struct PreparedBox {
 }
 
 impl PdfBox {
+    fn sides(&self) -> crate::CellPadding {
+        self.padding_sides.unwrap_or(crate::CellPadding {
+            top: self.padding,
+            right: self.padding,
+            bottom: self.padding,
+            left: self.padding,
+        })
+    }
     /// Lower PDF-specific prepared leaves to the writer-independent geometry
     /// tree. One measurement model serves text, images, rows, tables and boxes.
     fn layout_nodes_for(
@@ -326,20 +338,29 @@ impl PdfBox {
             return Err(RenderError::InvalidInput("nested box depth exceeds 8"));
         }
         let w = self.width.unwrap_or(width);
+        let p = self.sides();
+        let vertical = p.top + p.bottom;
+        let horizontal = p.left + p.right;
         if !w.is_finite()
             || w < 100.0
             || w > width + 0.01
+            || self
+                .min_height
+                .is_some_and(|h| !h.is_finite() || h < 0.0 || h > page_height)
+            || [p.top, p.right, p.bottom, p.left]
+                .iter()
+                .any(|v| !v.is_finite() || !(0.0..=60.0).contains(v))
             || !self.padding.is_finite()
             || !(0.0..=60.0).contains(&self.padding)
             || !self.border_width.is_finite()
             || !(0.0..=6.0).contains(&self.border_width)
-            || self.border_width > self.padding
+            || self.border_width > p.top.min(p.bottom).min(p.left).min(p.right)
             || !self.radius.is_finite()
             || self.radius < 0.0
             || self.radius > 24.0
-            || self.radius > self.padding
-            || w - 2.0 * self.padding < 60.0
-            || self.padding * 2.0 + 1.0 > page_height
+            || self.radius > p.top.min(p.bottom).min(p.left).min(p.right)
+            || w - horizontal < 60.0
+            || vertical + 1.0 > page_height
             || self.items.is_empty()
             || self.items.len() > 500
         {
@@ -353,37 +374,29 @@ impl PdfBox {
                     if text.contains('\0') {
                         return Err(RenderError::InvalidInput("box text contains null byte"));
                     }
-                    style.validate(page_height - 2.0 * self.padding)?;
+                    style.validate(page_height - vertical)?;
                 }
                 PdfBoxItem::RichText { runs, style } => {
-                    style.validate(page_height - 2.0 * self.padding)?;
+                    style.validate(page_height - vertical)?;
                     if runs.is_empty() || runs.len() > 1_000 {
                         return Err(RenderError::InvalidInput("invalid box rich text runs"));
                     }
                 }
                 PdfBoxItem::Image(image) => {
-                    image.validate_box(w - 2.0 * self.padding, page_height - 2.0 * self.padding)?
+                    image.validate_box(w - horizontal, page_height - vertical)?
                 }
-                PdfBoxItem::Graphic(g) => {
-                    g.validate(w - 2.0 * self.padding, page_height - 2.0 * self.padding)?
+                PdfBoxItem::Graphic(g) => g.validate(w - horizontal, page_height - vertical)?,
+                PdfBoxItem::Row(r) => {
+                    r.validate_depth(w - horizontal, page_height - vertical, depth + 1)?
                 }
-                PdfBoxItem::Row(r) => r.validate_depth(
-                    w - 2.0 * self.padding,
-                    page_height - 2.0 * self.padding,
-                    depth + 1,
-                )?,
-                PdfBoxItem::Table(t) => t.validate(
-                    w - 2.0 * self.padding,
-                    page_height - 2.0 * self.padding,
-                    depth + 1,
-                )?,
-                PdfBoxItem::Box(boxed) => boxed.validate_depth(
-                    w - 2.0 * self.padding,
-                    page_height - 2.0 * self.padding,
-                    depth + 1,
-                )?,
+                PdfBoxItem::Table(t) => {
+                    t.validate(w - horizontal, page_height - vertical, depth + 1)?
+                }
+                PdfBoxItem::Box(boxed) => {
+                    boxed.validate_depth(w - horizontal, page_height - vertical, depth + 1)?
+                }
                 PdfBoxItem::Spacer(h)
-                    if !h.is_finite() || *h <= 0.0 || *h + 2.0 * self.padding > page_height =>
+                    if !h.is_finite() || *h <= 0.0 || *h + vertical > page_height =>
                 {
                     return Err(RenderError::InvalidInput("invalid box spacer height"));
                 }
@@ -417,7 +430,9 @@ impl PdfBox {
         let (page_width, page_height) = page;
         self.validate_depth(page_width, page_height, depth)?;
         let width = self.width.unwrap_or(page_width);
-        let inner = width - 2.0 * self.padding;
+        let p = self.sides();
+        let vertical = p.top + p.bottom;
+        let inner = width - p.left - p.right;
         let x = match self.align {
             BoxAlign::Left => 0.0,
             BoxAlign::Center => (page_width - width) * 0.5,
@@ -513,7 +528,7 @@ impl PdfBox {
                 }),
                 PdfBoxItem::Row(r) => {
                     match r.prepare_allow_overflow_depth(
-                        (inner, page_height - 2.0 * self.padding),
+                        (inner, page_height - vertical),
                         family,
                         fonts,
                         context,
@@ -521,9 +536,7 @@ impl PdfBox {
                         cancel,
                         depth + 1,
                     ) {
-                        Ok(prepared)
-                            if prepared.height <= page_height - 2.0 * self.padding + 0.001 =>
-                        {
+                        Ok(prepared) if prepared.height <= page_height - vertical + 0.001 => {
                             pixels = pixels.saturating_add(prepared.image_pixels);
                             items.push(PreparedItem {
                                 flat_start: 0,
@@ -538,7 +551,7 @@ impl PdfBox {
                                     unreachable!("split row contains only rows");
                                 };
                                 let prepared = source_row.prepare_depth(
-                                    (inner, page_height - 2.0 * self.padding),
+                                    (inner, page_height - vertical),
                                     family,
                                     fonts,
                                     context,
@@ -559,14 +572,14 @@ impl PdfBox {
                     }
                 }
                 PdfBoxItem::Table(table) => {
-                    table.validate(inner, page_height - 2.0 * self.padding, depth + 1)?;
+                    table.validate(inner, page_height - vertical, depth + 1)?;
                     for (row_idx, row) in std::iter::once(&table.header)
                         .chain(table.rows.iter())
                         .enumerate()
                     {
                         check_cancel(cancel)?;
                         match row.prepare_allow_overflow_depth(
-                            (inner, page_height - 2.0 * self.padding),
+                            (inner, page_height - vertical),
                             family,
                             fonts,
                             context,
@@ -574,9 +587,7 @@ impl PdfBox {
                             cancel,
                             depth + 1,
                         ) {
-                            Ok(prepared)
-                                if prepared.height <= page_height - 2.0 * self.padding + 0.001 =>
-                            {
+                            Ok(prepared) if prepared.height <= page_height - vertical + 0.001 => {
                                 pixels = pixels.saturating_add(prepared.image_pixels);
                                 items.push(PreparedItem {
                                     flat_start: 0,
@@ -602,7 +613,7 @@ impl PdfBox {
                                         unreachable!("row fragment contains only rows")
                                     };
                                     let prepared = fragment.prepare_depth(
-                                        (inner, page_height - 2.0 * self.padding),
+                                        (inner, page_height - vertical),
                                         family,
                                         fonts,
                                         context,
@@ -632,7 +643,7 @@ impl PdfBox {
                 }
                 PdfBoxItem::Box(boxed) => {
                     let nested = boxed.prepare_depth(
-                        (inner, page_height - 2.0 * self.padding),
+                        (inner, page_height - vertical),
                         family,
                         fonts,
                         context,
@@ -655,6 +666,21 @@ impl PdfBox {
                     height: *h,
                     kind: PreparedContent::Spacer,
                 }),
+            }
+        }
+        // Reserve intrinsic vertical space only after measuring all actual
+        // content. It is a real leaf so pagination/backgrounds agree, without
+        // imposing arbitrary PDF positions from TypeScript.
+        if let Some(minimum) = self.min_height {
+            let actual = items.iter().map(|item| item.height).sum::<f32>() + vertical;
+            let deficit = minimum - actual;
+            if deficit > 0.001 {
+                items.push(PreparedItem {
+                    flat_start: 0,
+                    flat_end: 0,
+                    height: deficit,
+                    kind: PreparedContent::Spacer,
+                });
             }
         }
         if items.len() > 10_000 {
@@ -707,7 +733,7 @@ impl PdfBox {
                 if !next_row {
                     continue;
                 }
-                let combined = item.height + next.height + 2.0 * self.padding;
+                let combined = item.height + next.height + vertical;
                 if combined <= page_height + 0.001 {
                     nested_spans.push(vufra_layout::flow::BoxNestedSpan {
                         start_item: item.flat_start,
@@ -747,7 +773,9 @@ impl PdfBox {
             layout_nodes,
             width,
             x,
-            padding: self.padding,
+            padding: vertical / 2.0,
+            padding_top: p.top,
+            padding_left: p.left,
             border_width: self.border_width,
             radius: self.radius,
             border_color: self.border_color,
@@ -1138,7 +1166,7 @@ impl PreparedBox {
                 }
             }
         }
-        let mut y = top + self.padding;
+        let mut y = top + self.padding_top;
         for item in &self.items {
             check_cancel(cancel)?;
             let included = leaves
@@ -1169,7 +1197,7 @@ impl PreparedBox {
                     surface,
                     font,
                     registry,
-                    x + self.padding,
+                    x + self.padding_left,
                     y,
                     &translated,
                     child_start..child_end,
@@ -1198,7 +1226,7 @@ impl PreparedBox {
                             surface.set_fill(None);
                         }
                         surface.draw_text(
-                            Point::from_xy(x + self.padding, y + before + line_height * 0.8),
+                            Point::from_xy(x + self.padding_left, y + before + line_height * 0.8),
                             font.clone(),
                             *size,
                             text,
@@ -1226,7 +1254,7 @@ impl PreparedBox {
                             surface.set_fill(None);
                         }
                         surface.draw_text(
-                            Point::from_xy(x + self.padding + run.x, baseline),
+                            Point::from_xy(x + self.padding_left + run.x, baseline),
                             registry.font(run.font_index),
                             run.font_size,
                             &run.text,
@@ -1238,12 +1266,12 @@ impl PreparedBox {
                 }
                 PreparedContent::Image(prepared, index) => {
                     if let PdfBoxItem::Image(img) = &source.items[*index] {
-                        prepared.draw(surface, img.placement(), x + self.padding, y)?;
+                        prepared.draw(surface, img.placement(), x + self.padding_left, y)?;
                     }
                 }
                 PreparedContent::Graphic(index) => {
                     if let PdfBoxItem::Graphic(g) = &source.items[*index] {
-                        g.draw(surface, x + self.padding, y)?;
+                        g.draw(surface, x + self.padding_left, y)?;
                     }
                 }
                 PreparedContent::SplitRow(prepared, source_row) => {
@@ -1252,13 +1280,20 @@ impl PreparedBox {
                         surface,
                         font,
                         registry,
-                        (x + self.padding, y),
+                        (x + self.padding_left, y),
                         cancel,
                     )?;
                 }
                 PreparedContent::Row(prepared, index) => {
                     if let PdfBoxItem::Row(r) = &source.items[*index] {
-                        prepared.draw(r, surface, font, registry, (x + self.padding, y), cancel)?;
+                        prepared.draw(
+                            r,
+                            surface,
+                            font,
+                            registry,
+                            (x + self.padding_left, y),
+                            cancel,
+                        )?;
                     }
                 }
                 PreparedContent::TableRow(prepared, table_idx, row_idx) => {
@@ -1267,7 +1302,7 @@ impl PreparedBox {
                         surface,
                         font,
                         registry,
-                        (x + self.padding, y),
+                        (x + self.padding_left, y),
                         prepared,
                         *table_idx,
                         *row_idx,
@@ -1281,7 +1316,7 @@ impl PreparedBox {
                         surface,
                         font,
                         registry,
-                        (x + self.padding, y),
+                        (x + self.padding_left, y),
                         prepared,
                         *table_idx,
                         *row_idx,
@@ -1342,6 +1377,8 @@ mod tests {
             width: None,
             align: BoxAlign::Left,
             padding: 12.0,
+            padding_sides: None,
+            min_height: None,
             border_width: 2.0,
             radius: 0.0,
             border_color: Some([12, 45, 200]),
@@ -1448,6 +1485,8 @@ mod tests {
                 width: None,
                 align: BoxAlign::Left,
                 padding: 0.0,
+                padding_sides: None,
+                min_height: None,
                 border_width: 0.0,
                 radius: 0.0,
                 border_color: None,
@@ -1472,6 +1511,8 @@ mod tests {
                 width: None,
                 align: BoxAlign::Left,
                 padding: 0.0,
+                padding_sides: None,
+                min_height: None,
                 border_width: 0.0,
                 radius: 0.0,
                 border_color: None,

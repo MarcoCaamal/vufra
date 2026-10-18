@@ -618,3 +618,12 @@ Rust conserva **un único fondo y el perímetro** entre páginas y no repite el
 texto. Solo se permite alineación vertical superior y cada fila participante
 debe caber individualmente en una página. Para restricciones y ejemplos,
 consulta [ADR-0048](docs/adr/0048-rowspan-page-aware.md).
+
+### Box model avanzado (Unidad 40)
+
+`document.box({padding:{top:20,right:8,bottom:12,left:26},minHeight:150},
+box=>box.paragraph('Contenido'))` reserva espacio independiente en cada lado
+y extiende la altura decorada **solo si** su contenido mide menos que
+`minHeight`. Ambos valores afectan la geometría real de Rust, incluso en
+cajas anidadas y documentos multipágina. No hay clipping por `maxHeight`.
+Véase [ADR-0049](docs/adr/0049-box-asymmetric-padding-and-min-height.md).

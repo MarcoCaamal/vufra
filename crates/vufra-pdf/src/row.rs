@@ -293,6 +293,8 @@ impl PdfRow {
             width: None,
             align: BoxAlign::Left,
             padding: 0.0,
+            padding_sides: None,
+            min_height: None,
             border_width: 0.0,
             radius: 0.0,
             border_color: None,
