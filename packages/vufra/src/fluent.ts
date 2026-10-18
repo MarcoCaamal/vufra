@@ -111,6 +111,10 @@ export interface RowOptions {
 }
 export interface ColumnOptions {
   width?: number | `${number}%` | '*';
+  /** Relative share of remaining row width (0..10); requires explicit basis width. */
+  flexGrow?:number;
+  /** Relative share of overflow absorption (0..10); minimum width stays >=60pt. */
+  flexShrink?:number;
   align?: 'left' | 'center' | 'right';
   verticalAlign?: CellVerticalAlign;
   padding?: CellPadding;
@@ -631,16 +635,55 @@ class RowScope {
   finish(printableWidth:number,gap:number,justify:RowOptions['justify']='start'):PdfRow {
     this.active=false;
     if(this.entries.length<1||this.entries.length>6)fail('row needs between 1 and 6 columns');
+    if(!validNumber(gap)||gap<0||gap>80)fail('row.gap must be 0..80pt');
     const usable=printableWidth-gap*(this.entries.length-1);
     const defined=this.entries.map(e=>buildColumnWidth(e.options.width,usable));
     const fixed=defined.reduce<number>((sum,w)=>sum+(w??0),0);
     const autoCount=defined.filter(w=>w===null).length;
-    if(!['start','space-between'].includes(justify??'start'))fail('row.justify must be start or space-between');
+    if(!['start','space-between'].includes(justify??'start'))
+      fail('row.justify must be start or space-between');
+    const grows=this.entries.map(e=>e.options.flexGrow??0);
+    const shrinks=this.entries.map(e=>e.options.flexShrink??0);
+    if([...grows,...shrinks].some(v=>!validNumber(v)||v<0||v>10))
+      fail('flexGrow/flexShrink weights must be finite and 0..10');
+    const flexible=grows.some(v=>v>0)||shrinks.some(v=>v>0);
+    if(flexible&&(autoCount>0||justify==='space-between'))
+      fail('flexGrow/flexShrink require explicit column widths and justify start');
     if(justify==='space-between'&&(autoCount>0||this.entries.length<2))
       fail('space-between requires at least two explicitly sized columns');
     const auto=autoCount?(usable-fixed)/autoCount:0;
+    const widths=defined.map(w=>w??auto);
+    const widthSum=widths.reduce((a,b)=>a+b,0);
+    const extra=usable-widthSum;
+    if(extra>0.001){
+      const weight=grows.reduce((a,b)=>a+b,0);
+      if(weight>0){for(let i=0;i<widths.length;i++)widths[i]+=extra*grows[i]/weight;}
+    }else if(extra< -0.001 && flexible){
+      // Weighted water-fill: shrink proportionally to weighted basis, clamp
+      // columns at the native >=60pt minimum, then redistribute the remainder.
+      // Limits are resolved before any Parley layout or native PDF shaping.
+      const minima=this.entries.map(e=>{
+        const padding=e.options.padding===undefined?{left:0,right:0}:
+          cellPadding({top:0,right:0,bottom:0,left:0},e.options.padding);
+        return Math.max(60,padding.left+padding.right+12);
+      });
+      let remaining=-extra;
+      for(let round=0;round<widths.length&&remaining>0.001;round++){
+        const weights=widths.map((w,i)=>w>minima[i]+0.001?shrinks[i]*w:0);
+        const sum=weights.reduce((a,b)=>a+b,0);
+        if(sum<=0)break;
+        let consumed=0;
+        for(let i=0;i<widths.length;i++){
+          if(weights[i]===0)continue;
+          const cut=Math.min(widths[i]-minima[i],remaining*weights[i]/sum);
+          widths[i]-=cut;consumed+=cut;
+        }
+        remaining-=consumed;
+      }
+      if(remaining>0.02)fail('row flexShrink cannot satisfy native column minimum widths');
+    }
     const cols:PdfRowColumn[]=this.entries.map((e,i)=>{
-      const width=defined[i]??auto;
+      const width=widths[i];
       const align=e.options.align??'left';
       if(!['left','center','right'].includes(align))fail('invalid row column align');
       const enabled=e.options.padding!==undefined||e.options.verticalAlign!==undefined||align==='center';
@@ -718,7 +761,7 @@ export class PageBandScope {
     if(typeof cb!=='function')fail('page band row requires a callback');
     const row=new RowScope(this.ctx);
     let result:PdfRow;
-    try{requireSyncResult(cb(row));result=row.finish(contentWidth(this.ctx),options.gap??12);}
+    try{requireSyncResult(cb(row));result=row.finish(contentWidth(this.ctx),options.gap??12,options.justify);}
     finally{row.close();}
     return this.add(result);
   }

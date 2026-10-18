@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-18T18:40:22.043Z",
+  "revision": "a65e9d9",
+  "identity": {
+    "platform": "linux",
+    "arch": "x64",
+    "release": "7.2.6-arch2-1",
+    "cpu": "11th Gen Intel(R) Core(TM) i5-11400H @ 2.70GHz",
+    "cores": 12,
+    "node": "v24.11.1",
+    "ramBytes": 33356722176,
+    "fontBytes": 621572
+  },
+  "runs": 5,
+  "caseOrder": [
+    "table-250",
+    "nested-50",
+    "mixed-150"
+  ],
+  "scenarios": {
+    "table-250": {
+      "scenario": "table-250",
+      "runs": 5,
+      "medianMs": 23.675,
+      "p95Ms": 23.786,
+      "minMs": 23.607,
+      "maxMs": 23.786,
+      "samplesMs": [
+        23.616,
+        23.72,
+        23.607,
+        23.675,
+        23.786
+      ],
+      "peakRssMiB": 92.117,
+      "finalRssMiB": 91.09,
+      "pdfBytes": 36439
+    },
+    "nested-50": {
+      "scenario": "nested-50",
+      "runs": 5,
+      "medianMs": 5.352,
+      "p95Ms": 8.548,
+      "minMs": 5.305,
+      "maxMs": 8.548,
+      "samplesMs": [
+        5.403,
+        5.334,
+        8.548,
+        5.352,
+        5.305
+      ],
+      "peakRssMiB": 86.844,
+      "finalRssMiB": 86.328,
+      "pdfBytes": 16726
+    },
+    "mixed-150": {
+      "scenario": "mixed-150",
+      "runs": 5,
+      "medianMs": 16.317,
+      "p95Ms": 17.067,
+      "minMs": 15.506,
+      "maxMs": 17.067,
+      "samplesMs": [
+        17.067,
+        16.72,
+        16.317,
+        15.506,
+        15.523
+      ],
+      "peakRssMiB": 88.961,
+      "finalRssMiB": 88.609,
+      "pdfBytes": 30078
+    }
+  },
+  "methodology": "Fresh child per case; 2 warmups + N sequential sync renders, GC before each sample, peak RSS is process max (including fonts and warmup). No CI threshold by default."
+}

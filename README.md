@@ -702,3 +702,17 @@ bookmarks and page numbers still refer to the final pagination. The page size
 changes at a section boundary, not inside a continued table. See
 [ADR-0057](docs/adr/0057-section-paper-geometry.md) and
 `examples/fluent-mixed-pages.mjs`.
+
+### Flex sizing y benchmarks longitudinales (ADR-0058)
+
+`row({gap:12},r=>r.column({width:140,flexGrow:1,flexShrink:1},...)
+.column({width:180,flexGrow:2,flexShrink:1},...))` soporta reparto ponderado
+del espacio sobrante y reducción proporcional respetando el mínimo nativo de
+columna. Requiere anchos base explícitos; no es Flexbox CSS completo.
+
+Se incorpora una batería de rendimiento reproducible que registra **mediana,
+p95, RSS pico y bytes PDF**. Ejecuta un proceso fresco por escenario y guarda
+JSON históricos para comparar commits. El CI publica cada perfil como artifact
+sin imponer umbrales inestables. Consulta
+[ADR-0058](docs/adr/0058-row-flex-sizing-and-performance.md) y
+`scripts/benchmark-regressions.mjs`.

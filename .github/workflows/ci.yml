@@ -36,3 +36,13 @@ jobs:
       - name: Node end-to-end PDF tests
         working-directory: packages/vufra
         run: npm test
+      - name: Record performance profile (informational, no hard time thresholds)
+        run: |
+          FONT=$(fc-match 'Noto Sans' -f '%{file}' | head -1)
+          node --expose-gc scripts/benchmark-regressions.mjs --font "$FONT" --runs 7 --out artifacts/performance-ci.json
+      - name: Publish benchmark JSON for run-to-run comparison
+        uses: actions/upload-artifact@v4
+        with:
+          name: vufra-performance-${{ github.run_id }}
+          path: artifacts/performance-ci.json
+          retention-days: 60

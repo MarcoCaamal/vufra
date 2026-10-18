@@ -358,3 +358,9 @@ inner table rows or individual words (ADR-0056).
 sets the actual page size and margins for that chapter, while preserving
 native pagination, chapter bookmarks and precise internal links across A4,
 Letter and custom pages. Changes occur only at section boundaries (ADR-0057).
+
+`row` admite columnas con `flexGrow` y `flexShrink` (pesos 0..10) para
+repartir el espacio sobrante o absorber overflow sin perder el ancho mínimo.
+Se requieren anchos base explícitos. Los benchmarks por commit generan JSON
+comparables con mediana/p95, pico RSS y tamaño PDF mediante
+`scripts/benchmark-regressions.mjs` (ADR-0058).
