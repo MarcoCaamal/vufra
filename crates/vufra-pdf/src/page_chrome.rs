@@ -14,6 +14,14 @@ pub struct PdfPageChrome {
     pub footer: Option<PdfRow>,
     pub first_header: Option<PdfRow>,
     pub first_footer: Option<PdfRow>,
+    pub odd_header: Option<PdfRow>,
+    pub even_header: Option<PdfRow>,
+    pub odd_footer: Option<PdfRow>,
+    pub even_footer: Option<PdfRow>,
+    pub hide_odd_header: bool,
+    pub hide_even_header: bool,
+    pub hide_odd_footer: bool,
+    pub hide_even_footer: bool,
     pub hide_header: bool,
     pub hide_footer: bool,
     pub hide_first_header: bool,
@@ -21,21 +29,42 @@ pub struct PdfPageChrome {
 }
 
 impl PdfPageChrome {
-    fn band(&self, first: bool, header: bool) -> Option<&PdfRow> {
-        if first {
-            if header && self.hide_first_header || !header && self.hide_first_footer {
+    /// Select by one-based printed page parity after first-page overrides.
+    /// Per-parity alternatives override base bands, including base suppression.
+    fn band(&self, index: usize, header: bool) -> Option<&PdfRow> {
+        if index == 0 {
+            if (header && self.hide_first_header) || (!header && self.hide_first_footer) {
                 return None;
             }
-            let alternative = if header {
+            let special = if header {
                 &self.first_header
             } else {
                 &self.first_footer
             };
-            if alternative.is_some() {
-                return alternative.as_ref();
+            if special.is_some() {
+                return special.as_ref();
             }
         }
-        if header && self.hide_header || !header && self.hide_footer {
+        let odd = index.is_multiple_of(2);
+        let hidden = match (odd, header) {
+            (true, true) => self.hide_odd_header,
+            (false, true) => self.hide_even_header,
+            (true, false) => self.hide_odd_footer,
+            (false, false) => self.hide_even_footer,
+        };
+        if hidden {
+            return None;
+        }
+        let alternative = match (odd, header) {
+            (true, true) => &self.odd_header,
+            (false, true) => &self.even_header,
+            (true, false) => &self.odd_footer,
+            (false, false) => &self.even_footer,
+        };
+        if alternative.is_some() {
+            return alternative.as_ref();
+        }
+        if (header && self.hide_header) || (!header && self.hide_footer) {
             return None;
         }
         if header {
@@ -44,13 +73,39 @@ impl PdfPageChrome {
             self.footer.as_ref()
         }
     }
+    fn hidden_on_page(&self, index: usize, header: bool) -> bool {
+        if index == 0 {
+            if (header && self.hide_first_header) || (!header && self.hide_first_footer) {
+                return true;
+            }
+            if (header && self.first_header.is_some()) || (!header && self.first_footer.is_some()) {
+                return false;
+            }
+        }
+        let odd = index.is_multiple_of(2);
+        let (hidden, defined) = match (odd, header) {
+            (true, true) => (self.hide_odd_header, self.odd_header.is_some()),
+            (false, true) => (self.hide_even_header, self.even_header.is_some()),
+            (true, false) => (self.hide_odd_footer, self.odd_footer.is_some()),
+            (false, false) => (self.hide_even_footer, self.even_footer.is_some()),
+        };
+        if hidden {
+            return true;
+        }
+        if defined {
+            return false;
+        }
+        if header {
+            self.hide_header
+        } else {
+            self.hide_footer
+        }
+    }
     pub(crate) fn should_draw_default_header(&self, page: usize) -> bool {
-        !(self.hide_header || page == 0 && self.hide_first_header)
-            && self.band(page == 0, true).is_none()
+        !self.hidden_on_page(page, true) && self.band(page, true).is_none()
     }
     pub(crate) fn should_draw_default_footer(&self, page: usize) -> bool {
-        !(self.hide_footer || page == 0 && self.hide_first_footer)
-            && self.band(page == 0, false).is_none()
+        !self.hidden_on_page(page, false) && self.band(page, false).is_none()
     }
     fn substitute(source: &str, page: usize, total: usize) -> String {
         source
@@ -92,10 +147,28 @@ impl PdfPageChrome {
         let mut top = geom.margin_top;
         let mut bottom = geom.margin_bottom;
         for header in [true, false] {
-            for row in [self.band(false, header), self.band(true, header)]
-                .into_iter()
-                .flatten()
-            {
+            let variants = [
+                &self.header,
+                &self.footer,
+                &self.first_header,
+                &self.first_footer,
+                &self.odd_header,
+                &self.even_header,
+                &self.odd_footer,
+                &self.even_footer,
+            ];
+            let selected: Vec<&PdfRow> = if header {
+                [0, 2, 4, 5]
+                    .into_iter()
+                    .filter_map(|i| variants[i].as_ref())
+                    .collect()
+            } else {
+                [1, 3, 6, 7]
+                    .into_iter()
+                    .filter_map(|i| variants[i].as_ref())
+                    .collect()
+            };
+            for row in selected {
                 check_cancel(cancel)?;
                 let resolved = Self::on_page(row, 99_999_999, 99_999_999);
                 let measured = resolved.prepare(
@@ -134,7 +207,7 @@ impl PdfPageChrome {
     ) -> Result<(), RenderError> {
         for is_header in [true, false] {
             check_cancel(cancel)?;
-            let Some(band) = self.band(index == 0, is_header) else {
+            let Some(band) = self.band(index, is_header) else {
                 continue;
             };
             let resolved = Self::on_page(band, index + 1, total);
@@ -208,11 +281,40 @@ mod tests {
             ..Default::default()
         };
         assert!(!c.should_draw_default_header(0));
-        assert!(c.band(true, true).is_some());
-        assert!(c.band(false, true).is_some());
-        assert!(c.band(true, false).is_none());
+        assert!(c.band(0, true).is_some());
+        assert!(c.band(1, true).is_some());
+        assert!(c.band(0, false).is_none());
         assert!(!c.should_draw_default_footer(0));
         assert!(c.should_draw_default_footer(1));
+    }
+    #[test]
+    fn first_overrides_odd_even_and_suppression_takes_precedence() {
+        let mut chrome = PdfPageChrome {
+            header: Some(text_row("BASE")),
+            odd_header: Some(text_row("ODD")),
+            even_header: Some(text_row("EVEN")),
+            first_header: Some(text_row("FIRST")),
+            ..Default::default()
+        };
+        let label = |c: &PdfPageChrome, index| {
+            let row = c.band(index, true).expect("band");
+            let PdfRowItem::Text { text, .. } = &row.columns[0].items[0] else {
+                panic!("text")
+            };
+            text.clone()
+        };
+        assert_eq!(label(&chrome, 0), "FIRST");
+        assert_eq!(label(&chrome, 1), "EVEN");
+        assert_eq!(label(&chrome, 2), "ODD");
+        chrome.first_header = None;
+        chrome.hide_first_header = true;
+        assert!(chrome.band(0, true).is_none());
+        assert!(!chrome.should_draw_default_header(0));
+        chrome.hide_even_header = true;
+        assert!(chrome.band(1, true).is_none());
+        assert!(!chrome.should_draw_default_header(1));
+        chrome.odd_header = None;
+        assert_eq!(label(&chrome, 2), "BASE");
     }
     #[test]
     fn page_number_expansion_is_literal_and_nonrecursive() {

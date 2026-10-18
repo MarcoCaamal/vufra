@@ -1146,12 +1146,14 @@ export class DocumentBuilder {
       this.chrome);
   }
   private withBand(
-    name:'header'|'footer'|'firstHeader'|'firstFooter',
+    name:'header'|'footer'|'firstHeader'|'firstFooter'|'oddHeader'|'evenHeader'|'oddFooter'|'evenFooter',
     callback:((scope:PageBandScope)=>void)|null
   ):DocumentBuilder {
     const chrome:PdfPageChrome=structuredClone(this.chrome);
     const hideName=({header:'hideHeader',footer:'hideFooter',
-      firstHeader:'hideFirstHeader',firstFooter:'hideFirstFooter'} as const)[name];
+      firstHeader:'hideFirstHeader',firstFooter:'hideFirstFooter',
+      oddHeader:'hideOddHeader',evenHeader:'hideEvenHeader',
+      oddFooter:'hideOddFooter',evenFooter:'hideEvenFooter'} as const)[name];
     if(callback===null){
       delete chrome[name];
       chrome[hideName]=true;
@@ -1177,6 +1179,19 @@ export class DocumentBuilder {
   }
   firstFooter(callback:((scope:PageBandScope)=>void)|null):DocumentBuilder{
     return this.withBand('firstFooter',callback);
+  }
+  /** Odd/even means printed page 1, 2, 3…; firstHeader/firstFooter take precedence. */
+  oddHeader(callback:((scope:PageBandScope)=>void)|null):DocumentBuilder{
+    return this.withBand('oddHeader',callback);
+  }
+  evenHeader(callback:((scope:PageBandScope)=>void)|null):DocumentBuilder{
+    return this.withBand('evenHeader',callback);
+  }
+  oddFooter(callback:((scope:PageBandScope)=>void)|null):DocumentBuilder{
+    return this.withBand('oddFooter',callback);
+  }
+  evenFooter(callback:((scope:PageBandScope)=>void)|null):DocumentBuilder{
+    return this.withBand('evenFooter',callback);
   }
   /** Dedicated first-page content: no running header/footer, then one lazy page break.
    * Does not change the page size or paint full-bleed backgrounds.

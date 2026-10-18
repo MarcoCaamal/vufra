@@ -83,6 +83,10 @@ fn validate_semantic_input(
             &chrome.footer,
             &chrome.first_header,
             &chrome.first_footer,
+            &chrome.odd_header,
+            &chrome.even_header,
+            &chrome.odd_footer,
+            &chrome.even_footer,
         ]
         .into_iter()
         .flatten()
@@ -238,9 +242,18 @@ fn render_writer_flow(
     let mut measurements = Vec::with_capacity(blocks.len());
     let mut total_image_pixels = 0u64;
     if let Some(c) = chrome {
-        for row in [&c.header, &c.footer, &c.first_header, &c.first_footer]
-            .into_iter()
-            .flatten()
+        for row in [
+            &c.header,
+            &c.footer,
+            &c.first_header,
+            &c.first_footer,
+            &c.odd_header,
+            &c.even_header,
+            &c.odd_footer,
+            &c.even_footer,
+        ]
+        .into_iter()
+        .flatten()
         {
             for col in &row.columns {
                 for item in &col.items {

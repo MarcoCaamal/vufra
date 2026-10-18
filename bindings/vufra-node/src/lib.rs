@@ -133,6 +133,14 @@ pub struct NodePageChrome {
     pub footer: Option<NodeRow>,
     pub first_header: Option<NodeRow>,
     pub first_footer: Option<NodeRow>,
+    pub odd_header: Option<NodeRow>,
+    pub even_header: Option<NodeRow>,
+    pub odd_footer: Option<NodeRow>,
+    pub even_footer: Option<NodeRow>,
+    pub hide_odd_header: Option<bool>,
+    pub hide_even_header: Option<bool>,
+    pub hide_odd_footer: Option<bool>,
+    pub hide_even_footer: Option<bool>,
     pub hide_header: Option<bool>,
     pub hide_footer: Option<bool>,
     pub hide_first_header: Option<bool>,
@@ -630,9 +638,18 @@ fn parse_document(
         }
     }
     if let Some(c) = &chrome {
-        for row in [&c.header, &c.footer, &c.first_header, &c.first_footer]
-            .into_iter()
-            .flatten()
+        for row in [
+            &c.header,
+            &c.footer,
+            &c.first_header,
+            &c.first_footer,
+            &c.odd_header,
+            &c.even_header,
+            &c.odd_footer,
+            &c.even_footer,
+        ]
+        .into_iter()
+        .flatten()
         {
             preflight_row_images(row, &mut count, &mut bytes, assets)?;
         }
@@ -650,6 +667,14 @@ fn parse_document(
                     footer: c.footer.map(|r| to_row(r, assets)).transpose()?,
                     first_header: c.first_header.map(|r| to_row(r, assets)).transpose()?,
                     first_footer: c.first_footer.map(|r| to_row(r, assets)).transpose()?,
+                    odd_header: c.odd_header.map(|r| to_row(r, assets)).transpose()?,
+                    even_header: c.even_header.map(|r| to_row(r, assets)).transpose()?,
+                    odd_footer: c.odd_footer.map(|r| to_row(r, assets)).transpose()?,
+                    even_footer: c.even_footer.map(|r| to_row(r, assets)).transpose()?,
+                    hide_odd_header: c.hide_odd_header.unwrap_or(false),
+                    hide_even_header: c.hide_even_header.unwrap_or(false),
+                    hide_odd_footer: c.hide_odd_footer.unwrap_or(false),
+                    hide_even_footer: c.hide_even_footer.unwrap_or(false),
                     hide_header: c.hide_header.unwrap_or(false),
                     hide_footer: c.hide_footer.unwrap_or(false),
                     hide_first_header: c.hide_first_header.unwrap_or(false),

@@ -108,10 +108,18 @@ export interface PdfPageChrome {
   footer?: PdfRow;
   firstHeader?: PdfRow;
   firstFooter?: PdfRow;
+  oddHeader?: PdfRow;
+  evenHeader?: PdfRow;
+  oddFooter?: PdfRow;
+  evenFooter?: PdfRow;
   hideHeader?: boolean;
   hideFooter?: boolean;
   hideFirstHeader?: boolean;
   hideFirstFooter?: boolean;
+  hideOddHeader?: boolean;
+  hideEvenHeader?: boolean;
+  hideOddFooter?: boolean;
+  hideEvenFooter?: boolean;
 }
 export interface PdfDocument {
   /** Shown in the running header. Required, nonempty. */
@@ -160,10 +168,18 @@ interface NativeChrome {
   footer?: NonNullable<NativeBlock['row']>;
   firstHeader?: NonNullable<NativeBlock['row']>;
   firstFooter?: NonNullable<NativeBlock['row']>;
+  oddHeader?: NonNullable<NativeBlock['row']>;
+  evenHeader?: NonNullable<NativeBlock['row']>;
+  oddFooter?: NonNullable<NativeBlock['row']>;
+  evenFooter?: NonNullable<NativeBlock['row']>;
   hideHeader?: boolean;
   hideFooter?: boolean;
   hideFirstHeader?: boolean;
   hideFirstFooter?: boolean;
+  hideOddHeader?: boolean;
+  hideEvenHeader?: boolean;
+  hideOddFooter?: boolean;
+  hideEvenFooter?: boolean;
 }
 interface NativePage {
   width: number; height: number; marginTop: number;
@@ -638,8 +654,10 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
       if (!chrome || typeof chrome !== 'object' || Array.isArray(chrome)) {
         throw new TypeError('pageChrome must be an object');
       }
-      const keys = ['header','footer','firstHeader','firstFooter'] as const;
-      const flags = ['hideHeader','hideFooter','hideFirstHeader','hideFirstFooter'] as const;
+      const keys = ['header','footer','firstHeader','firstFooter',
+        'oddHeader','evenHeader','oddFooter','evenFooter'] as const;
+      const flags = ['hideHeader','hideFooter','hideFirstHeader','hideFirstFooter',
+        'hideOddHeader','hideEvenHeader','hideOddFooter','hideEvenFooter'] as const;
       normalizedChrome = {};
       for (const name of keys) {
         if (chrome[name] !== undefined) {
@@ -658,7 +676,11 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
       }
       if ((chrome.header && chrome.hideHeader) || (chrome.footer && chrome.hideFooter) ||
           (chrome.firstHeader && chrome.hideFirstHeader) ||
-          (chrome.firstFooter && chrome.hideFirstFooter)) {
+          (chrome.firstFooter && chrome.hideFirstFooter) ||
+          (chrome.oddHeader && chrome.hideOddHeader) ||
+          (chrome.evenHeader && chrome.hideEvenHeader) ||
+          (chrome.oddFooter && chrome.hideOddFooter) ||
+          (chrome.evenFooter && chrome.hideEvenFooter)) {
         throw new TypeError('pageChrome cannot both hide and define the same band');
       }
     }

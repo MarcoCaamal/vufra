@@ -303,3 +303,9 @@ Para validación de datos de plantillas JSON, `defineTemplate` admite
 admiten formato determinista `{kind:'currencyMinor',currency:'MXN',locale:'es-MX'}`
 con entero de unidades menores; JPY y KWD respetan sus unidades distintas.
 Sin transformaciones ejecutables ni dependencias de terceros para formato.
+
+Se pueden configurar encabezados y pies diferenciados por número impreso
+impar/par con `.oddHeader()`, `.evenHeader()`, `.oddFooter()` y `.evenFooter()`.
+Cada método acepta callback o `null` para suprimir la variante; la primera
+página puede redefinirse con `firstHeader`/`firstFooter` o `coverPage`.
+La paginación mide de antemano la variante de banda más alta.

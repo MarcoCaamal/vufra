@@ -600,3 +600,12 @@ aceptan `format:{kind:'currencyMinor',currency:'MXN',locale:'es-MX'}`:
 los valores se proporcionan como unidades menores enteras y se formatean
 con el número de decimales de la moneda, sin defaults regionales ocultos.
 Véase [ADR-0046](docs/adr/0046-typed-json-data-and-money.md).
+
+### Encabezados y pies impares/pares
+
+El constructor Fluent admite `.oddHeader(...)`, `.evenHeader(...)`,
+`.oddFooter(...)` y `.evenFooter(...)`, usando el mismo DSL de bandas que
+`header`/`footer`. `null` oculta explícitamente la banda para esa paridad;
+las opciones `firstHeader`/`firstFooter` (y `coverPage`) tienen prioridad
+sobre impar/par. El motor reserva espacio según la variante más alta antes
+de paginar. Véase [ADR-0047](docs/adr/0047-odd-even-page-chrome.md).
