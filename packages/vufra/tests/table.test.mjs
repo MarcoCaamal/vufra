@@ -59,7 +59,7 @@ test('invalid table structures and widths reject',()=>{
   assert.throws(()=>doc.table([['a']],{columns:[]}),/1\.\.6 columns/);
   assert.throws(()=>doc.table([['a']],{columns:[{title:'H',width:500}]}),/width|columns/);
   assert.throws(()=>doc.table([['a']],{columns:[{title:'H',width:NaN}]}),/width|columns/);
-  assert.throws(()=>doc.table([['a','b']],{columns:[{title:'H',width:100}]}),/cells must match/);
+  assert.throws(()=>doc.table([['a','b']],{columns:[{title:'H',width:100}]}),/row does not cover all columns|too many cells/);
   assert.throws(()=>doc.table([['W'.repeat(1000)]],{columns:[{title:'H',width:100}]})
     .renderSync(),/unbreakable|printable width/);
 });

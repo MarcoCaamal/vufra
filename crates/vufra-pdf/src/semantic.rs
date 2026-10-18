@@ -113,6 +113,7 @@ pub enum ContentNode {
         children: Vec<ContentNode>,
     },
     StyledTable {
+        row_spans: Vec<crate::TableRowSpan>,
         keep_with_next: Vec<usize>,
         header: Box<ContentNode>,
         rows: Vec<ContentNode>,
@@ -235,6 +236,7 @@ impl From<PdfBoxItem> for ContentNode {
             PdfBoxItem::Row(row) => Self::from(row),
             PdfBoxItem::Box(boxed) => Self::from(*boxed),
             PdfBoxItem::Table(table) => Self::StyledTable {
+                row_spans: table.row_spans,
                 keep_with_next: table.keep_with_next,
                 header: Box::new(Self::from(table.header)),
                 rows: table.rows.into_iter().map(Self::from).collect(),
@@ -408,6 +410,7 @@ impl TryFrom<ContentNode> for PdfBoxItem {
                 rows,
                 fills,
                 borders,
+                row_spans,
                 keep_with_next,
             } => {
                 let header = match *header {
@@ -426,6 +429,7 @@ impl TryFrom<ContentNode> for PdfBoxItem {
                     rows,
                     fills,
                     borders,
+                    row_spans,
                     keep_with_next,
                 }))
             }
@@ -638,6 +642,7 @@ mod tests {
                     fills: vec![vec![None], vec![None]],
                     borders: None,
                     keep_with_next: vec![],
+                    row_spans: vec![],
                 },
             ],
         );
@@ -891,7 +896,8 @@ mod tests {
                 rows: vec![],
                 fills: vec![],
                 borders: None,
-                keep_with_next: vec![]
+                keep_with_next: vec![],
+                row_spans: vec![]
             })
             .is_err()
         );

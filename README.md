@@ -609,3 +609,12 @@ El constructor Fluent admite `.oddHeader(...)`, `.evenHeader(...)`,
 las opciones `firstHeader`/`firstFooter` (y `coverPage`) tienen prioridad
 sobre impar/par. El motor reserva espacio según la variante más alta antes
 de paginar. Véase [ADR-0047](docs/adr/0047-odd-even-page-chrome.md).
+
+### RowSpan entre páginas
+
+`{text:'Departamento',rowSpan:3,colSpan:2}` fusiona realmente tres filas
+con dos columnas. Las filas siguientes omiten las celdas cubiertas. El motor
+Rust conserva **un único fondo y el perímetro** entre páginas y no repite el
+texto. Solo se permite alineación vertical superior y cada fila participante
+debe caber individualmente en una página. Para restricciones y ejemplos,
+consulta [ADR-0048](docs/adr/0048-rowspan-page-aware.md).

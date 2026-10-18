@@ -50,6 +50,7 @@ export interface PdfRow {
 export interface PdfBoxTable {
   borders?: Array<Array<{width:number;color:string}>>;
   keepWithNext?:number[];
+  rowSpans?:Array<{row:number;column:number;colSpan:number;rowSpan:number}>;
   header: PdfRow;
   rows: PdfRow[];
   /** Backgrounds: header first, then every data row, per column. */
@@ -498,7 +499,18 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
             if(!Array.isArray(keepWithNext)||keepWithNext.some((i,j)=>
               !Number.isInteger(i)||i<0||i>=rows.length-1||(j>0&&i<=keepWithNext[j-1])))
               throw new TypeError('invalid table group keepWithNext indices');
-            return {kind:'table',tableData:{header,rows,fills,borders,keepWithNext}};
+            const rowSpans=t.rowSpans??[];
+            if(!Array.isArray(rowSpans)||rowSpans.length>rows.length*header.columns.length)
+              throw new TypeError('invalid table rowSpans');
+            for(const span of rowSpans){
+              if(!span||[span.row,span.column,span.colSpan,span.rowSpan]
+                .some(v=>!Number.isInteger(v)) || span.row<0 || span.column<0 ||
+                span.colSpan<1 || span.rowSpan<2 || span.rowSpan>32 ||
+                span.row+span.rowSpan>rows.length ||
+                span.column+span.colSpan>header.columns.length)
+                throw new TypeError('invalid table rowSpan bounds');
+            }
+            return {kind:'table',tableData:{header,rows,fills,borders,keepWithNext,rowSpans}};
           }
           if(item?.type==='text' && typeof item.text==='string'){
             return {kind:'text',text:item.text,style:normalizeStyle(

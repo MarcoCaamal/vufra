@@ -60,7 +60,7 @@ test('heading and table preserve keepWithNext when first page is nearly filled',
 });
 test('invalid rich table and unbreakable paragraph reject clearly',()=>{
  const doc=app.document({title:'Flow errors'});
- assert.throws(()=>doc.table([['a','b','c']],{columns}),/cells must match/);
+ assert.throws(()=>doc.table([['a','b','c']],{columns}),/row does not cover all columns|too many cells/);
  assert.throws(()=>doc.paragraph('W'.repeat(2000)).renderSync(),/unbreakable/);
 });
 test('empty flow renders one valid page',()=>{

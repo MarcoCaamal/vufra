@@ -64,8 +64,17 @@ pub struct CellBorder {
     pub width: f32,
     pub color: [u8; 3],
 }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TableRowSpan {
+    /// Zero-based body row, and zero-based logical header column.
+    pub row: usize,
+    pub column: usize,
+    pub col_span: usize,
+    pub row_span: usize,
+}
 #[derive(Debug, Clone)]
 pub struct PdfBoxTable {
+    pub row_spans: Vec<TableRowSpan>,
     /// Zero-based body row indices whose group heading must stay with its next row.
     pub keep_with_next: Vec<usize>,
     pub header: PdfRow,
@@ -139,6 +148,69 @@ impl PdfBoxTable {
                 return Err(RenderError::InvalidInput(
                     "styled table column widths must match",
                 ));
+            }
+        }
+        if self.row_spans.len() > self.rows.len() * cols {
+            return Err(RenderError::InvalidInput("too many table rowSpans"));
+        }
+        let mut coverage = vec![vec![false; cols]; self.rows.len()];
+        for span in &self.row_spans {
+            if span.row >= self.rows.len()
+                || span.row_span < 2
+                || span.row_span > 32
+                || span
+                    .row
+                    .checked_add(span.row_span)
+                    .is_none_or(|last| last > self.rows.len())
+                || span.col_span < 1
+                || span
+                    .column
+                    .checked_add(span.col_span)
+                    .is_none_or(|end| end > cols)
+            {
+                return Err(RenderError::InvalidInput("invalid table rowSpan bounds"));
+            }
+            let start = boundaries[span.column] - self.header.columns[span.column].width;
+            let finish = boundaries[span.column + span.col_span - 1];
+            for (r, cover_row) in coverage
+                .iter_mut()
+                .enumerate()
+                .skip(span.row)
+                .take(span.row_span)
+            {
+                let mut x = 0.0;
+                let mut matched = false;
+                for c in &self.rows[r].columns {
+                    let left = x;
+                    x += c.width;
+                    if (left - start).abs() < 0.02 {
+                        if (x - finish).abs() > 0.02 {
+                            return Err(RenderError::InvalidInput(
+                                "table rowSpan cell width mismatch",
+                            ));
+                        }
+                        if r > span.row
+                            && !c
+                                .items
+                                .iter()
+                                .all(|item| matches!(item, crate::PdfRowItem::Spacer(_)))
+                        {
+                            return Err(RenderError::InvalidInput(
+                                "table rowSpan continuation requires empty cells",
+                            ));
+                        }
+                        matched = true;
+                    }
+                }
+                if !matched {
+                    return Err(RenderError::InvalidInput("missing table rowSpan slot"));
+                }
+                for covered in cover_row.iter_mut().skip(span.column).take(span.col_span) {
+                    if *covered {
+                        return Err(RenderError::InvalidInput("overlapping table rowSpans"));
+                    }
+                    *covered = true;
+                }
             }
         }
         Ok(())
@@ -514,6 +586,14 @@ impl PdfBox {
                                 });
                             }
                             Ok(prepared) if row_idx > 0 => {
+                                if table.row_spans.iter().any(|span| {
+                                    let body = row_idx - 1;
+                                    body >= span.row && body < span.row + span.row_span
+                                }) {
+                                    return Err(RenderError::InvalidInput(
+                                        "rowSpan does not support individual rows taller than a page",
+                                    ));
+                                }
                                 // Preserve the source table-row fill and repeat only
                                 // the body fragments; reuse measured lines/font faces.
                                 let fragments = row.fragments_from_prepared(prepared)?;
@@ -853,10 +933,50 @@ impl PreparedBox {
             }
         });
         let mut x = origin.0;
+        let mut relative_x = 0.0;
+        let header_boundaries = table
+            .header
+            .columns
+            .iter()
+            .scan(0.0_f32, |total, col| {
+                *total += col.width;
+                Some(*total)
+            })
+            .collect::<Vec<_>>();
         for (index, col) in row.columns.iter().enumerate() {
-            let fill = table.fills[row_idx][index].unwrap_or(if row_idx == 0 {
+            let cell_start = relative_x;
+            relative_x += col.width;
+            let spanning = if row_idx == 0 {
+                None
+            } else {
+                table.row_spans.iter().find(|span| {
+                    let from =
+                        header_boundaries[span.column] - table.header.columns[span.column].width;
+                    let to = header_boundaries[span.column + span.col_span - 1];
+                    (cell_start - from).abs() < 0.02
+                        && (relative_x - to).abs() < 0.02
+                        && row_idx > span.row
+                        && row_idx - 1 < span.row + span.row_span
+                })
+            };
+            let owner_index = spanning.and_then(|span| {
+                let from = header_boundaries[span.column] - table.header.columns[span.column].width;
+                let mut sum = 0.0_f32;
+                table.rows[span.row]
+                    .columns
+                    .iter()
+                    .position(|c| {
+                        let at = sum;
+                        sum += c.width;
+                        (at - from).abs() < 0.02
+                    })
+                    .map(|index| (span.row + 1, index))
+            });
+            let style_row = owner_index.map_or(row_idx, |(r, _)| r);
+            let style_col = owner_index.map_or(index, |(_, c)| c);
+            let fill = table.fills[style_row][style_col].unwrap_or(if style_row == 0 {
                 [225, 236, 249]
-            } else if row_idx.is_multiple_of(2) {
+            } else if style_row.is_multiple_of(2) {
                 [247, 250, 253]
             } else {
                 [255, 255, 255]
@@ -872,7 +992,7 @@ impl PreparedBox {
                     width: 0.5,
                     color: [187, 197, 207],
                 },
-                |b| b[row_idx][index],
+                |b| b[style_row][style_col],
             );
             surface.set_stroke(if edge.width > 0.0 {
                 Some(Stroke {
@@ -887,7 +1007,38 @@ impl PreparedBox {
                 let mut path = PathBuilder::new();
                 path.push_rect(rect);
                 if let Some(path) = path.finish() {
+                    if spanning.is_some() {
+                        // One logical spanning cell: background on each page
+                        // fragment, but only outer perimeter is stroked.
+                        surface.set_stroke(None);
+                    }
                     surface.draw_path(&path);
+                }
+                if let Some(span) = spanning
+                    && edge.width > 0.0
+                {
+                    surface.set_fill(None);
+                    surface.set_stroke(Some(Stroke {
+                        paint: rgb::Color::new(edge.color[0], edge.color[1], edge.color[2]).into(),
+                        width: edge.width,
+                        ..Stroke::default()
+                    }));
+                    let mut lines = PathBuilder::new();
+                    lines.move_to(x, origin.1);
+                    lines.line_to(x, origin.1 + prepared.height);
+                    lines.move_to(x + col.width, origin.1);
+                    lines.line_to(x + col.width, origin.1 + prepared.height);
+                    if row_idx - 1 == span.row {
+                        lines.move_to(x, origin.1);
+                        lines.line_to(x + col.width, origin.1);
+                    }
+                    if row_idx - 1 == span.row + span.row_span - 1 {
+                        lines.move_to(x, origin.1 + prepared.height);
+                        lines.line_to(x + col.width, origin.1 + prepared.height);
+                    }
+                    if let Some(path) = lines.finish() {
+                        surface.draw_path(&path);
+                    }
                 }
             }
             surface.set_fill(old_fill);
@@ -1206,6 +1357,62 @@ mod tests {
         }
     }
     #[test]
+    fn row_spans_verify_rectangles_and_continuation_is_empty() {
+        let text = |v: &str| PdfRow {
+            gap: 0.0,
+            columns: vec![crate::PdfRowColumn {
+                width: 180.0,
+                right_align: false,
+                cell: None,
+                items: vec![crate::PdfRowItem::Text {
+                    text: v.to_owned(),
+                    style: TextStyle::paragraph(),
+                }],
+            }],
+        };
+        let blank = || PdfRow {
+            gap: 0.0,
+            columns: vec![crate::PdfRowColumn {
+                width: 180.0,
+                right_align: false,
+                cell: None,
+                items: vec![crate::PdfRowItem::Spacer(18.0)],
+            }],
+        };
+        let mut table = PdfBoxTable {
+            row_spans: vec![TableRowSpan {
+                row: 0,
+                column: 0,
+                col_span: 1,
+                row_span: 2,
+            }],
+            keep_with_next: vec![],
+            header: text("HEADER"),
+            rows: vec![text("CELL"), blank()],
+            fills: vec![vec![None]; 3],
+            borders: None,
+        };
+        assert!(table.validate(180.0, 600.0, 0).is_ok());
+        table.rows[1] = text("FORGED_CONTINUATION");
+        assert!(table.validate(180.0, 600.0, 0).is_err());
+        table.rows[1] = blank();
+        table.row_spans.push(TableRowSpan {
+            row: 1,
+            column: 0,
+            col_span: 1,
+            row_span: 2,
+        });
+        assert!(table.validate(180.0, 600.0, 0).is_err());
+        table.row_spans.pop();
+        table.row_spans.push(TableRowSpan {
+            row: 0,
+            column: 0,
+            col_span: 1,
+            row_span: 2,
+        });
+        assert!(table.validate(180.0, 600.0, 0).is_err());
+    }
+    #[test]
     fn table_group_keep_next_indices_are_bounded_ordered_and_require_a_successor() {
         let row = || PdfRow {
             gap: 0.0,
@@ -1222,6 +1429,7 @@ mod tests {
             fills: vec![vec![None]; 4],
             borders: None,
             keep_with_next: vec![0, 1],
+            row_spans: vec![],
         };
         assert!(table.validate(180.0, 600.0, 0).is_ok());
         table.keep_with_next = vec![1, 0];

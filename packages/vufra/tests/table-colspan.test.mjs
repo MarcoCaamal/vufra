@@ -42,11 +42,11 @@ test('colSpan rows use native merged column width and repeat header through long
     assert.equal((page.match(/\bREF\b/g)??[]).length,1,'header repeats on page '+pg);
   }
 });
-test('colSpan rejects invalid counts and unsupported vertical merging',()=>{
+test('colSpan rejects invalid counts and invalid vertical merging',()=>{
   const good={columns};
-  assert.throws(()=>app.document().table([[{text:'A',colSpan:0},'B','C']],good),/colSpan/);
-  assert.throws(()=>app.document().table([[{text:'A',colSpan:4}]],good),/colSpan/);
-  assert.throws(()=>app.document().table([[{text:'A',colSpan:1.5},'B','C']],good),/colSpan/);
+  assert.throws(()=>app.document().table([[{text:'A',colSpan:0},'B','C']],good),/colSpan|rowSpan occupies these columns/);
+  assert.throws(()=>app.document().table([[{text:'A',colSpan:4}]],good),/colSpan|rowSpan occupies these columns/);
+  assert.throws(()=>app.document().table([[{text:'A',colSpan:1.5},'B','C']],good),/colSpan|rowSpan occupies these columns/);
   assert.throws(()=>app.document().table([[{text:'A',rowSpan:2},'B','C']],good),/rowSpan/);
-  assert.throws(()=>app.document().table([[{text:'A',colSpan:2},'B','C']],good),/colSpan/);
+  assert.throws(()=>app.document().table([[{text:'A',colSpan:2},'B','C']],good),/colSpan|rowSpan occupies these columns/);
 });

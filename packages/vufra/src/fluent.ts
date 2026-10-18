@@ -75,8 +75,10 @@ export type StyledTableCell = string | number | {
   verticalAlign?: CellVerticalAlign;
   padding?: CellPadding;
   border?: CellBorder;
-  /** Merge this cell across adjacent table columns. No rowSpan yet. */
+  /** Merge across adjacent columns and/or subsequent rows. */
   colSpan?: number;
+  /** Spanning cell content uses top alignment; its fill and frame continue across pages. */
+  rowSpan?: number;
   /** Keep this group-heading row with the first following row when it fits a page. */
   keepWithNext?: boolean;
 };
@@ -775,6 +777,7 @@ function styledTable(
     .map(value=>colorHex(value,ctx.theme));
   const borders:{width:number;color:string}[][]=[];
   const keepWithNext:number[]=[];
+  const rowSpans:Array<{row:number;column:number;colSpan:number;rowSpan:number}>=[];
   const fills:(string|undefined)[][]=[];
   const line=(cells:readonly StyledTableCell[], rowIndex:number)=>{
     if(!Array.isArray(cells)||cells.length<1||cells.length>columns.length) {
@@ -786,7 +789,6 @@ function styledTable(
       if(!data||!plainObject(data)||
         (data.align!==undefined&&!['left','center','right'].includes(data.align as string)))
         fail('invalid styled table cell');
-      if('rowSpan' in data)fail('rowSpan is not supported yet');
       const value=data as Exclude<StyledTableCell,string|number>;
       const span=value.colSpan??1;
       if(!Number.isInteger(span)||span<1||rowIndex===0&&span!==1 || cursor+span>columns.length)
@@ -857,13 +859,58 @@ function styledTable(
     borders.push(edge);
     return {gap:0,columns:cols};
   };
+  // Resolve rectangular spans before shaping. Continuation slots are real
+  // blank physical columns, while native table geometry owns their shared
+  // fills/borders and knows when each span begins and ends on a PDF page.
+  type SpanCover={owner:number;start:number;width:number;until:number};
+  const covers:Array<SpanCover|undefined>=Array(columns.length).fill(undefined);
+  const expanded=rows.map((source,row)=>{
+    if(!Array.isArray(source))fail('styled table row must be an array');
+    const output:StyledTableCell[]=[];
+    let cellIndex=0;
+    for(let col=0;col<columns.length;){
+      const cover=covers[col];
+      if(cover && cover.until>row){
+        if(cover.start!==col)fail('corrupt table rowSpan coverage');
+        const padding:CellPadding={top:0,bottom:0,left:0,right:0};
+        output.push({text:'',colSpan:cover.width,padding});
+        col+=cover.width;
+        continue;
+      }
+      if(cellIndex>=source.length)fail('styled table row does not cover all columns');
+      const entry=source[cellIndex++];
+      const value=(typeof entry==='string'||typeof entry==='number')
+        ?{text:String(entry)}:entry;
+      if(!value||!plainObject(value))fail('invalid styled table cell');
+      const colspan=value.colSpan as number|undefined ?? 1;
+      const rowspan=value.rowSpan as number|undefined ?? 1;
+      if(!Number.isInteger(colspan)||colspan<1||col+colspan>columns.length ||
+         !Number.isInteger(rowspan)||rowspan<1||rowspan>32||row+rowspan>rows.length)
+        fail('invalid rowSpan/colSpan: rectangle exceeds body table bounds');
+      for(let track=col;track<col+colspan;track++){
+        if(covers[track]&&covers[track]!.until>row)
+          fail('overlapping rowSpan or colSpan rectangles');
+      }
+      if(rowspan>1){
+        if(value.verticalAlign!==undefined && value.verticalAlign!=='top')
+          fail('rowSpan cells currently require verticalAlign top');
+        rowSpans.push({row,column:col,colSpan:colspan,rowSpan:rowspan});
+        const next={owner:row,start:col,width:colspan,until:row+rowspan};
+        for(let track=col;track<col+colspan;track++)covers[track]=next;
+      }
+      output.push(rowspan>1?{...value,verticalAlign:'top'}:value);
+      col+=colspan;
+    }
+    if(cellIndex!==source.length)fail('too many cells; a rowSpan occupies these columns');
+    return output;
+  });
   const head=line(columns.map(c=>({text:c.title,bold:Object.hasOwn(ctx.fonts,'bold'),
     color:c.color,background:c.background,align:c.align,
     padding:c.padding,verticalAlign:c.verticalAlign,border:c.border})),0);
-  const body=rows.map((r,i)=>line(r,i+1));
+  const body=expanded.map((r,i)=>line(r,i+1));
   if(keepWithNext.includes(rows.length-1))
     fail('keepWithNext requires a following body row');
-  return {header:head,rows:body,fills,borders,keepWithNext};
+  return {header:head,rows:body,fills,borders,keepWithNext,rowSpans};
 }
 
 /** Flatten grouped records into a single paginated table with a merged group title.

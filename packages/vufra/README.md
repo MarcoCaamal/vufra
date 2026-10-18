@@ -309,3 +309,9 @@ impar/par con `.oddHeader()`, `.evenHeader()`, `.oddFooter()` y `.evenFooter()`.
 Cada método acepta callback o `null` para suprimir la variante; la primera
 página puede redefinirse con `firstHeader`/`firstFooter` o `coverPage`.
 La paginación mide de antemano la variante de banda más alta.
+
+Las tablas ahora aceptan `rowSpan` en celdas del cuerpo, junto con `colSpan`.
+La siguiente fila omite los tracks cubiertos y el renderizador conserva la
+continuidad del fondo/borde incluso al cambiar de página. La celda combinada
+usa alineación vertical superior, y las filas participantes han de caber
+individualmente en una página. Véase ADR-0048 del repositorio.

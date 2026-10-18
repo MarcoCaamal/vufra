@@ -92,7 +92,15 @@ pub struct NodeCellBorder {
     pub color: String,
 }
 #[napi(object)]
+pub struct NodeTableRowSpan {
+    pub row: u32,
+    pub column: u32,
+    pub col_span: u32,
+    pub row_span: u32,
+}
+#[napi(object)]
 pub struct NodeBoxTable {
+    pub row_spans: Option<Vec<NodeTableRowSpan>>,
     pub keep_with_next: Option<Vec<u32>>,
     pub header: NodeRow,
     pub rows: Vec<NodeRow>,
@@ -327,6 +335,17 @@ fn to_box_depth(input: NodeBox, depth: usize, assets: &NativeAssets) -> napi::Re
                     .table_data
                     .ok_or_else(|| napi::Error::from_reason("boxed table required"))?;
                 Ok(PdfBoxItem::Table(PdfBoxTable {
+                    row_spans: table
+                        .row_spans
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|span| vufra_pdf::TableRowSpan {
+                            row: span.row as usize,
+                            column: span.column as usize,
+                            col_span: span.col_span as usize,
+                            row_span: span.row_span as usize,
+                        })
+                        .collect(),
                     keep_with_next: table
                         .keep_with_next
                         .unwrap_or_default()
