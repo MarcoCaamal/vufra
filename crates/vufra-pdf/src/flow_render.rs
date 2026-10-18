@@ -585,24 +585,29 @@ fn render_writer_flow(
         .collect::<Vec<_>>();
     let pages = paginate_flow_with_keep(&measurements, &keeps, geometry.content_height())
         .map_err(RenderError::InvalidLayout)?;
-    let mut page_of = vec![None; blocks.len()];
+    // Capture the real top-left position of each block's first rendered
+    // fragment. Both chapter links and arbitrary named anchors use these
+    // coordinates rather than the generic page-top location.
+    let mut locations: Vec<Option<(usize, f32)>> = vec![None; blocks.len()];
     for (page, plan) in pages.iter().enumerate() {
+        let mut y = geometry.margin_top;
         for fragment in &plan.fragments {
-            let block = match fragment {
-                FlowFragment::Box { block, .. }
-                | FlowFragment::Graphic { block, .. }
-                | FlowFragment::Image { block, .. }
-                | FlowFragment::Spacer { block, .. }
-                | FlowFragment::Paragraph { block, .. } => *block,
+            let (block, height) = match fragment {
+                FlowFragment::Box { block, height, .. }
+                | FlowFragment::Graphic { block, height }
+                | FlowFragment::Image { block, height }
+                | FlowFragment::Spacer { block, height }
+                | FlowFragment::Paragraph { block, height, .. } => (*block, *height),
             };
-            if page_of[block].is_none() {
-                page_of[block] = Some(page + 1);
+            if locations[block].is_none() {
+                locations[block] = Some((page, y));
             }
+            y += height;
         }
     }
     for block in blocks {
         if let PdfBlock::PageReference { target_block, .. } = block {
-            let Some(number) = page_of[*target_block] else {
+            let Some((target_page, _)) = locations[*target_block] else {
                 return Err(RenderError::InvalidInput(
                     "page reference target has no rendered page",
                 ));
@@ -610,7 +615,7 @@ fn render_writer_flow(
             // The page number is drawn in a reserved right-hand track.
             // Never overflow that track silently for unusually huge reports.
             let shaped = measure_text_lines(
-                &number.to_string(),
+                &(target_page + 1).to_string(),
                 42.0,
                 &family,
                 &mut fonts,
@@ -631,15 +636,12 @@ fn render_writer_flow(
     let mut has_outline = false;
     for master in masters {
         if let Some(title) = &master.title {
-            let page = page_of[master.start_block].ok_or(RenderError::InvalidInput(
+            let (page, y) = locations[master.start_block].ok_or(RenderError::InvalidInput(
                 "PDF outline target not paginated",
             ))?;
             outline.push_child(OutlineNode::new(
                 title.clone(),
-                XyzDestination::new(
-                    page - 1,
-                    Point::from_xy(geometry.margin_left, geometry.margin_top),
-                ),
+                XyzDestination::new(page, Point::from_xy(geometry.margin_left, y)),
             ));
             has_outline = true;
         }
@@ -783,8 +785,9 @@ fn render_writer_flow(
                             },
                             _,
                         ) => {
-                            let number = page_of[*target_block]
+                            let (page_number, _) = locations[*target_block]
                                 .ok_or(RenderError::InvalidInput("unresolved page reference"))?;
+                            let number = page_number + 1;
                             surface.draw_text(
                                 Point::from_xy(left, y + 15.0),
                                 font.clone(),
@@ -805,7 +808,7 @@ fn render_writer_flow(
                                 .ok_or(RenderError::InvalidInput(
                                     "invalid page reference link rectangle",
                                 ))?;
-                            links.push((area, number - 1, label.clone()));
+                            links.push((area, *target_block, label.clone()));
                         }
                         (_, PdfBlock::Graphic(graphic)) => graphic.draw(&mut surface, left, y)?,
                         _ => {}
@@ -910,12 +913,11 @@ fn render_writer_flow(
             }
         }
         surface.finish();
-        for (rect, target_page, label) in links {
-            // Validated earlier by the paginator; no phantom PDF destinations.
-            let destination = XyzDestination::new(
-                target_page,
-                Point::from_xy(geometry.margin_left, geometry.margin_top),
-            );
+        for (rect, target_block, label) in links {
+            let (target_page, target_y) = locations[target_block]
+                .ok_or(RenderError::InvalidInput("unresolved link destination"))?;
+            let destination =
+                XyzDestination::new(target_page, Point::from_xy(geometry.margin_left, target_y));
             page.add_annotation(Annotation::new_link(
                 LinkAnnotation::new(rect, Target::Destination(destination.into())),
                 Some(format!("Go to {label}")),

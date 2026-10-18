@@ -1225,7 +1225,8 @@ export class DocumentBuilder {
     private readonly blocks:readonly PdfBlock[],
     private readonly chrome:PdfPageChrome={},
     private readonly pendingCoverBreak=false,
-    private readonly masters:readonly {startBlock:number;pageChrome:PdfPageChrome;title?:string}[]=[]){}
+    private readonly masters:readonly {startBlock:number;pageChrome:PdfPageChrome;title?:string}[]=[],
+    private readonly anchors:readonly {id:string;block:number}[]=[]){}
   static create(config:BuilderContext):DocumentBuilder{return new DocumentBuilder(config,[]);}
   private append(f:(scope:ContentBuilder)=>void):DocumentBuilder{
     const scope=new ContentBuilder(this.ctx);
@@ -1235,7 +1236,7 @@ export class DocumentBuilder {
     const previous=this.pendingCoverBreak
       ? [...this.blocks,{type:'page-break' as const}]:this.blocks;
     return new DocumentBuilder(this.ctx,[...previous,...structuredClone(scope.blocks)],
-      this.chrome,false,this.masters);
+      this.chrome,false,this.masters,this.anchors);
   }
   private withBand(
     name:'header'|'footer'|'firstHeader'|'firstFooter'|'oddHeader'|'evenHeader'|'oddFooter'|'evenFooter',
@@ -1256,7 +1257,7 @@ export class DocumentBuilder {
       finally{scope.close();}
       chrome[hideName]=false;
     }
-    return new DocumentBuilder(this.ctx,this.blocks,chrome,this.pendingCoverBreak,this.masters);
+    return new DocumentBuilder(this.ctx,this.blocks,chrome,this.pendingCoverBreak,this.masters,this.anchors);
   }
   /** Define a repeating header, or pass null to hide the default header. */
   header(callback:((scope:PageBandScope)=>void)|null):DocumentBuilder{
@@ -1293,7 +1294,7 @@ export class DocumentBuilder {
     if(typeof callback!=='function')fail('coverPage requires a synchronous content callback');
     const framed=this.box({...options,keepTogether:true},callback)
       .firstHeader(null).firstFooter(null);
-    return new DocumentBuilder(this.ctx,framed.blocks,framed.chrome,true,this.masters);
+    return new DocumentBuilder(this.ctx,framed.blocks,framed.chrome,true,this.masters,this.anchors);
   }
   /** Begin a physical page section with its own header/footer master.
    * firstHeader/firstFooter here apply only to the first physical page
@@ -1341,7 +1342,7 @@ export class DocumentBuilder {
       ...structuredClone(scope.blocks)];
     const startBlock=this.blocks.length+(breakBefore?1:0);
     return new DocumentBuilder(this.ctx,blocks,this.chrome,false,
-      [...this.masters,{startBlock,pageChrome:nextChrome,title:options.title}]);
+      [...this.masters,{startBlock,pageChrome:nextChrome,title:options.title}],this.anchors);
   }
   /** Automatic paginated chapter index. Place it before named page sections.
    * Exact page numbers are resolved from the Rust paginator, not predicted.
@@ -1352,7 +1353,7 @@ export class DocumentBuilder {
     if(this.blocks.some(block=>block.type==='toc'))fail('only one table of contents is supported');
     const doc=this.heading(title);
     return new DocumentBuilder(this.ctx,
-      [...doc.blocks,{type:'toc'}],doc.chrome,false,doc.masters);
+      [...doc.blocks,{type:'toc'}],doc.chrome,false,doc.masters,doc.anchors);
   }
   /** Named chapter page reference. Resolved from the real page plan in Rust. */
   pageReference(sectionTitle:string,label=sectionTitle):DocumentBuilder {
@@ -1363,7 +1364,39 @@ export class DocumentBuilder {
       ?[...this.blocks,{type:'page-break' as const}]:this.blocks;
     return new DocumentBuilder(this.ctx,
       [...previous,{type:'section-reference',sectionTitle,text:label}],
-      this.chrome,false,this.masters);
+      this.chrome,false,this.masters,this.anchors);
+  }
+  /** Name the first top-level block in a new content group as a link destination.
+   * The target is its real X/Y position after native pagination (not a guessed page).
+   */
+  anchor(id:string,callback:(content:ContentBuilder)=>void):DocumentBuilder{
+    if(typeof id!=='string'|| !/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(id))
+      fail('anchor id must start with a letter and use 1..64 ASCII letters, numbers, _ or -');
+    if(this.anchors.length>=256)fail('too many named anchors');
+    if(this.anchors.some(anchor=>anchor.id===id))fail('duplicate anchor id: '+id);
+    if(typeof callback!=='function')fail('anchor requires a content callback');
+    const content=new ContentBuilder(this.ctx);
+    try{requireSyncResult(callback(content));}finally{content.close();}
+    if(!content.blocks.length||content.blocks[0].type==='page-break')
+      fail('anchor needs visible content as its first block');
+    const previous=this.pendingCoverBreak
+      ?[...this.blocks,{type:'page-break' as const}]:this.blocks;
+    const first=previous.length;
+    return new DocumentBuilder(this.ctx,[...previous,...structuredClone(content.blocks)],
+      this.chrome,false,this.masters,[...this.anchors,{id,block:first}]);
+  }
+  /** Insert a PDF-internal link to an anchored block anywhere in the document. */
+  linkTo(anchorId:string,label=anchorId):DocumentBuilder{
+    if(typeof anchorId!=='string'|| !/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(anchorId))
+      fail('linkTo requires a valid anchor id');
+    ensureText(label);
+    if(label.length>64||label.includes('\n')||label.includes('\r'))
+      fail('linkTo label must fit a 64-character single line');
+    const previous=this.pendingCoverBreak
+      ?[...this.blocks,{type:'page-break' as const}]:this.blocks;
+    return new DocumentBuilder(this.ctx,
+      [...previous,{type:'anchor-reference',anchorId,text:label}],
+      this.chrome,false,this.masters,this.anchors);
   }
   /** Reuse one or many functional nodes while retaining the immutable fluent chain. */
   add(children:VufraChildren):DocumentBuilder{
@@ -1428,29 +1461,35 @@ export class DocumentBuilder {
       .filter(({master})=>master.title!==undefined);
     const blocks:PdfBlock[]=[];
     const starts:number[]=[];
-    let tocRefs=0;
+    const pendingReferences:Array<{index:number;originalBlock:number}>=[];
     for(const [index,block] of this.blocks.entries()){
       starts[index]=blocks.length;
       if(block.type==='toc'){
         if(named.length===0)fail('tableOfContents requires named pageSections');
-        for(const {master,index:section} of named){
-          blocks.push({type:'page-reference',text:master.title!,targetBlock:section});
-          tocRefs++;
+        for(const {master} of named){
+          const at=blocks.length;
+          blocks.push({type:'page-reference',text:master.title!,targetBlock:0});
+          pendingReferences.push({index:at,originalBlock:master.startBlock});
         }
       }else if(block.type==='section-reference'){
         const matching=named.filter(({master})=>master.title===block.sectionTitle);
-        if(matching.length!==1)fail('pageReference needs exactly one named pageSection: '+block.sectionTitle);
-        blocks.push({type:'page-reference',text:block.text,targetBlock:matching[0].index});
-        tocRefs++;
+        if(matching.length!==1)
+          fail('pageReference needs exactly one named pageSection: '+block.sectionTitle);
+        const at=blocks.length;
+        blocks.push({type:'page-reference',text:block.text,targetBlock:0});
+        pendingReferences.push({index:at,originalBlock:matching[0].master.startBlock});
+      }else if(block.type==='anchor-reference'){
+        const matching=this.anchors.filter(anchor=>anchor.id===block.anchorId);
+        if(matching.length!==1)fail('linkTo requires exactly one anchor: '+block.anchorId);
+        const at=blocks.length;
+        blocks.push({type:'page-reference',text:block.text,targetBlock:0});
+        pendingReferences.push({index:at,originalBlock:matching[0].block});
       }else blocks.push(block);
     }
-    if(tocRefs){
-      for(const block of blocks){
-        if(block.type==='page-reference'){
-          const master=this.masters[block.targetBlock];
-          block.targetBlock=starts[master.startBlock];
-        }
-      }
+    for(const ref of pendingReferences){
+      const block=blocks[ref.index];
+      if(block.type!=='page-reference')fail('invalid reference target mapping');
+      block.targetBlock=starts[ref.originalBlock];
     }
     return {title:this.ctx.title,blocks,page:this.ctx.page,fontFaces:this.ctx.fonts,
       ...(Object.keys(this.chrome).length?{pageChrome:this.chrome}:{}),

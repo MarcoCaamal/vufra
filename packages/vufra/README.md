@@ -345,3 +345,10 @@ bookmarks del PDF. ADR-0053 y ADR-0055.
 sobrante de `minHeight` entre 2–32 hijos directos de la caja con espaciadores
 calculados después de medir en Rust, sin dividir párrafos ni recortar el
 contenido. Para el resto se sigue usando la paginación normal. ADR-0054.
+
+`document.anchor('id',scope=>scope.heading('Target'))` registers a block as a
+native PDF destination. `document.linkTo('id','Go to target')` creates a clickable
+reference to the block's real page and Y coordinate after Rust pagination;
+forward references and TOC-driven page shifts are supported. Anchors are
+currently limited to the first top-level block of each anchor callback, not
+inner table rows or individual words (ADR-0056).

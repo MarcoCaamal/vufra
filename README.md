@@ -680,3 +680,14 @@ directos, después de medirlos en Rust. No separa líneas de un párrafo y,
 si el contenido supera la altura mínima, continúa con la paginación normal.
 No equivale a Flexbox CSS completo. Véase
 [ADR-0054](docs/adr/0054-native-box-vertical-distribution.md).
+
+### Precise PDF anchors (Unidad 56)
+
+`document.anchor('totals',b=>b.heading('Totals'))` labels the first emitted
+block of a content group; `document.linkTo('totals','See totals')` creates a
+clickable internal PDF link to its **actual page and vertical position**,
+resolved by the Rust paginator. Forward references are supported, and targets
+remain correct when earlier chapters or TOC entries grow. Anchor IDs are
+unique and limited to 256 per document. See
+[ADR-0056](docs/adr/0056-precise-block-anchors.md) and
+`examples/fluent-anchors.mjs`. Inline text/cell anchors are not yet supported.

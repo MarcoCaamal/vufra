@@ -107,6 +107,7 @@ export type PdfBlock =
   | { type: 'page-break' }
   | {type:'toc'}
   | {type:'section-reference';text:string;sectionTitle:string}
+  | {type:'anchor-reference';text:string;anchorId:string}
   | {type:'page-reference';text:string;targetBlock:number};
 
 /** Repeating page bands. Text may contain {{page}} and {{total}} placeholders. */
