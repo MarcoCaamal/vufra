@@ -8,7 +8,22 @@ import {
   heading, paragraph, box, table
 } from './fluent';
 
-export type TemplateText = string | number | {bind:string};
+export interface TemplateCurrencyFormat {
+  kind:'currencyMinor';
+  /** Currency code and locale must be explicit; no machine-dependent defaults. */
+  currency:string;
+  locale:string;
+}
+export type TemplateText = string | number | {bind:string;format?:TemplateCurrencyFormat};
+export interface TemplateDataField {
+  path:string;
+  type:'string'|'number'|'integer'|'boolean'|'array'|'object';
+  required?:boolean;
+  minLength?:number;
+  maxLength?:number;
+}
+export interface TemplateDataSchema {fields:TemplateDataField[]}
+
 export type TemplateNode =
   | {type:'paragraph';text:TemplateText;style?:VufraStyle}
   | {type:'heading';text:TemplateText;options?:HeadingOptions}
@@ -20,6 +35,7 @@ export type TemplateNode =
 export interface TemplateDefinition {
   schemaVersion:1;
   title:TemplateText;
+  dataSchema?:TemplateDataSchema;
   page?:DocumentOptions['page'];
   margins?:DocumentOptions['margins'];
   content:TemplateNode[];
@@ -80,11 +96,30 @@ function resolve(path:string,data:unknown,locals:Record<string,unknown>):unknown
   }
   return target;
 }
+function formatCurrencyMinor(value:unknown,format:TemplateCurrencyFormat):string{
+  if(!Number.isSafeInteger(value) || Math.abs(value as number)>1_000_000_000_000)
+    fail('currencyMinor requires a safe integer of minor currency units within 1e12');
+  if(!plain(format))fail('currencyMinor format must be a JSON object');
+  allowed(format,['kind','currency','locale']);
+  if(format.kind!=='currencyMinor'||typeof format.currency!=='string'||
+     !/^[A-Z]{3}$/.test(format.currency) || typeof format.locale!=='string' ||
+     !/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/.test(format.locale))
+    fail('currencyMinor needs currency ISO code and explicit locale');
+  if(Intl.NumberFormat.supportedLocalesOf([format.locale]).length!==1)
+    fail('currencyMinor locale is not supported by this runtime');
+  const formatter=new Intl.NumberFormat(format.locale,{style:'currency',currency:format.currency,
+    currencyDisplay:'code'});
+  // ISO 4217 minor units vary: JPY has 0, MXN 2, KWD 3.
+  const decimals=formatter.resolvedOptions().maximumFractionDigits??2;
+  const divisor=10**decimals;
+  return formatter.format((value as number)/divisor);
+}
 function asText(value:TemplateText,data:unknown,locals:Record<string,unknown>):string{
   let text:unknown=value;
   if(plain(value)){
-    allowed(value,['bind']);
+    allowed(value,['bind','format']);
     text=resolve(value.bind as string,data,locals);
+    if(value.format!==undefined)return formatCurrencyMinor(text,value.format as TemplateCurrencyFormat);
   }
   if(typeof text!=='string'&&typeof text!=='number')fail('text binding must be string or number');
   if(typeof text==='number'&&!Number.isFinite(text))fail('nonfinite text number');
@@ -106,8 +141,74 @@ function validateText(value:unknown):void{
   if(typeof value==='string')return;
   if(typeof value==='number' && Number.isFinite(value))return;
   if(!plain(value))fail('template text must be literal or bind');
-  allowed(value,['bind']);
+  allowed(value,['bind','format']);
   validPath(value.bind as string);
+  if(value.format!==undefined){
+    const format=value.format;
+    if(!plain(format))fail('currencyMinor format must be a JSON object');
+    allowed(format,['kind','currency','locale']);
+    if(format.kind!=='currencyMinor'||typeof format.currency!=='string'||
+      !/^[A-Z]{3}$/.test(format.currency)||typeof format.locale!=='string'||
+      !/^[a-zA-Z]{2,3}(-[a-zA-Z0-9]{2,8})*$/.test(format.locale))
+      fail('currencyMinor needs currency ISO code and explicit locale');
+  }
+}
+function validateDataSchema(definition:TemplateDataSchema|undefined):void{
+  if(definition===undefined)return;
+  if(!plain(definition))fail('dataSchema must be an object');
+  allowed(definition,['fields']);
+  if(!Array.isArray(definition.fields)||definition.fields.length>200)
+    fail('dataSchema requires at most 200 fields');
+  const visited=new Set<string>();
+  for(const field of definition.fields){
+    if(!plain(field))fail('dataSchema field must be an object');
+    allowed(field,['path','type','required','minLength','maxLength']);
+    validPath(field.path);
+    if(visited.has(field.path))fail('duplicate dataSchema path');
+    visited.add(field.path);
+    if(!['string','number','integer','boolean','array','object'].includes(field.type))
+      fail('invalid dataSchema type');
+    if(field.required!==undefined && typeof field.required!=='boolean')
+      fail('dataSchema required must be boolean');
+    if(field.minLength!==undefined||field.maxLength!==undefined){
+      if(field.type!=='string'&&field.type!=='array')
+        fail('dataSchema length applies only to string or array');
+      if(field.minLength!==undefined&&(!Number.isInteger(field.minLength)||field.minLength<0||field.minLength>10000))
+        fail('invalid dataSchema minLength');
+      if(field.maxLength!==undefined&&(!Number.isInteger(field.maxLength)||field.maxLength<0||field.maxLength>10000))
+        fail('invalid dataSchema maxLength');
+      if((field.minLength??0)>(field.maxLength??10000))fail('dataSchema minLength exceeds maxLength');
+    }
+  }
+}
+function validateData(data:unknown,schema:TemplateDataSchema|undefined):void{
+  if(!schema)return;
+  for(const field of schema.fields){
+    const keys=validPath(field.path);
+    let target:unknown=data;
+    let missing=false;
+    for(const key of keys){
+      if(!plain(target)||!Object.prototype.hasOwnProperty.call(target,key)){
+        missing=true;break;
+      }
+      target=target[key];
+    }
+    if(missing){
+      if(field.required!==false)fail('required dataSchema field "'+field.path+'" is missing');
+      continue;
+    }
+    const valid=field.type==='array'?Array.isArray(target):
+      field.type==='object'?plain(target):
+      field.type==='integer'?Number.isSafeInteger(target):
+      field.type==='number'?typeof target==='number'&&Number.isFinite(target):
+      typeof target===field.type;
+    if(!valid)fail('dataSchema field "'+field.path+'" must be '+field.type);
+    if(field.minLength!==undefined||field.maxLength!==undefined){
+      const length=(target as string|unknown[]).length;
+      if(length<(field.minLength??0)||length>(field.maxLength??10000))
+        fail('dataSchema field "'+field.path+'" length is out of bounds');
+    }
+  }
 }
 function validateShape(nodes:TemplateNode[],depth:number,budget:{remaining:number}):void{
   if(!Array.isArray(nodes)||depth>16)fail('template depth exceeded');
@@ -217,13 +318,15 @@ export function defineTemplate(definition:TemplateDefinition):{
 }{
   const saved=jsonSnapshot(definition,1024*1024);
   if(!plain(saved)||saved.schemaVersion!==1)fail('unsupported schemaVersion (expected 1)');
-  allowed(saved,['schemaVersion','title','page','margins','content']);
+  allowed(saved,['schemaVersion','title','page','margins','content','dataSchema']);
   if(!Array.isArray(saved.content)||!saved.content.length)fail('template requires content');
   validateText(saved.title);
+  validateDataSchema(saved.dataSchema);
   validateShape(saved.content,0,{remaining:10000});
   return Object.freeze({schemaVersion:1 as const,
     document(engine:Vufra,data:unknown):DocumentBuilder{
       const input=jsonSnapshot(data,4*1024*1024);
+      validateData(input,saved.dataSchema);
       const title=asText(saved.title,input,Object.create(null));
       const content=materialize(saved.content,input,Object.create(null),{remaining:10000},0);
       if(!content.length)fail('template rendered no content');

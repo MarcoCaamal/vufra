@@ -591,3 +591,12 @@ si el encabezado y la primera fila caben juntos en una nueva página,
 el paginador Rust los conserva juntos, también en tablas dentro de cajas.
 Si juntos exceden una página, se mantiene el comportamiento fragmentable.
 Consulta [ADR-0045](docs/adr/0045-page-aware-group-headings.md).
+
+### Validación de datos y monedas en plantillas JSON
+
+Las plantillas `schemaVersion:1` ahora pueden declarar un `dataSchema.fields` con
+paths, tipos, campos requeridos y límites de longitud. Los bindings de texto
+aceptan `format:{kind:'currencyMinor',currency:'MXN',locale:'es-MX'}`:
+los valores se proporcionan como unidades menores enteras y se formatean
+con el número de decimales de la moneda, sin defaults regionales ocultos.
+Véase [ADR-0046](docs/adr/0046-typed-json-data-and-money.md).

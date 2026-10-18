@@ -68,3 +68,60 @@ test('JSON template snapshot isolates source mutation and rejects unsafe executa
   assert.throws(()=>template.document(app,{statement:{title:'A',description:'B'},showIntro:false,departments:[],items:[{sku:'A'}]}),/binding.*missing/);
   assert.throws(()=>template.document(app,{statement:{title:'A',description:'B'},showIntro:false,departments:[],items:Array.from({length:1001},(_,i)=>i)}),/1000/);
 });
+
+test('dataSchema enforces typed paths, bounds and required fields before rendering',()=>{
+  const schema={fields:[
+    {path:'report.name',type:'string',minLength:3,maxLength:30},
+    {path:'report.active',type:'boolean'},
+    {path:'items',type:'array',minLength:1,maxLength:3},
+    {path:'report.count',type:'integer'},
+    {path:'report.optional',type:'string',required:false}
+  ]};
+  const definition={schemaVersion:1,title:{bind:'report.name'},dataSchema:schema,content:[
+    {type:'paragraph',text:{bind:'report.name'}}
+  ]};
+  const compiled=defineTemplate(definition);
+  const good={report:{name:'ALPHA_STATEMENT',active:true,count:2},items:[{sku:'1'}]};
+  assert.match(inspect(compiled.document(app,good).renderSync()).raw,/ALPHA_STATEMENT/);
+  assert.throws(()=>compiled.document(app,{...good,report:{...good.report,active:'true'}}),/report.active.*boolean/);
+  assert.throws(()=>compiled.document(app,{...good,report:{...good.report,count:2.5}}),/report.count.*integer/);
+  assert.throws(()=>compiled.document(app,{...good,report:{...good.report,name:'AB'}}),/report.name.*length/);
+  assert.throws(()=>compiled.document(app,{...good,items:[]}),/items.*length/);
+  assert.throws(()=>compiled.document(app,{...good,report:{name:'ABCD',count:2}}),/report.active.*missing/);
+  assert.throws(()=>defineTemplate({...definition,dataSchema:{fields:[
+    {path:'report.name',type:'string'}, {path:'report.name',type:'number'}
+  ]}}),/duplicate dataSchema path/);
+  assert.throws(()=>defineTemplate({...definition,dataSchema:{fields:[{path:'constructor.x',type:'string'}]}}),/unsafe binding path/);
+  assert.throws(()=>defineTemplate({...definition,dataSchema:{fields:[{path:'a',type:'boolean',maxLength:3}]}}),/length applies/);
+});
+
+test('currencyMinor formatting uses explicit currency and locale with integer minor units',()=>{
+  const definition={schemaVersion:1,title:'MONEY_REPORT',dataSchema:{fields:[
+    {path:'amountMinor',type:'integer'}, {path:'code',type:'string'}
+  ]},content:[
+    {type:'heading',text:'MONEY_BREAKDOWN'},
+    {type:'paragraph',text:{bind:'amountMinor',format:{kind:'currencyMinor',currency:'MXN',locale:'es-MX'}}},
+    {type:'paragraph',text:{bind:'code'}}
+  ]};
+  const template=defineTemplate(definition);
+  const output=inspect(template.document(app,{amountMinor:123450,code:'CENTS_EXACT'}).renderSync());
+  assert.match(output.raw,/CENTS_EXACT/);
+  assert.match(output.raw,/MXN/);
+  assert.match(output.raw,/1,234.50/);
+  assert.throws(()=>template.document(app,{amountMinor:9.5,code:'A'}),/integer/);
+  assert.throws(()=>template.document(app,{amountMinor:1_000_000_000_001,code:'A'}),/currencyMinor.*1e12/);
+  const renderCurrency=(currency,locale,minor)=>{
+    const d={schemaVersion:1,title:'CURRENCY',content:[
+      {type:'paragraph',text:{bind:'amount',format:{kind:'currencyMinor',currency,locale}}}
+    ]};
+    return inspect(defineTemplate(d).document(app,{amount:minor}).renderSync()).raw;
+  };
+  assert.match(renderCurrency('JPY','ja-JP',12345),/12,345/);
+  assert.match(renderCurrency('KWD','en-US',12345),/12\.345/);
+  assert.throws(()=>defineTemplate({...definition,content:[{
+    type:'paragraph',text:{bind:'amountMinor',format:{kind:'currencyMinor',currency:'invalid',locale:'es-MX'}}
+  }]}),/currencyMinor needs currency/);
+  assert.throws(()=>defineTemplate({...definition,content:[{
+    type:'paragraph',text:{bind:'amountMinor',format:{kind:'currencyMinor',currency:'MXN',locale:'bad_locale'}}
+  }]}),/currencyMinor needs currency/);
+});

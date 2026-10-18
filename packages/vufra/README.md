@@ -296,3 +296,10 @@ Las agrupaciones generadas por `groupTableRows()` mantienen el título con su
 primera fila de datos cuando cabe en una página. También se puede usar
 `{text:'Grupo',colSpan:2,keepWithNext:true}` como primera y única celda
 de una fila de grupo (seguida de al menos una fila). `rowSpan` sigue pendiente.
+
+Para validación de datos de plantillas JSON, `defineTemplate` admite
+`dataSchema.fields` con tipos `string|number|integer|boolean|array|object`,
+`required` y límites de longitud para strings/arrays. Los bindings de texto
+admiten formato determinista `{kind:'currencyMinor',currency:'MXN',locale:'es-MX'}`
+con entero de unidades menores; JPY y KWD respetan sus unidades distintas.
+Sin transformaciones ejecutables ni dependencias de terceros para formato.

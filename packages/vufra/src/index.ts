@@ -10,4 +10,4 @@ export type {PdfAbortSignal,PdfEnqueueOptions,PdfQueueErrorCode,
   PdfRenderQueueOptions,PdfRenderQueueStats,PdfJobEvent,PdfJobOutcome} from './queue';
 
 export {defineTemplate} from './template';
-export type {TemplateText,TemplateNode,TemplateDefinition} from './template';
+export type {TemplateText,TemplateNode,TemplateDefinition,TemplateDataField,TemplateDataSchema,TemplateCurrencyFormat} from './template';
