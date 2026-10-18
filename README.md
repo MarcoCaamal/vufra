@@ -627,3 +627,12 @@ y extiende la altura decorada **solo si** su contenido mide menos que
 `minHeight`. Ambos valores afectan la geometría real de Rust, incluso en
 cajas anidadas y documentos multipágina. No hay clipping por `maxHeight`.
 Véase [ADR-0049](docs/adr/0049-box-asymmetric-padding-and-min-height.md).
+
+### Pruebas de regresión del layout
+
+El corpus `packages/vufra/tests/layout-corpus.test.mjs` genera 40 tablas
+reproducibles con `rowSpan`, bordes, padding y cajas asimétricas; Poppler
+comprueba que todas las etiquetas de origen aparecen una sola vez. Se suma a
+las pruebas de coordenadas y píxeles del motor, pero no reemplaza fuzzing
+de seguridad ni golden images multiplataforma. Véase
+[experimento 50](docs/experiments/50-composition-regression-corpus.md).
