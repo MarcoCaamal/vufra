@@ -352,3 +352,9 @@ reference to the block's real page and Y coordinate after Rust pagination;
 forward references and TOC-driven page shifts are supported. Anchors are
 currently limited to the first top-level block of each anchor callback, not
 inner table rows or individual words (ADR-0056).
+
+`pageSection({page:'Letter'},content=>...)` or
+`pageSection({page:{width:920,height:520,margins:{left:92,right:30,top:122,bottom:62}}},...)`
+sets the actual page size and margins for that chapter, while preserving
+native pagination, chapter bookmarks and precise internal links across A4,
+Letter and custom pages. Changes occur only at section boundaries (ADR-0057).

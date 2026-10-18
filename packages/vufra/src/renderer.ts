@@ -130,7 +130,7 @@ export interface PdfPageChrome {
   hideEvenFooter?: boolean;
 }
 /** Page masters begin at a block boundary after a mandatory page break. */
-export interface PdfPageMaster {startBlock:number;pageChrome:PdfPageChrome;title?:string}
+export interface PdfPageMaster {startBlock:number;pageChrome:PdfPageChrome;title?:string;page?:PdfPageOptions}
 export interface PdfDocument {
   /** Shown in the running header. Required, nonempty. */
   title: string;
@@ -176,7 +176,7 @@ type NativeBlock = {
     graphic?: {kind:string;width:number;height:number;color:string}
   }>}>};
 };
-interface NativePageMaster {startBlock:number;chrome:NativeChrome;title?:string}
+interface NativePageMaster {startBlock:number;chrome:NativeChrome;title?:string;page?:NativePage}
 interface NativeChrome {
   header?: NonNullable<NativeBlock['row']>;
   footer?: NonNullable<NativeBlock['row']>;
@@ -588,7 +588,9 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
           breakBefore:boxed.breakBefore,keepWithNext:boxed.keepWithNext,items
         };
     };
-    blocks = document.blocks.map((block): NativeBlock => {
+    blocks = document.blocks.map((block,blockIndex): NativeBlock => {
+      const scope=document.pageMasters?.filter(m=>m&&m.startBlock<=blockIndex).at(-1);
+      const blockPage=scope?.page!==undefined?normalizePage(scope.page):page;
       if (block?.type === 'paragraph' && typeof block.text === 'string') {
         return { kind: 'paragraph', text: block.text };
       }
@@ -648,8 +650,8 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
         return {kind:'list',items:block.items,ordered:block.ordered ?? false};
       }
       if (block?.type === 'rule' || block?.type === 'rectangle') {
-        const printableWidth=page ? page.width-page.marginLeft-page.marginRight : 497;
-        const printableHeight=page ? page.height-page.marginTop-page.marginBottom : 650;
+        const printableWidth=blockPage ? blockPage.width-blockPage.marginLeft-blockPage.marginRight : 497;
+        const printableHeight=blockPage ? blockPage.height-blockPage.marginTop-blockPage.marginBottom : 650;
         if (![block.width,block.height].every(x=>typeof x==='number'&&Number.isFinite(x)&&x>0) ||
             block.width>printableWidth || block.height>printableHeight ||
             (block.type==='rule' && block.height>8)) {
@@ -666,8 +668,8 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
           throw new TypeError('image.data must be a PNG/JPEG Uint8Array of 1..8 MiB');
         }
         if (![image.width,image.height].every(v=>typeof v==='number' && Number.isFinite(v) && v>0) ||
-            image.width > (page ? page.width-page.marginLeft-page.marginRight : 497) ||
-            image.height > (page ? page.height-page.marginTop-page.marginBottom : 650)) {
+            image.width > (blockPage ? blockPage.width-blockPage.marginLeft-blockPage.marginRight : 497) ||
+            image.height > (blockPage ? blockPage.height-blockPage.marginTop-blockPage.marginBottom : 650)) {
           throw new TypeError('image dimensions must fit within the printable page area');
         }
         if (image.fit !== undefined && image.fit !== 'contain' && image.fit !== 'cover') {
@@ -682,8 +684,8 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
           image.height,image.fit ?? 'contain')};
       }
       if(block?.type==='box'){
-        const w=page?page.width-page.marginLeft-page.marginRight:497;
-        const h=page?page.height-page.marginTop-page.marginBottom:650;
+        const w=blockPage?blockPage.width-blockPage.marginLeft-blockPage.marginRight:497;
+        const h=blockPage?blockPage.height-blockPage.marginTop-blockPage.marginBottom:650;
         return {kind:'box',boxData:normalizeBox(block.box,w,h)};
       }
       if(block?.type==='page-reference'){
@@ -695,13 +697,13 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
       }
       if (block?.type === 'page-break') return {kind:'page-break'};
       if(block?.type==='row'){
-        const w=page?page.width-page.marginLeft-page.marginRight:497;
-        const h=page?page.height-page.marginTop-page.marginBottom:650;
+        const w=blockPage?blockPage.width-blockPage.marginLeft-blockPage.marginRight:497;
+        const h=blockPage?blockPage.height-blockPage.marginTop-blockPage.marginBottom:650;
         return {kind:'row',row:normalizeRow(block.row,w,h)};
       }
       throw new TypeError('invalid flow block type or payload');
     });
-    const normalizeChrome=(chrome:PdfPageChrome):NativeChrome=>{
+    const normalizeChrome=(chrome:PdfPageChrome,bandPage:NativePage|undefined=page):NativeChrome=>{
       if (!chrome || typeof chrome !== 'object' || Array.isArray(chrome))
         throw new TypeError('pageChrome must be an object');
       const keys=['header','footer','firstHeader','firstFooter',
@@ -712,8 +714,8 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
       for(const name of keys){
         if(chrome[name]!==undefined){
           result[name]=normalizeRow(chrome[name]!,
-            page?page.width-page.marginLeft-page.marginRight:497,
-            page?page.height-24:818);
+            bandPage?bandPage.width-bandPage.marginLeft-bandPage.marginRight:497,
+            bandPage?bandPage.height-24:818);
         }
       }
       for(const flag of flags){
@@ -744,8 +746,10 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
            entry.title.includes('\r')||entry.title.includes('\n')))
           throw new TypeError('page master title must be a single-line 1..64 character label');
         last=entry.startBlock;
-        return {startBlock:entry.startBlock,chrome:normalizeChrome(entry.pageChrome),
-          ...(entry.title!==undefined?{title:entry.title}:{})};
+        const sectionPage=entry.page!==undefined?normalizePage(entry.page):page;
+        return {startBlock:entry.startBlock,chrome:normalizeChrome(entry.pageChrome,sectionPage),
+          ...(entry.title!==undefined?{title:entry.title}:{}),
+          ...(entry.page!==undefined?{page:sectionPage}:{})};
       });
     }
   }

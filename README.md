@@ -691,3 +691,14 @@ remain correct when earlier chapters or TOC entries grow. Anchor IDs are
 unique and limited to 256 per document. See
 [ADR-0056](docs/adr/0056-precise-block-anchors.md) and
 `examples/fluent-anchors.mjs`. Inline text/cell anchors are not yet supported.
+
+### Page geometry per section (ADR-0057)
+
+`document.pageSection({title:'Finance',page:{width:920,height:520,
+ margins:{left:92,right:30,top:122,bottom:62}}},body=>body.table(...))`
+allows A4, Letter, or custom landscape pages and margins in the **same PDF**.
+Tables and text use each section's real printable width/height; PDF links,
+bookmarks and page numbers still refer to the final pagination. The page size
+changes at a section boundary, not inside a continued table. See
+[ADR-0057](docs/adr/0057-section-paper-geometry.md) and
+`examples/fluent-mixed-pages.mjs`.

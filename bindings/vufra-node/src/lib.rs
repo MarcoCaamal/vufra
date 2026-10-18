@@ -145,6 +145,7 @@ pub struct NodePageMaster {
     pub start_block: u32,
     pub chrome: NodePageChrome,
     pub title: Option<String>,
+    pub page: Option<NodePage>,
 }
 #[napi(object)]
 pub struct NodePageChrome {
@@ -746,6 +747,7 @@ fn parse_document(
                     start_block: section.start_block as usize,
                     chrome: convert_chrome(section.chrome, assets)?,
                     title: section.title,
+                    page: section.page.map(PageGeometry::from),
                 })
             })
             .collect::<napi::Result<Vec<_>>>()?,

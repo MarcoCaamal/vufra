@@ -41,6 +41,8 @@ pub struct PdfPageMaster {
     pub chrome: PdfPageChrome,
     /// Optional chapter title used for PDF outlines/bookmarks.
     pub title: Option<String>,
+    /// Geometry of this section, or document geometry if omitted.
+    pub page: Option<PageGeometry>,
 }
 pub use rich_text::{PdfFontFace, PdfTextRun};
 pub use row::{CellPadding, CellVerticalAlign, PdfRow, PdfRowColumn, PdfRowItem, TableCellLayout};

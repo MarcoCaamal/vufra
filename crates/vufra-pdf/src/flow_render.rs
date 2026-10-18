@@ -98,6 +98,9 @@ fn validate_semantic_input(
                 "invalid PDF outline chapter title",
             ));
         }
+        if master.page.is_some_and(|p| p.validate().is_err()) {
+            return Err(RenderError::InvalidInput("invalid section page geometry"));
+        }
         if master.start_block >= canonical.len()
             || (i > 0 && masters[i - 1].start_block >= master.start_block)
             || (master.start_block > 0
@@ -227,7 +230,7 @@ fn render_writer_flow(
     blocks: &[PdfBlock],
     font_bytes: Arc<Vec<u8>>,
     options: RenderOptions,
-    mut geometry: PageGeometry,
+    geometry: PageGeometry,
     extra_fonts: Vec<PdfFontFace>,
     chrome: Option<&PdfPageChrome>,
     masters: &[PdfPageMaster],
@@ -278,20 +281,58 @@ fn render_writer_flow(
     } else {
         None
     };
+    // Build one page geometry per chapter *before shaping its content*.
+    // A section boundary is a real PageBreak already present in the canonical
+    // tree; we omit that sentinel when paginating each chapter separately.
+    // The rendered fragments keep their global source block indices.
     let base_geometry = geometry;
-    for current in chrome.into_iter().chain(masters.iter().map(|m| &m.chrome)) {
-        let measured = current.reserve(
-            base_geometry,
-            &family,
-            &mut fonts,
-            &mut context,
-            font_registry.as_mut().expect("chrome needs font registry"),
-            cancel,
-        )?;
-        geometry.margin_top = geometry.margin_top.max(measured.margin_top);
-        geometry.margin_bottom = geometry.margin_bottom.max(measured.margin_bottom);
+    let mut ranges: Vec<(usize, usize, PageGeometry)> = Vec::new();
+    let mut block_geometries = vec![base_geometry; blocks.len()];
+    let mut current_geometry = base_geometry;
+    let mut current_chrome = chrome;
+    let mut start_points = Vec::with_capacity(masters.len() + 1);
+    if masters.first().is_none_or(|m| m.start_block > 0) {
+        start_points.push((0, None));
     }
-    geometry.validate()?;
+    for master in masters {
+        start_points.push((master.start_block, Some(master)));
+    }
+    for (index, (start, master)) in start_points.iter().enumerate() {
+        if let Some(master) = master {
+            current_geometry = master.page.unwrap_or(current_geometry);
+            current_chrome = Some(&master.chrome);
+        }
+        current_geometry.validate()?;
+        let mut effective = current_geometry;
+        if let Some(bands) = current_chrome {
+            effective = bands.reserve(
+                current_geometry,
+                &family,
+                &mut fonts,
+                &mut context,
+                font_registry.as_mut().expect("chrome needs font registry"),
+                cancel,
+            )?;
+        }
+        effective.validate()?;
+        let end = if let Some((following, _)) = start_points.get(index + 1) {
+            following.saturating_sub(1)
+        } else {
+            blocks.len()
+        };
+        if end <= *start && !blocks.is_empty() {
+            return Err(RenderError::InvalidInput("empty page section"));
+        }
+        for target in &mut block_geometries[*start..end] {
+            *target = effective;
+        }
+        ranges.push((*start, end, effective));
+        // The forced page-break marker just before a new master still belongs
+        // to the *previous* section's geometry for validation purposes.
+        if end < blocks.len() {
+            block_geometries[end] = effective;
+        }
+    }
     let mut prepared = Vec::with_capacity(blocks.len());
     let mut measurements = Vec::with_capacity(blocks.len());
     let mut total_image_pixels = 0u64;
@@ -324,8 +365,9 @@ fn render_writer_flow(
             ));
         }
     }
-    for block in blocks {
+    for (block_index, block) in blocks.iter().enumerate() {
         check_cancel(cancel)?;
+        let geometry = block_geometries[block_index];
         match block {
             PdfBlock::Box(boxed) => {
                 let prepared_box = boxed.prepare(
@@ -583,14 +625,49 @@ fn render_writer_flow(
             )
         })
         .collect::<Vec<_>>();
-    let pages = paginate_flow_with_keep(&measurements, &keeps, geometry.content_height())
+    let mut pages = Vec::new();
+    let mut page_geometries = Vec::new();
+    for &(start, end, geom) in &ranges {
+        let chapter = paginate_flow_with_keep(
+            &measurements[start..end],
+            &keeps[start..end],
+            geom.content_height(),
+        )
         .map_err(RenderError::InvalidLayout)?;
+        for mut plan in chapter {
+            if plan.fragments.is_empty() {
+                continue;
+            }
+            for fragment in &mut plan.fragments {
+                let block = match fragment {
+                    FlowFragment::Box { block, .. }
+                    | FlowFragment::Graphic { block, .. }
+                    | FlowFragment::Image { block, .. }
+                    | FlowFragment::Spacer { block, .. }
+                    | FlowFragment::Paragraph { block, .. } => block,
+                };
+                *block += start;
+            }
+            page_geometries.push(geom);
+            pages.push(plan);
+        }
+    }
+    if pages.is_empty() && blocks.is_empty() {
+        pages.push(vufra_layout::flow::FlowPage {
+            fragments: Vec::new(),
+            used_height: 0.0,
+        });
+        page_geometries.push(base_geometry);
+    }
+    if pages.is_empty() {
+        return Err(RenderError::InvalidInput("empty document pagination"));
+    }
     // Capture the real top-left position of each block's first rendered
     // fragment. Both chapter links and arbitrary named anchors use these
     // coordinates rather than the generic page-top location.
     let mut locations: Vec<Option<(usize, f32)>> = vec![None; blocks.len()];
     for (page, plan) in pages.iter().enumerate() {
-        let mut y = geometry.margin_top;
+        let mut y = page_geometries[page].margin_top;
         for fragment in &plan.fragments {
             let (block, height) = match fragment {
                 FlowFragment::Box { block, height, .. }
@@ -641,7 +718,7 @@ fn render_writer_flow(
             ))?;
             outline.push_child(OutlineNode::new(
                 title.clone(),
-                XyzDestination::new(page, Point::from_xy(geometry.margin_left, y)),
+                XyzDestination::new(page, Point::from_xy(page_geometries[page].margin_left, y)),
             ));
             has_outline = true;
         }
@@ -651,6 +728,7 @@ fn render_writer_flow(
     let mut prior_master: Option<usize> = None;
     for (index, plan) in pages.iter().enumerate() {
         check_cancel(cancel)?;
+        let geometry = page_geometries[index];
         if let Some(first_fragment) = plan.fragments.first() {
             last_body_block = match first_fragment {
                 FlowFragment::Box { block, .. }
@@ -677,6 +755,11 @@ fn render_writer_flow(
         let mut surface = page.surface();
         let left = geometry.margin_left;
         if active.is_none_or(|c| c.should_draw_default_header_for(index, section_first)) {
+            if title_layout.width() > geometry.content_width() {
+                return Err(RenderError::InvalidInput(
+                    "document title exceeds section printable width",
+                ));
+            }
             surface.draw_text(
                 Point::from_xy(left, geometry.margin_top - 69.0),
                 font.clone(),
@@ -916,8 +999,10 @@ fn render_writer_flow(
         for (rect, target_block, label) in links {
             let (target_page, target_y) = locations[target_block]
                 .ok_or(RenderError::InvalidInput("unresolved link destination"))?;
-            let destination =
-                XyzDestination::new(target_page, Point::from_xy(geometry.margin_left, target_y));
+            let destination = XyzDestination::new(
+                target_page,
+                Point::from_xy(page_geometries[target_page].margin_left, target_y),
+            );
             page.add_annotation(Annotation::new_link(
                 LinkAnnotation::new(rect, Target::Destination(destination.into())),
                 Some(format!("Go to {label}")),
@@ -944,6 +1029,7 @@ mod section_master_tests {
             start_block: 0,
             chrome: PdfPageChrome::default(),
             title: Some("Financial overview".into()),
+            page: None,
         };
         assert!(
             validate_semantic_input(
@@ -1014,6 +1100,7 @@ mod section_master_tests {
             start_block,
             chrome: PdfPageChrome::default(),
             title: None,
+            page: None,
         };
         assert!(
             validate_semantic_input(

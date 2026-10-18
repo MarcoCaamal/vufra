@@ -145,7 +145,7 @@ export interface BarChartOptions {
 export interface ImageOptions { width:number; height:number; fit?: 'contain'|'cover' }
 export interface DividerOptions {height?:number;color?:string;width?:number}
 /** A separate running-band composition selected at a physical page boundary. */
-export type PageMasterOptions = {title?:string}&Partial<Record<
+export type PageMasterOptions = {title?:string;page?:'A4'|'Letter'|PdfPageOptions}&Partial<Record<
   'header'|'footer'|'oddHeader'|'evenHeader'|'oddFooter'|'evenFooter'|'firstHeader'|'firstFooter',
   ((band:PageBandScope)=>void)|null
 >>;
@@ -1225,11 +1225,12 @@ export class DocumentBuilder {
     private readonly blocks:readonly PdfBlock[],
     private readonly chrome:PdfPageChrome={},
     private readonly pendingCoverBreak=false,
-    private readonly masters:readonly {startBlock:number;pageChrome:PdfPageChrome;title?:string}[]=[],
+    private readonly masters:readonly {startBlock:number;pageChrome:PdfPageChrome;title?:string;page?:PdfPageOptions}[]=[],
     private readonly anchors:readonly {id:string;block:number}[]=[]){}
   static create(config:BuilderContext):DocumentBuilder{return new DocumentBuilder(config,[]);}
   private append(f:(scope:ContentBuilder)=>void):DocumentBuilder{
-    const scope=new ContentBuilder(this.ctx);
+    const currentPage=this.masters.at(-1)?.page??this.ctx.page;
+    const scope=new ContentBuilder({...this.ctx,page:currentPage});
     try{requireSyncResult(f(scope));}
     finally {scope.close();}
     if(!scope.blocks.length)return this;
@@ -1305,11 +1306,21 @@ export class DocumentBuilder {
       fail('pageSection requires band options and synchronous content callback');
     const keys=['header','footer','oddHeader','evenHeader','oddFooter','evenFooter',
       'firstHeader','firstFooter'] as const;
-    if(Object.keys(options).some(k=>k!=='title'&&!keys.includes(k as typeof keys[number])))
+    if(Object.keys(options).some(k=>k!=='title'&&k!=='page'&&!keys.includes(k as typeof keys[number])))
       fail('pageSection only supports header/footer and odd/even bands');
     if(options.title!==undefined &&
       (typeof options.title!=='string'||!options.title.trim()||options.title.length>64||options.title.includes('\0')||options.title.includes('\n')||options.title.includes('\r')))
       fail('pageSection title must be nonempty and at most 64 characters');
+    const nextPage=options.page===undefined
+      ?(this.masters.at(-1)?.page??this.ctx.page)
+      :structuredClone(pageOptions({page:options.page}));
+    // Reject bad geometry in both the SDK and the native boundary.
+    const dimensions=area(nextPage);
+    if(!validNumber(dimensions.width)||!validNumber(dimensions.height)||
+       dimensions.width<100||dimensions.height<100 ||
+       (nextPage.width!==undefined && (nextPage.width<250||nextPage.width>2000)) ||
+       (nextPage.height!==undefined && (nextPage.height<250||nextPage.height>2000)))
+      fail('invalid pageSection page geometry');
     const nextChrome:PdfPageChrome=structuredClone(this.chrome);
     // Continue the last section's master unless this is the first section.
     if(this.masters.length)Object.assign(nextChrome,structuredClone(this.masters.at(-1)!.pageChrome));
@@ -1328,12 +1339,12 @@ export class DocumentBuilder {
         firstHeader:'hideFirstHeader',firstFooter:'hideFirstFooter'} as const)[name];
       if(cb===null){delete nextChrome[name];nextChrome[hideName]=true;continue;}
       if(typeof cb!=='function')fail('pageSection bands require a callback or null');
-      const band=new PageBandScope(this.ctx);
+      const band=new PageBandScope({...this.ctx,page:nextPage});
       try{requireSyncResult(cb(band));nextChrome[name]=structuredClone(band.finish());}
       finally{band.close();}
       nextChrome[hideName]=false;
     }
-    const scope=new ContentBuilder(this.ctx);
+    const scope=new ContentBuilder({...this.ctx,page:nextPage});
     try{requireSyncResult(callback(scope));}finally{scope.close();}
     if(!scope.blocks.length)fail('pageSection must have content');
     const breakBefore=(this.blocks.length>0||this.pendingCoverBreak) &&
@@ -1342,7 +1353,7 @@ export class DocumentBuilder {
       ...structuredClone(scope.blocks)];
     const startBlock=this.blocks.length+(breakBefore?1:0);
     return new DocumentBuilder(this.ctx,blocks,this.chrome,false,
-      [...this.masters,{startBlock,pageChrome:nextChrome,title:options.title}],this.anchors);
+      [...this.masters,{startBlock,pageChrome:nextChrome,title:options.title,page:nextPage}],this.anchors);
   }
   /** Automatic paginated chapter index. Place it before named page sections.
    * Exact page numbers are resolved from the Rust paginator, not predicted.
@@ -1375,7 +1386,7 @@ export class DocumentBuilder {
     if(this.anchors.length>=256)fail('too many named anchors');
     if(this.anchors.some(anchor=>anchor.id===id))fail('duplicate anchor id: '+id);
     if(typeof callback!=='function')fail('anchor requires a content callback');
-    const content=new ContentBuilder(this.ctx);
+    const content=new ContentBuilder({...this.ctx,page:this.masters.at(-1)?.page??this.ctx.page});
     try{requireSyncResult(callback(content));}finally{content.close();}
     if(!content.blocks.length||content.blocks[0].type==='page-break')
       fail('anchor needs visible content as its first block');
@@ -1494,7 +1505,8 @@ export class DocumentBuilder {
     return {title:this.ctx.title,blocks,page:this.ctx.page,fontFaces:this.ctx.fonts,
       ...(Object.keys(this.chrome).length?{pageChrome:this.chrome}:{}),
       ...(this.masters.length?{pageMasters:this.masters.map(m=>({
-        startBlock:starts[m.startBlock],pageChrome:structuredClone(m.pageChrome),title:m.title
+        startBlock:starts[m.startBlock],pageChrome:structuredClone(m.pageChrome),title:m.title,
+        page:m.page?structuredClone(m.page):undefined
       }))}:{})};
   }
   /** Deep snapshot for inspection or mutation without changing the builder. */
