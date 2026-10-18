@@ -101,7 +101,12 @@ export interface StyledTableOptions {
   repeatHeader?: true;
 }
 export interface RowOptions { gap?: number }
-export interface ColumnOptions { width?: number | `${number}%` | '*'; align?: 'left' | 'right' }
+export interface ColumnOptions {
+  width?: number | `${number}%` | '*';
+  align?: 'left' | 'center' | 'right';
+  verticalAlign?: CellVerticalAlign;
+  padding?: CellPadding;
+}
 /** A grid track: fixed points, percent of usable width, or flexible fr units. */
 export type GridTrack = number | '*' | `${number}%` | `${number}fr`;
 /** Fit as many equal-width columns as the container can hold, up to six. */
@@ -117,6 +122,17 @@ export interface GridOptions {
   gap?: number;
   /** Extra vertical spacing between grid rows, never after the last row. */
   rowGap?: number;
+}
+export interface BarChartDatum {label:string;value:number}
+export interface BarChartOptions {
+  /** Solid vector fill color or theme color token. */
+  color?:string;
+  /** Height of a PDF-native vector bar in points, 4..32. */
+  barHeight?:number;
+  /** Optional fixed scale, otherwise the maximum datum is used. */
+  maxValue?:number;
+  /** Bar rows are laid out in native horizontal columns, not raster images. */
+  gap?:number;
 }
 export interface ImageOptions { width:number; height:number; fit?: 'contain'|'cover' }
 export interface DividerOptions {height?:number;color?:string;width?:number}
@@ -150,6 +166,7 @@ export type VufraNode =
   | {kind:'box';options:BoxOptions;children:readonly VufraNode[]}
   | {kind:'flow';children:readonly VufraNode[]}
   | {kind:'table';rows:readonly (readonly StyledTableCell[])[];options:StyledTableOptions}
+  | {kind:'bar-chart';data:readonly BarChartDatum[];options:BarChartOptions}
   | {kind:'grid';options:GridOptions;cells:readonly (readonly VufraNode[])[]}
   | {kind:'row';options:RowOptions;columns:readonly VufraColumnNode[]};
 export type VufraChildren=VufraNode|readonly VufraNode[];
@@ -175,7 +192,7 @@ function validateNodes(children:VufraChildren):void {
       if(++count>10_000)fail('component node budget exceeded');
       parents.add(node);
       switch(node.kind){
-        case 'paragraph':case 'heading':case 'image':case 'table':break;
+        case 'paragraph':case 'heading':case 'image':case 'table':case 'bar-chart':break;
         case 'flow':case 'box':walk(node.children,depth+1);break;
         case 'grid':
           for(const cell of node.cells)walk(cell,depth+1);
@@ -210,6 +227,9 @@ export function table(
   rows:readonly (readonly StyledTableCell[])[],options:StyledTableOptions
 ):VufraNode{
   return {kind:'table',rows,options};
+}
+export function barChart(data:readonly BarChartDatum[],options:BarChartOptions={}):VufraNode{
+  return {kind:'bar-chart',data,options};
 }
 export function column(children:VufraChildren,options:ColumnOptions={}):VufraColumnNode{
   return {options,children:nodes(children)};
@@ -597,10 +617,18 @@ class RowScope {
     const fixed=defined.reduce<number>((sum,w)=>sum+(w??0),0);
     const autoCount=defined.filter(w=>w===null).length;
     const auto=autoCount?(usable-fixed)/autoCount:0;
-    const cols:PdfRowColumn[]=this.entries.map((e,i)=>({
-      width:defined[i]??auto,align:e.options.align??'left',
-      items:compileColumnItems(this.ctx,defined[i]??auto,e.items)
-    }));
+    const cols:PdfRowColumn[]=this.entries.map((e,i)=>{
+      const width=defined[i]??auto;
+      const align=e.options.align??'left';
+      if(!['left','center','right'].includes(align))fail('invalid row column align');
+      const enabled=e.options.padding!==undefined||e.options.verticalAlign!==undefined||align==='center';
+      const padding=enabled?cellPadding({top:0,right:0,bottom:0,left:0},e.options.padding):undefined;
+      if(padding && width-padding.left-padding.right<12)fail('row column padding exceeds inner width');
+      return {width,align,
+        ...(padding?{cell:{padding,verticalAlign:verticalAlign(e.options.verticalAlign)}}:{}),
+        items:compileColumnItems(this.ctx,width-(padding?.left??0)-(padding?.right??0),e.items)
+      };
+    });
     if(cols.some(c=>!validNumber(c.width)||c.width<60) ||
       cols.reduce((a,c)=>a+c.width,0)+gap*(cols.length-1)>printableWidth+0.02){
       fail('row columns do not fit printable width (each column needs >=60pt)');
@@ -926,6 +954,7 @@ export class ContentBuilder {
         case 'heading': this.heading(node.text,node.options);break;
         case 'image': this.image(node.data,node.options);break;
         case 'table': this.table(node.rows,node.options);break;
+        case 'bar-chart': this.barChart(node.data,node.options);break;
         case 'flow': this.add(node.children);break;
         case 'box': this.box(node.options,b=>b.add(node.children));break;
         case 'row': this.row(node.options,r=>{
@@ -964,6 +993,42 @@ export class ContentBuilder {
   }
   list(items:string[],options:{ordered?:boolean}={}):this {
     return this.append({type:'list',items,ordered:options.ordered});
+  }
+  /** Accessible labels/values and PDF-native vector rectangles. No raster chart dependency. */
+  barChart(data:readonly BarChartDatum[],options:BarChartOptions={}):this{
+    const maximumRows=this.inBox?250:1000;
+    if(!Array.isArray(data)||data.length<1||data.length>maximumRows)
+      fail('barChart requires 1..'+maximumRows+' records for this container');
+    const barHeight=options.barHeight??12;
+    const gap=options.gap??8;
+    if(!validNumber(barHeight)||barHeight<4||barHeight>32||
+      !validNumber(gap)||gap<0||gap>32)fail('invalid chart bar height or gap');
+    const items=data.map(row=>{
+      if(!row || typeof row.label!=='string'||!row.label.trim()||
+        !validNumber(row.value)||row.value<0)fail('barChart needs label and nonnegative finite value');
+      return {label:row.label,value:row.value};
+    });
+    const maximum=options.maxValue??Math.max(...items.map(d=>d.value));
+    if(!validNumber(maximum)||maximum<=0 || items.some(d=>d.value>maximum))
+      fail('barChart requires positive maximum at least as large as every value');
+    const fill=colorHex(options.color??'#2E5AAC',this.ctx.theme);
+    const labelWidth=Math.max(90,Math.min(170,this.width*0.30));
+    const valueWidth=80;
+    const usable=this.width-labelWidth-valueWidth-24;
+    if(usable<60)fail('barChart requires at least 254pt of available width');
+    for(const [i,datum] of items.entries()){
+      const barWidth=datum.value===0?0:Math.max(1,usable*datum.value/maximum);
+      this.row({gap:12},row=>{
+        row.column({width:labelWidth},c=>c.paragraph(datum.label));
+        row.column({width:usable},c=>{
+          if(barWidth>0)c.rectangle({width:barWidth,height:barHeight,color:fill});
+          else c.spacer(1);
+        });
+        row.column({width:valueWidth,align:'right'},c=>c.paragraph(String(datum.value)));
+      });
+      if(i+1<items.length&&gap>0)this.spacer(gap);
+    }
+    return this;
   }
   image(data:Uint8Array,opts:ImageOptions):this{return this.append(imageBlock(data,opts));}
   spacer(height:number):this{return this.append({type:'spacer',height});}
@@ -1054,13 +1119,17 @@ export class ContentBuilder {
 export class DocumentBuilder {
   private constructor(private readonly ctx:BuilderContext,
     private readonly blocks:readonly PdfBlock[],
-    private readonly chrome:PdfPageChrome={}){}
+    private readonly chrome:PdfPageChrome={},
+    private readonly pendingCoverBreak=false){}
   static create(config:BuilderContext):DocumentBuilder{return new DocumentBuilder(config,[]);}
   private append(f:(scope:ContentBuilder)=>void):DocumentBuilder{
     const scope=new ContentBuilder(this.ctx);
     try{requireSyncResult(f(scope));}
     finally {scope.close();}
-    return new DocumentBuilder(this.ctx,[...this.blocks,...structuredClone(scope.blocks)],
+    if(!scope.blocks.length)return this;
+    const previous=this.pendingCoverBreak
+      ? [...this.blocks,{type:'page-break' as const}]:this.blocks;
+    return new DocumentBuilder(this.ctx,[...previous,...structuredClone(scope.blocks)],
       this.chrome);
   }
   private withBand(
@@ -1080,7 +1149,7 @@ export class DocumentBuilder {
       finally{scope.close();}
       chrome[hideName]=false;
     }
-    return new DocumentBuilder(this.ctx,this.blocks,chrome);
+    return new DocumentBuilder(this.ctx,this.blocks,chrome,this.pendingCoverBreak);
   }
   /** Define a repeating header, or pass null to hide the default header. */
   header(callback:((scope:PageBandScope)=>void)|null):DocumentBuilder{
@@ -1095,6 +1164,16 @@ export class DocumentBuilder {
   }
   firstFooter(callback:((scope:PageBandScope)=>void)|null):DocumentBuilder{
     return this.withBand('firstFooter',callback);
+  }
+  /** Dedicated first-page content: no running header/footer, then one lazy page break.
+   * Does not change the page size or paint full-bleed backgrounds.
+   */
+  coverPage(options:BoxOptions,callback:(b:ContentBuilder)=>void):DocumentBuilder{
+    if(this.blocks.length||this.pendingCoverBreak)fail('coverPage must be the first document content');
+    if(typeof callback!=='function')fail('coverPage requires a synchronous content callback');
+    const framed=this.box({...options,keepTogether:true},callback)
+      .firstHeader(null).firstFooter(null);
+    return new DocumentBuilder(this.ctx,framed.blocks,framed.chrome,true);
   }
   /** Reuse one or many functional nodes while retaining the immutable fluent chain. */
   add(children:VufraChildren):DocumentBuilder{
@@ -1112,6 +1191,9 @@ export class DocumentBuilder {
   }
   list(items:string[],opts?:{ordered?:boolean}):DocumentBuilder{
     return this.append(s=>{s.list(items,opts);});
+  }
+  barChart(data:readonly BarChartDatum[],options:BarChartOptions={}):DocumentBuilder{
+    return this.append(s=>{s.barChart(data,options);});
   }
   image(data:Uint8Array,opts:ImageOptions):DocumentBuilder{
     return this.append(s=>{s.image(data,opts);});

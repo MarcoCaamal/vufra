@@ -567,3 +567,19 @@ No admite código ejecutable ni expresiones arbitrarias en JSON. Véanse
 [ADR-0042](docs/adr/0042-json-template-bindings-v1.md) y
 `examples/fluent-json-template.mjs`. Son fundamentos experimentales:
 faltan schema de datos rico, formatos y migraciones.
+
+## Fundamentos de layout, portada y gráficas (U40–U42)
+
+- `row.column({...})` admite `align:'center'`, `verticalAlign` y padding por lado;
+  los offsets y alturas se miden en Rust (sin reconstruir el compositor).
+- `document.coverPage(options,content=>...)` produce una portada con caja
+  decorada, oculta encabezado/pie recurrente en la primera página y crea el
+  salto hacia el primer bloque siguiente sin página final vacía.
+- `document.barChart([{label:'Enero',value:10}],{color:'#14789F'})` y la función
+  `barChart(data,options)` pintan barras vectoriales con etiquetas y valores
+  seleccionables. Se repaginan con las filas, sin canvas ni navegador.
+
+Véanse [ADR-0043](docs/adr/0043-native-bar-charts-and-column-alignment.md),
+[ADR-0044](docs/adr/0044-cover-page-composition.md) y
+`examples/fluent-visual-report.mjs`. Estos son **hitos parciales**: faltan
+Flexbox avanzado, maestros por sección, charts de línea/pie, QR y códigos.

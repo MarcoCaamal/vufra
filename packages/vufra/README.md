@@ -281,3 +281,13 @@ propiedades propias de datos, sin evaluación. El resultado de
 `.document(vufra,data)` es un `DocumentBuilder` normal. Véase
 `examples/fluent-json-template.mjs` y ADR-0042. Sin dataSchema completo,
 formateadores de moneda/fecha o modo streaming.
+
+## Composición y gráficos sin imágenes raster
+
+`row.column({align:'center',verticalAlign:'center',padding:{left:8,right:8}},... )`
+centra contenido según medidas reales. `document.coverPage(options,callback)`
+genera portada como primer bloque, sin header/footer en la portada y con salto
+único diferido hacia contenido posterior. `document.barChart(data,options)`
+permite barras horizontales vectoriales con texto real de etiquetas/valores.
+Ejemplo ejecutable: `examples/fluent-visual-report.mjs`. Las variantes de
+maestras par/impar, line/pie/QR y box model general siguen pendientes.
