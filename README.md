@@ -651,3 +651,11 @@ no se redefinen. Máximo 16 maestros. Véanse
 [ADR-0051](docs/adr/0051-section-page-masters.md) y
 `examples/fluent-page-masters.mjs`. Sigue pendiente la paginación con
 márgenes o tamaño de hoja independientes por sección y un índice automático.
+
+### Altura máxima estricta de cajas
+
+`box({minHeight:120,maxHeight:220},content=>...)` puede limitar la altura
+intrínseca total (paddings incluidos). Cuando los elementos medidos no caben,
+Vufra devuelve un error claro **antes** de producir un PDF truncado; no existe
+clipping silencioso. Véase
+[ADR-0052](docs/adr/0052-box-max-height-without-clipping.md).

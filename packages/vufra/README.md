@@ -328,3 +328,7 @@ inicia un maestro de página propio para ese capítulo; los encabezados/pies
 pueden sobrescribirse o suprimirse con `null` (también odd/even), heredan los
 anteriores en otros casos y los saltos de página se insertan automáticamente.
 La numeración, el tamaño y los márgenes continúan siendo globales.
+
+`maxHeight` en cajas es una restricción estricta medida por Rust (incluye
+padding, `minHeight` y descendientes): si la caja supera el límite se rechaza,
+no se recorta. Válido para cajas anidadas y límites multipágina. ADR-0052.

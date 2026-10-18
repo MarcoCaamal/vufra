@@ -70,6 +70,7 @@ export interface PdfBox {
   align?:'left'|'center'|'right';
   padding?:number|Partial<{top:number;right:number;bottom:number;left:number}>;
   minHeight?:number;
+  maxHeight?:number;
   radius?:number;
   background?:string;
   border?:{width?:number;color?:string};
@@ -148,7 +149,7 @@ type NativeBlock = {
   image?: { data?: Uint8Array; assetId?:number; width: number; height: number; fit: 'contain' | 'cover' };
   boxData?: {width?:number;align:string;padding:number;
     paddingSides?:{top:number;right:number;bottom:number;left:number};
-    minHeight?:number;radius:number;borderWidth:number;
+    minHeight?:number;maxHeight?:number;radius:number;borderWidth:number;
     borderColor?:string;background?:string;
     keepTogether?:boolean;breakBefore?:boolean;keepWithNext?:boolean;items:Array<{
       kind:string;text?:string;style?:PdfTextStyle;color?:string;height?:number;
@@ -440,6 +441,7 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
         const padding=(paddingSides.top+paddingSides.bottom)/2;
         const innerWidth=(boxed?.width ?? printableWidth)-paddingSides.left-paddingSides.right;
         const minHeight=boxed?.minHeight;
+        const maxHeight=boxed?.maxHeight;
         const borderWidth=boxed?.border?.width??0;
         const radius=boxed?.radius??0;
         if (!boxed || !Array.isArray(boxed.items) || boxed.items.length<1 ||
@@ -447,6 +449,8 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
             Object.values(paddingSides).some(v=>!Number.isFinite(v)||v<0||v>60) ||
             !Number.isFinite(padding) || padding<0 || padding>60 ||
             (minHeight!==undefined && (!Number.isFinite(minHeight) || minHeight<0 || minHeight>printableHeight)) ||
+            (maxHeight!==undefined && (!Number.isFinite(maxHeight)||maxHeight<=0||maxHeight>20000||
+              (minHeight!==undefined&&maxHeight<minHeight))) ||
             !Number.isFinite(borderWidth) || borderWidth<0 || borderWidth>6 ||
             borderWidth>Math.min(...Object.values(paddingSides)) ||
             !Number.isFinite(radius) || radius<0 || radius>24 || radius>Math.min(...Object.values(paddingSides)) ||
@@ -569,7 +573,7 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
           throw new TypeError('unsupported or invalid box item');
         });
         return {
-          width:boxed.width,align:boxed.align??'left',padding,paddingSides,minHeight,
+          width:boxed.width,align:boxed.align??'left',padding,paddingSides,minHeight,maxHeight,
           radius,borderWidth,borderColor:rgb(boxed.border?.color),
           background:rgb(boxed.background),keepTogether:boxed.keepTogether,
           breakBefore:boxed.breakBefore,keepWithNext:boxed.keepWithNext,items

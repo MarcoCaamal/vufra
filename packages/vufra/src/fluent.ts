@@ -157,6 +157,8 @@ export interface BoxOptions {
   padding?:CellPadding;
   /** Minimum decorated height (including padding), in PDF points. */
   minHeight?:number;
+  /** Maximum allowed intrinsic box height; overflow rejects, never clips. */
+  maxHeight?:number;
   /** Corner radius in PDF points (0..24, no larger than padding). */
   radius?:number;
   background?:string;
@@ -1142,6 +1144,9 @@ export class ContentBuilder {
     const padding=boxPadding(opts.padding);
     if(opts.minHeight!==undefined && (!validNumber(opts.minHeight)||opts.minHeight<0))
       fail('box minHeight must be finite and nonnegative');
+    if(opts.maxHeight!==undefined && (!validNumber(opts.maxHeight)||opts.maxHeight<=0||
+      opts.maxHeight>20000 || (opts.minHeight!==undefined&&opts.minHeight>opts.maxHeight)))
+      fail('box maxHeight must be 0..20000pt and at least minHeight');
     const innerWidth=(opts.width??this.width)-padding.left-padding.right;
     if(!Number.isFinite(innerWidth)||innerWidth<60)fail('box content width must be at least 60pt');
     const scope=new ContentBuilder(this.ctx,innerWidth,true);

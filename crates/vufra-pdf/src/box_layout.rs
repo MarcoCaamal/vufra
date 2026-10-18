@@ -50,6 +50,7 @@ pub struct PdfBox {
     pub padding: f32,
     pub padding_sides: Option<crate::CellPadding>,
     pub min_height: Option<f32>,
+    pub max_height: Option<f32>,
     pub border_width: f32,
     pub radius: f32,
     pub border_color: Option<[u8; 3]>,
@@ -344,6 +345,13 @@ impl PdfBox {
         if !w.is_finite()
             || w < 100.0
             || w > width + 0.01
+            || self.max_height.is_some_and(|h| {
+                !h.is_finite()
+                    || h <= 0.0
+                    || h > 20000.0
+                    || self.min_height.is_some_and(|min| min > h)
+                    || h < vertical
+            })
             || self
                 .min_height
                 .is_some_and(|h| !h.is_finite() || h < 0.0 || h > page_height)
@@ -765,7 +773,7 @@ impl PdfBox {
                 .cmp(&b.start_item)
                 .then(b.end_item.cmp(&a.end_item))
         });
-        Ok(PreparedBox {
+        let measured = PreparedBox {
             item_heights: flattened.heights,
             image_pixels: pixels,
             repeat_headers: flattened.headers,
@@ -781,7 +789,16 @@ impl PdfBox {
             border_color: self.border_color,
             background: self.background,
             items,
-        })
+        };
+        if self
+            .max_height
+            .is_some_and(|h| measured.total_height() > h + 0.01)
+        {
+            return Err(RenderError::InvalidInput(
+                "box content exceeds maxHeight; clipping is unsupported",
+            ));
+        }
+        Ok(measured)
     }
 }
 fn rect(
@@ -1379,6 +1396,7 @@ mod tests {
             padding: 12.0,
             padding_sides: None,
             min_height: None,
+            max_height: None,
             border_width: 2.0,
             radius: 0.0,
             border_color: Some([12, 45, 200]),
@@ -1487,6 +1505,7 @@ mod tests {
                 padding: 0.0,
                 padding_sides: None,
                 min_height: None,
+                max_height: None,
                 border_width: 0.0,
                 radius: 0.0,
                 border_color: None,
@@ -1513,6 +1532,7 @@ mod tests {
                 padding: 0.0,
                 padding_sides: None,
                 min_height: None,
+                max_height: None,
                 border_width: 0.0,
                 radius: 0.0,
                 border_color: None,
