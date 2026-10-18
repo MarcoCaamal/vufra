@@ -72,6 +72,11 @@ pub enum PdfBlock {
     Row(PdfRow),
     Box(PdfBox),
     PageBreak,
+    /// Page-resolved entry: validated label and block target, rendered after pagination.
+    PageReference {
+        label: String,
+        target_block: usize,
+    },
     RichParagraph {
         runs: Vec<PdfTextRun>,
         style: TextStyle,

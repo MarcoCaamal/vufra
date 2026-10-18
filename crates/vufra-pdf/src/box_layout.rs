@@ -51,6 +51,7 @@ pub struct PdfBox {
     pub padding_sides: Option<crate::CellPadding>,
     pub min_height: Option<f32>,
     pub max_height: Option<f32>,
+    pub space_between: bool,
     pub border_width: f32,
     pub radius: f32,
     pub border_color: Option<[u8; 3]>,
@@ -371,6 +372,8 @@ impl PdfBox {
             || vertical + 1.0 > page_height
             || self.items.is_empty()
             || self.items.len() > 500
+            || (self.space_between
+                && (self.min_height.is_none() || self.items.len() < 2 || self.items.len() > 32))
         {
             return Err(RenderError::InvalidInput(
                 "invalid box width, padding, border or item count",
@@ -447,9 +450,13 @@ impl PdfBox {
             BoxAlign::Right => page_width - width,
         };
         let mut items = Vec::new();
+        let mut boundaries = Vec::new();
         let mut pixels = 0u64;
         for (idx, item) in self.items.iter().enumerate() {
             check_cancel(cancel)?;
+            if idx > 0 {
+                boundaries.push(items.len());
+            }
             match item {
                 PdfBoxItem::Text { text, style, color } => {
                     let lines = measure_text_lines(
@@ -683,12 +690,30 @@ impl PdfBox {
             let actual = items.iter().map(|item| item.height).sum::<f32>() + vertical;
             let deficit = minimum - actual;
             if deficit > 0.001 {
-                items.push(PreparedItem {
-                    flat_start: 0,
-                    flat_end: 0,
-                    height: deficit,
-                    kind: PreparedContent::Spacer,
-                });
+                if self.space_between {
+                    let each = deficit / boundaries.len() as f32;
+                    // Insert from the end so the original child boundaries
+                    // stay stable. No gap is inserted inside a wrapped line,
+                    // repeated table or nested box.
+                    for at in boundaries.into_iter().rev() {
+                        items.insert(
+                            at,
+                            PreparedItem {
+                                flat_start: 0,
+                                flat_end: 0,
+                                height: each,
+                                kind: PreparedContent::Spacer,
+                            },
+                        );
+                    }
+                } else {
+                    items.push(PreparedItem {
+                        flat_start: 0,
+                        flat_end: 0,
+                        height: deficit,
+                        kind: PreparedContent::Spacer,
+                    });
+                }
             }
         }
         if items.len() > 10_000 {
@@ -1397,6 +1422,7 @@ mod tests {
             padding_sides: None,
             min_height: None,
             max_height: None,
+            space_between: false,
             border_width: 2.0,
             radius: 0.0,
             border_color: Some([12, 45, 200]),
@@ -1506,6 +1532,7 @@ mod tests {
                 padding_sides: None,
                 min_height: None,
                 max_height: None,
+                space_between: false,
                 border_width: 0.0,
                 radius: 0.0,
                 border_color: None,
@@ -1533,6 +1560,7 @@ mod tests {
                 padding_sides: None,
                 min_height: None,
                 max_height: None,
+                space_between: false,
                 border_width: 0.0,
                 radius: 0.0,
                 border_color: None,

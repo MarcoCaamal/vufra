@@ -145,8 +145,8 @@ export interface BarChartOptions {
 export interface ImageOptions { width:number; height:number; fit?: 'contain'|'cover' }
 export interface DividerOptions {height?:number;color?:string;width?:number}
 /** A separate running-band composition selected at a physical page boundary. */
-export type PageMasterOptions = Partial<Record<
-  'header'|'footer'|'oddHeader'|'evenHeader'|'oddFooter'|'evenFooter',
+export type PageMasterOptions = {title?:string}&Partial<Record<
+  'header'|'footer'|'oddHeader'|'evenHeader'|'oddFooter'|'evenFooter'|'firstHeader'|'firstFooter',
   ((band:PageBandScope)=>void)|null
 >>;
 export interface BoxOptions {
@@ -159,6 +159,8 @@ export interface BoxOptions {
   minHeight?:number;
   /** Maximum allowed intrinsic box height; overflow rejects, never clips. */
   maxHeight?:number;
+  /** Distribute free minHeight among child block gaps, never within text lines. */
+  justifyContent?:'start'|'space-between';
   /** Corner radius in PDF points (0..24, no larger than padding). */
   radius?:number;
   background?:string;
@@ -1147,6 +1149,10 @@ export class ContentBuilder {
     if(opts.maxHeight!==undefined && (!validNumber(opts.maxHeight)||opts.maxHeight<=0||
       opts.maxHeight>20000 || (opts.minHeight!==undefined&&opts.minHeight>opts.maxHeight)))
       fail('box maxHeight must be 0..20000pt and at least minHeight');
+    if(opts.justifyContent!==undefined && !['start','space-between'].includes(opts.justifyContent))
+      fail('box justifyContent must be start or space-between');
+    if(opts.justifyContent==='space-between' &&
+      (opts.minHeight===undefined))fail('box space-between requires minHeight');
     const innerWidth=(opts.width??this.width)-padding.left-padding.right;
     if(!Number.isFinite(innerWidth)||innerWidth<60)fail('box content width must be at least 60pt');
     const scope=new ContentBuilder(this.ctx,innerWidth,true);
@@ -1219,7 +1225,7 @@ export class DocumentBuilder {
     private readonly blocks:readonly PdfBlock[],
     private readonly chrome:PdfPageChrome={},
     private readonly pendingCoverBreak=false,
-    private readonly masters:readonly {startBlock:number;pageChrome:PdfPageChrome}[]=[]){}
+    private readonly masters:readonly {startBlock:number;pageChrome:PdfPageChrome;title?:string}[]=[]){}
   static create(config:BuilderContext):DocumentBuilder{return new DocumentBuilder(config,[]);}
   private append(f:(scope:ContentBuilder)=>void):DocumentBuilder{
     const scope=new ContentBuilder(this.ctx);
@@ -1290,24 +1296,35 @@ export class DocumentBuilder {
     return new DocumentBuilder(this.ctx,framed.blocks,framed.chrome,true,this.masters);
   }
   /** Begin a physical page section with its own header/footer master.
-   * Per-section masters override the current base chrome; firstHeader remains
-   * document-first only, while parity counts across the complete PDF.
+   * firstHeader/firstFooter here apply only to the first physical page
+   * of this chapter; parity and page-number tokens remain document-wide.
    */
   pageSection(options:PageMasterOptions,callback:(content:ContentBuilder)=>void):DocumentBuilder{
     if(!options||!plainObject(options)||typeof callback!=='function')
       fail('pageSection requires band options and synchronous content callback');
-    const keys=['header','footer','oddHeader','evenHeader','oddFooter','evenFooter'] as const;
-    if(Object.keys(options).some(k=>!keys.includes(k as typeof keys[number])))
+    const keys=['header','footer','oddHeader','evenHeader','oddFooter','evenFooter',
+      'firstHeader','firstFooter'] as const;
+    if(Object.keys(options).some(k=>k!=='title'&&!keys.includes(k as typeof keys[number])))
       fail('pageSection only supports header/footer and odd/even bands');
+    if(options.title!==undefined &&
+      (typeof options.title!=='string'||!options.title.trim()||options.title.length>64||options.title.includes('\0')))
+      fail('pageSection title must be nonempty and at most 64 characters');
     const nextChrome:PdfPageChrome=structuredClone(this.chrome);
     // Continue the last section's master unless this is the first section.
     if(this.masters.length)Object.assign(nextChrome,structuredClone(this.masters.at(-1)!.pageChrome));
+    // First-page bands do not silently leak into the next chapter.
+    // Section overrides are separate from document-first global chrome.
+    if(this.blocks.length>0||this.masters.length>0){
+      delete nextChrome.firstHeader;delete nextChrome.firstFooter;
+      delete nextChrome.hideFirstHeader;delete nextChrome.hideFirstFooter;
+    }
     for(const name of keys){
       const cb=options[name];
       if(cb===undefined)continue;
       const hideName=({header:'hideHeader',footer:'hideFooter',
         oddHeader:'hideOddHeader',evenHeader:'hideEvenHeader',
-        oddFooter:'hideOddFooter',evenFooter:'hideEvenFooter'} as const)[name];
+        oddFooter:'hideOddFooter',evenFooter:'hideEvenFooter',
+        firstHeader:'hideFirstHeader',firstFooter:'hideFirstFooter'} as const)[name];
       if(cb===null){delete nextChrome[name];nextChrome[hideName]=true;continue;}
       if(typeof cb!=='function')fail('pageSection bands require a callback or null');
       const band=new PageBandScope(this.ctx);
@@ -1324,7 +1341,29 @@ export class DocumentBuilder {
       ...structuredClone(scope.blocks)];
     const startBlock=this.blocks.length+(breakBefore?1:0);
     return new DocumentBuilder(this.ctx,blocks,this.chrome,false,
-      [...this.masters,{startBlock,pageChrome:nextChrome}]);
+      [...this.masters,{startBlock,pageChrome:nextChrome,title:options.title}]);
+  }
+  /** Automatic paginated chapter index. Place it before named page sections.
+   * Exact page numbers are resolved from the Rust paginator, not predicted.
+   */
+  tableOfContents(title='Contents'):DocumentBuilder {
+    ensureText(title);
+    if(title.length>80)fail('tableOfContents heading is too long');
+    if(this.blocks.some(block=>block.type==='toc'))fail('only one table of contents is supported');
+    const doc=this.heading(title);
+    return new DocumentBuilder(this.ctx,
+      [...doc.blocks,{type:'toc'}],doc.chrome,false,doc.masters);
+  }
+  /** Named chapter page reference. Resolved from the real page plan in Rust. */
+  pageReference(sectionTitle:string,label=sectionTitle):DocumentBuilder {
+    ensureText(sectionTitle);ensureText(label);
+    if(sectionTitle.length>64||label.length>64)
+      fail('pageReference labels must be at most 64 characters');
+    const previous=this.pendingCoverBreak
+      ?[...this.blocks,{type:'page-break' as const}]:this.blocks;
+    return new DocumentBuilder(this.ctx,
+      [...previous,{type:'section-reference',sectionTitle,text:label}],
+      this.chrome,false,this.masters);
   }
   /** Reuse one or many functional nodes while retaining the immutable fluent chain. */
   add(children:VufraChildren):DocumentBuilder{
@@ -1383,10 +1422,41 @@ export class DocumentBuilder {
    * Never expose this reference to callers: toDocument returns an isolated copy.
    */
   private renderInput():PdfDocument {
-    return {title:this.ctx.title,blocks:this.blocks as PdfBlock[],
-      page:this.ctx.page,fontFaces:this.ctx.fonts,
+    // Expand the authoring-only TOC before normalization. Both the section
+    // boundaries and their references are remapped to the final block indices.
+    const named=this.masters.map((master,index)=>({master,index}))
+      .filter(({master})=>master.title!==undefined);
+    const blocks:PdfBlock[]=[];
+    const starts:number[]=[];
+    let tocRefs=0;
+    for(const [index,block] of this.blocks.entries()){
+      starts[index]=blocks.length;
+      if(block.type==='toc'){
+        if(named.length===0)fail('tableOfContents requires named pageSections');
+        for(const {master,index:section} of named){
+          blocks.push({type:'page-reference',text:master.title!,targetBlock:section});
+          tocRefs++;
+        }
+      }else if(block.type==='section-reference'){
+        const matching=named.filter(({master})=>master.title===block.sectionTitle);
+        if(matching.length!==1)fail('pageReference needs exactly one named pageSection: '+block.sectionTitle);
+        blocks.push({type:'page-reference',text:block.text,targetBlock:matching[0].index});
+        tocRefs++;
+      }else blocks.push(block);
+    }
+    if(tocRefs){
+      for(const block of blocks){
+        if(block.type==='page-reference'){
+          const master=this.masters[block.targetBlock];
+          block.targetBlock=starts[master.startBlock];
+        }
+      }
+    }
+    return {title:this.ctx.title,blocks,page:this.ctx.page,fontFaces:this.ctx.fonts,
       ...(Object.keys(this.chrome).length?{pageChrome:this.chrome}:{}),
-      ...(this.masters.length?{pageMasters:this.masters.map(m=>structuredClone(m))}:{})};
+      ...(this.masters.length?{pageMasters:this.masters.map(m=>({
+        startBlock:starts[m.startBlock],pageChrome:structuredClone(m.pageChrome),title:m.title
+      }))}:{})};
   }
   /** Deep snapshot for inspection or mutation without changing the builder. */
   toDocument():PdfDocument {

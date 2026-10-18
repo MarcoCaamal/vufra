@@ -23,6 +23,7 @@ use vufra_pdf::{
 #[napi(object)]
 pub struct NodeBlock {
     pub kind: String,
+    pub target_block: Option<u32>,
     pub text: Option<String>,
     pub runs: Option<Vec<NodeRichRun>>,
     pub image: Option<NodeImage>,
@@ -129,6 +130,7 @@ pub struct NodeBox {
     pub padding_sides: Option<NodeCellPadding>,
     pub min_height: Option<f64>,
     pub max_height: Option<f64>,
+    pub space_between: Option<bool>,
     pub border_width: f64,
     pub radius: f64,
     pub border_color: Option<String>,
@@ -416,6 +418,7 @@ fn to_box_depth(input: NodeBox, depth: usize, assets: &NativeAssets) -> napi::Re
         }),
         min_height: input.min_height.map(|h| h as f32),
         max_height: input.max_height.map(|h| h as f32),
+        space_between: input.space_between.unwrap_or(false),
         border_width: input.border_width as f32,
         radius: input.radius as f32,
         border_color: optional_rgb(input.border_color)?,
@@ -753,6 +756,12 @@ fn parse_document(
                 )),
                 "page-break" if item.row.is_none() && item.text.is_none() => {
                     Ok(PdfBlock::PageBreak)
+                }
+                "page-reference" if item.text.is_some() && item.target_block.is_some() => {
+                    Ok(PdfBlock::PageReference {
+                        label: item.text.expect("page reference text checked"),
+                        target_block: item.target_block.expect("reference target checked") as usize,
+                    })
                 }
                 "box" if item.box_data.is_some() => Ok(PdfBlock::Box(to_box(
                     item.box_data.expect("box checked"),

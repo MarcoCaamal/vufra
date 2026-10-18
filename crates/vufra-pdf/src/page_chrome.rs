@@ -29,10 +29,10 @@ pub struct PdfPageChrome {
 }
 
 impl PdfPageChrome {
-    /// Select by one-based printed page parity after first-page overrides.
-    /// Per-parity alternatives override base bands, including base suppression.
-    fn band(&self, index: usize, header: bool) -> Option<&PdfRow> {
-        if index == 0 {
+    /// Band selection depends on a section-first flag computed after pagination.
+    /// Parity and tokens still use the absolute printed page index.
+    fn band_for(&self, index: usize, section_first: bool, header: bool) -> Option<&PdfRow> {
+        if section_first {
             if (header && self.hide_first_header) || (!header && self.hide_first_footer) {
                 return None;
             }
@@ -73,8 +73,12 @@ impl PdfPageChrome {
             self.footer.as_ref()
         }
     }
-    fn hidden_on_page(&self, index: usize, header: bool) -> bool {
-        if index == 0 {
+    #[cfg(test)]
+    fn band(&self, index: usize, header: bool) -> Option<&PdfRow> {
+        self.band_for(index, index == 0, header)
+    }
+    fn hidden_on_page_for(&self, index: usize, section_first: bool, header: bool) -> bool {
+        if section_first {
             if (header && self.hide_first_header) || (!header && self.hide_first_footer) {
                 return true;
             }
@@ -101,11 +105,19 @@ impl PdfPageChrome {
             self.hide_footer
         }
     }
-    pub(crate) fn should_draw_default_header(&self, page: usize) -> bool {
-        !self.hidden_on_page(page, true) && self.band(page, true).is_none()
+    pub(crate) fn should_draw_default_header_for(&self, page: usize, first: bool) -> bool {
+        !self.hidden_on_page_for(page, first, true) && self.band_for(page, first, true).is_none()
     }
+    pub(crate) fn should_draw_default_footer_for(&self, page: usize, first: bool) -> bool {
+        !self.hidden_on_page_for(page, first, false) && self.band_for(page, first, false).is_none()
+    }
+    #[cfg(test)]
+    pub(crate) fn should_draw_default_header(&self, page: usize) -> bool {
+        self.should_draw_default_header_for(page, page == 0)
+    }
+    #[cfg(test)]
     pub(crate) fn should_draw_default_footer(&self, page: usize) -> bool {
-        !self.hidden_on_page(page, false) && self.band(page, false).is_none()
+        self.should_draw_default_footer_for(page, page == 0)
     }
     fn substitute(source: &str, page: usize, total: usize) -> String {
         source
@@ -196,6 +208,7 @@ impl PdfPageChrome {
         &self,
         index: usize,
         total: usize,
+        section_first: bool,
         geom: PageGeometry,
         surface: &mut Surface,
         font: &Font,
@@ -207,7 +220,7 @@ impl PdfPageChrome {
     ) -> Result<(), RenderError> {
         for is_header in [true, false] {
             check_cancel(cancel)?;
-            let Some(band) = self.band(index, is_header) else {
+            let Some(band) = self.band_for(index, section_first, is_header) else {
                 continue;
             };
             let resolved = Self::on_page(band, index + 1, total);

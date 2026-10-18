@@ -68,7 +68,7 @@ test('sections inherit previously selected bands and support explicit suppressio
 });
 test('section masters reject invalid boundaries and invalid band declarations',()=>{
  assert.throws(()=>app.document().pageSection({header:123},b=>b.paragraph('A')),/callback or null/);
- assert.throws(()=>app.document().pageSection({firstHeader:h=>h.text('A')},b=>b.paragraph('A')),/only supports/);
+ assert.throws(()=>app.document().pageSection({firstHeader:'invalid'},b=>b.paragraph('A')),/callback or null/);
  assert.throws(()=>app.document().pageSection({},b=>{}),/must have content/);
  const original=app.document({page:'Letter'})
   .pageSection({header:h=>h.text('A')},b=>b.paragraph('A'))
@@ -118,4 +118,55 @@ test('section first pages remain physical odd/even parity and document-first ove
   const p=i+1;
   assert.match(pages[i],new RegExp((p%2?'ODD':'EVEN')+'_PAGE_'+p));
  }
+});
+
+
+test('first-page chapter bands override only their own opening page, not continuations or later chapters',()=>{
+ const d=app.document({page:'Letter',title:'Chapters with openers'})
+  .coverPage({padding:20,minHeight:210},b=>b.heading('FRONT_COVER_ONLY'))
+  .pageSection({header:h=>h.text('CHAPTER_ONE_REGULAR'),
+    firstHeader:h=>h.text('CHAPTER_ONE_OPENING_{{page}}'),
+    firstFooter:f=>f.text('CHAPTER_ONE_FOOT_{{page}}')},b=>b
+    .heading('CHAPTER_ONE_TITLE').table(rows('ONE',90),{columns:cols}))
+  .pageSection({header:h=>h.text('CHAPTER_TWO_REGULAR'),
+    firstHeader:null,firstFooter:null},b=>b
+    .heading('CHAPTER_TWO_TITLE').table(rows('TWO',110),{columns:cols}))
+  .pageSection({header:h=>h.text('CHAPTER_THREE_REGULAR'),
+    firstHeader:h=>h.text('CHAPTER_THREE_OPENING_{{page}}')},b=>b
+    .heading('CHAPTER_THREE_TITLE').table(rows('THREE',85),{columns:cols}));
+ const p=readPages(d.renderSync());
+ const first1=p.findIndex(t=>t.includes('CHAPTER_ONE_TITLE'));
+ const first2=p.findIndex(t=>t.includes('CHAPTER_TWO_TITLE'));
+ const first3=p.findIndex(t=>t.includes('CHAPTER_THREE_TITLE'));
+ assert.equal(first1,1);
+ assert.ok(first2>first1+1 && first3>first2+1);
+ assert.match(p[first1],new RegExp('CHAPTER_ONE_OPENING_'+(first1+1)));
+ assert.doesNotMatch(p[first1],/CHAPTER_ONE_REGULAR/);
+ for(let i=first1+1;i<first2;i++){
+  assert.match(p[i],/CHAPTER_ONE_REGULAR/);
+  assert.doesNotMatch(p[i],/OPENING|CHAPTER_ONE_FOOT/);
+ }
+ assert.doesNotMatch(p[first2],/CHAPTER_TWO_REGULAR|OPENING|CHAPTER_ONE_OPENING/);
+ for(let i=first2+1;i<first3;i++)assert.match(p[i],/CHAPTER_TWO_REGULAR/);
+ assert.match(p[first3],new RegExp('CHAPTER_THREE_OPENING_'+(first3+1)));
+ assert.doesNotMatch(p[first3],/CHAPTER_THREE_REGULAR|CHAPTER_ONE_OPENING/);
+ for(let i=first3+1;i<p.length;i++)assert.match(p[i],/CHAPTER_THREE_REGULAR/);
+ assert.equal((p.join('').match(/ONE_\d{3}/g)??[]).length,90);
+ assert.equal((p.join('').match(/TWO_\d{3}/g)??[]).length,110);
+ assert.equal((p.join('').match(/THREE_\d{3}/g)??[]).length,85);
+});
+
+
+test('a global firstHeader still applies to a section starting on document page one',()=>{
+ const pdf=app.document({page:'Letter',title:'Global first'})
+  .header(h=>h.text('GLOBAL_REGULAR'))
+  .firstHeader(h=>h.text('GLOBAL_FIRST'))
+  .pageSection({title:'Opening section'},b=>b
+    .heading('FIRST_SECTION_BODY').table(rows('FIRST',80),{columns:cols}));
+ const pages=readPages(pdf.renderSync());
+ assert.ok(pages.length>=2);
+ assert.match(pages[0],/GLOBAL_FIRST/);
+ assert.doesNotMatch(pages[0],/GLOBAL_REGULAR/);
+ assert.match(pages[1],/GLOBAL_REGULAR/);
+ assert.doesNotMatch(pages[1],/GLOBAL_FIRST/);
 });

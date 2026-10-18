@@ -32,6 +32,10 @@ enum PreparedBlock {
         style: TextStyle,
     },
     Spacer,
+    PageReference {
+        label: String,
+        target_block: usize,
+    },
     Image(PreparedImage),
     Graphic,
     Row(super::row::PreparedRow),
@@ -141,6 +145,21 @@ fn validate_writer_blocks(blocks: &[PdfBlock]) -> Result<(), RenderError> {
             {
                 return Err(RenderError::InvalidInput(
                     "list requires 1..1000 nonempty items",
+                ));
+            }
+            PdfBlock::PageReference {
+                label,
+                target_block,
+            } if label.trim().is_empty()
+                || label.len() > 64
+                || *target_block >= blocks.len()
+                || matches!(
+                    blocks[*target_block],
+                    PdfBlock::PageBreak | PdfBlock::PageReference { .. }
+                ) =>
+            {
+                return Err(RenderError::InvalidInput(
+                    "invalid table of contents reference",
                 ));
             }
             PdfBlock::Row(row) => row.validate_structure(2000.0, 2000.0)?,
@@ -326,6 +345,30 @@ fn render_writer_flow(
             PdfBlock::PageBreak => {
                 measurements.push(FlowBlock::PageBreak);
                 prepared.push(PreparedBlock::Spacer);
+            }
+            PdfBlock::PageReference {
+                label,
+                target_block,
+            } => {
+                let shaped = measure_text_lines(
+                    label,
+                    geometry.content_width() - 65.0,
+                    &family,
+                    &mut fonts,
+                    &mut context,
+                    options.text_size,
+                    cancel,
+                )?;
+                if shaped.len() != 1 || label.contains('\n') || label.contains('\r') {
+                    return Err(RenderError::InvalidInput(
+                        "table of contents label must fit one line",
+                    ));
+                }
+                measurements.push(FlowBlock::Graphic { height: 26.0 });
+                prepared.push(PreparedBlock::PageReference {
+                    label: label.clone(),
+                    target_block: *target_block,
+                });
             }
             PdfBlock::RichParagraph { runs, style, .. } => {
                 style.validate(geometry.content_height())?;
@@ -530,8 +573,49 @@ fn render_writer_flow(
         .collect::<Vec<_>>();
     let pages = paginate_flow_with_keep(&measurements, &keeps, geometry.content_height())
         .map_err(RenderError::InvalidLayout)?;
+    let mut page_of = vec![None; blocks.len()];
+    for (page, plan) in pages.iter().enumerate() {
+        for fragment in &plan.fragments {
+            let block = match fragment {
+                FlowFragment::Box { block, .. }
+                | FlowFragment::Graphic { block, .. }
+                | FlowFragment::Image { block, .. }
+                | FlowFragment::Spacer { block, .. }
+                | FlowFragment::Paragraph { block, .. } => *block,
+            };
+            if page_of[block].is_none() {
+                page_of[block] = Some(page + 1);
+            }
+        }
+    }
+    for block in blocks {
+        if let PdfBlock::PageReference { target_block, .. } = block {
+            let Some(number) = page_of[*target_block] else {
+                return Err(RenderError::InvalidInput(
+                    "page reference target has no rendered page",
+                ));
+            };
+            // The page number is drawn in a reserved right-hand track.
+            // Never overflow that track silently for unusually huge reports.
+            let shaped = measure_text_lines(
+                &number.to_string(),
+                42.0,
+                &family,
+                &mut fonts,
+                &mut context,
+                options.text_size,
+                cancel,
+            )?;
+            if shaped.len() != 1 {
+                return Err(RenderError::InvalidInput(
+                    "page reference number exceeds reserved width",
+                ));
+            }
+        }
+    }
     let mut output = KrillaDocument::new();
     let mut last_body_block = 0usize;
+    let mut prior_master: Option<usize> = None;
     for (index, plan) in pages.iter().enumerate() {
         check_cancel(cancel)?;
         if let Some(first_fragment) = plan.fragments.first() {
@@ -543,18 +627,20 @@ fn render_writer_flow(
                 | FlowFragment::Paragraph { block, .. } => *block,
             };
         }
-        let active = masters
+        let master_index = masters
             .iter()
-            .rev()
-            .find(|master| master.start_block <= last_body_block)
-            .map(|master| &master.chrome)
-            .or(chrome);
+            .rposition(|master| master.start_block <= last_body_block);
+        // Chapter first-page is detected from a master transition, not the
+        // first block of its table (that block can continue over many pages).
+        let section_first = index == 0 || master_index.is_some() && master_index != prior_master;
+        prior_master = master_index;
+        let active = master_index.map(|i| &masters[i].chrome).or(chrome);
         let settings = PageSettings::from_wh(geometry.width, geometry.height)
             .ok_or(RenderError::InvalidInput("invalid paper size"))?;
         let mut page = output.start_page_with(settings);
         let mut surface = page.surface();
         let left = geometry.margin_left;
-        if active.is_none_or(|c| c.should_draw_default_header(index)) {
+        if active.is_none_or(|c| c.should_draw_default_header_for(index, section_first)) {
             surface.draw_text(
                 Point::from_xy(left, geometry.margin_top - 69.0),
                 font.clone(),
@@ -572,7 +658,7 @@ fn render_writer_flow(
                 TextDirection::Auto,
             );
         }
-        if active.is_none_or(|c| c.should_draw_default_footer(index)) {
+        if active.is_none_or(|c| c.should_draw_default_footer_for(index, section_first)) {
             surface.draw_text(
                 Point::from_xy(left, geometry.height - geometry.margin_bottom * 0.4),
                 font.clone(),
@@ -586,6 +672,7 @@ fn render_writer_flow(
             chrome.draw(
                 index,
                 pages.len(),
+                section_first,
                 geometry,
                 &mut surface,
                 &font,
@@ -654,6 +741,32 @@ fn render_writer_flow(
                                 (left, y),
                                 cancel,
                             )?;
+                        }
+                        (
+                            PreparedBlock::PageReference {
+                                label,
+                                target_block,
+                            },
+                            _,
+                        ) => {
+                            let number = page_of[*target_block]
+                                .ok_or(RenderError::InvalidInput("unresolved page reference"))?;
+                            surface.draw_text(
+                                Point::from_xy(left, y + 15.0),
+                                font.clone(),
+                                options.text_size,
+                                label,
+                                false,
+                                TextDirection::Auto,
+                            );
+                            surface.draw_text(
+                                Point::from_xy(left + geometry.content_width() - 42.0, y + 15.0),
+                                font.clone(),
+                                options.text_size,
+                                &number.to_string(),
+                                false,
+                                TextDirection::Auto,
+                            );
                         }
                         (_, PdfBlock::Graphic(graphic)) => graphic.draw(&mut surface, left, y)?,
                         _ => {}
@@ -769,6 +882,44 @@ fn render_writer_flow(
 #[cfg(test)]
 mod section_master_tests {
     use super::*;
+    #[test]
+    fn page_references_require_valid_existing_non_reference_targets() {
+        let good = vec![
+            PdfBlock::PageReference {
+                label: "Finance".into(),
+                target_block: 1,
+            },
+            PdfBlock::Paragraph("Financial chapter".into()),
+        ];
+        assert!(validate_writer_blocks(&good).is_ok());
+        assert!(
+            validate_writer_blocks(&[
+                PdfBlock::PageReference {
+                    label: "Missing".into(),
+                    target_block: 999
+                },
+                PdfBlock::Paragraph("Chapter".into()),
+            ])
+            .is_err()
+        );
+        assert!(
+            validate_writer_blocks(&[PdfBlock::PageReference {
+                label: "Self".into(),
+                target_block: 0
+            },])
+            .is_err()
+        );
+        assert!(
+            validate_writer_blocks(&[
+                PdfBlock::PageReference {
+                    label: "".into(),
+                    target_block: 1
+                },
+                PdfBlock::Paragraph("Chapter".into()),
+            ])
+            .is_err()
+        );
+    }
     #[test]
     fn section_masters_require_monotone_page_break_boundaries() {
         let canonical = vec![

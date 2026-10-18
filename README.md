@@ -659,3 +659,23 @@ intrínseca total (paddings incluidos). Cuando los elementos medidos no caben,
 Vufra devuelve un error claro **antes** de producir un PDF truncado; no existe
 clipping silencioso. Véase
 [ADR-0052](docs/adr/0052-box-max-height-without-clipping.md).
+
+### Índice automático y aperturas por capítulo
+
+`pageSection({title:'Finanzas',firstHeader:h=>h.text('Apertura'),
+header:h=>h.text('Finanzas')},content=>...)` aplica una banda solo en el primer
+folio de ese capítulo y otra a los siguientes. `tableOfContents('Índice')`
+genera entradas paginadas para todas las secciones con `title`, y
+`pageReference('Finanzas','Consultar finanzas')` imprime una referencia con el
+número de página **real**, calculado por Rust después de paginar. Las referencias
+todavía no son hipervínculos clicables. Véase
+[ADR-0053](docs/adr/0053-section-openers-and-native-toc.md).
+
+### Distribución vertical de cajas (fundación U40)
+
+`box({minHeight:260,justifyContent:'space-between'},b=>b.paragraph('Inicio')
+.paragraph('Final'))` reparte el espacio vertical sobrante entre los hijos
+directos, después de medirlos en Rust. No separa líneas de un párrafo y,
+si el contenido supera la altura mínima, continúa con la paginación normal.
+No equivale a Flexbox CSS completo. Véase
+[ADR-0054](docs/adr/0054-native-box-vertical-distribution.md).

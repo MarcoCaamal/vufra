@@ -296,6 +296,7 @@ impl PdfRow {
             padding_sides: None,
             min_height: None,
             max_height: None,
+            space_between: false,
             border_width: 0.0,
             radius: 0.0,
             border_color: None,

@@ -332,3 +332,15 @@ La numeración, el tamaño y los márgenes continúan siendo globales.
 `maxHeight` en cajas es una restricción estricta medida por Rust (incluye
 padding, `minHeight` y descendientes): si la caja supera el límite se rechaza,
 no se recorta. Válido para cajas anidadas y límites multipágina. ADR-0052.
+
+`pageSection` admite `firstHeader`/`firstFooter` específicos del primer folio
+de cada capítulo, sin heredarlos en capítulos posteriores. Al dar `title` a
+las secciones, `.tableOfContents('Índice')` crea un índice con números reales,
+y `.pageReference('Finanzas','Consultar finanzas')` inserta una referencia a ese
+capítulo. Los números se resuelven tras la paginación de Rust; por ahora son
+texto y no anotaciones PDF clicables. ADR-0053.
+
+`box({minHeight:260,justifyContent:'space-between'},...)` distribuye el alto
+sobrante de `minHeight` entre 2–32 hijos directos de la caja con espaciadores
+calculados después de medir en Rust, sin dividir párrafos ni recortar el
+contenido. Para el resto se sigue usando la paginación normal. ADR-0054.

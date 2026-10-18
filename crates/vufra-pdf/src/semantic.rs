@@ -32,6 +32,7 @@ pub struct ContentFrame {
     pub padding_sides: Option<crate::CellPadding>,
     pub min_height: Option<f32>,
     pub max_height: Option<f32>,
+    pub space_between: bool,
     pub border_width: f32,
     pub radius: f32,
     pub border_color: Option<[u8; 3]>,
@@ -49,6 +50,7 @@ impl Default for ContentFrame {
             padding_sides: None,
             min_height: None,
             max_height: None,
+            space_between: false,
             border_width: 0.0,
             radius: 0.0,
             border_color: None,
@@ -68,6 +70,7 @@ impl From<&PdfBox> for ContentFrame {
             padding_sides: b.padding_sides,
             min_height: b.min_height,
             max_height: b.max_height,
+            space_between: b.space_between,
             border_width: b.border_width,
             radius: b.radius,
             border_color: b.border_color,
@@ -134,6 +137,10 @@ pub enum ContentNode {
         ordered: bool,
     },
     PageBreak,
+    PageReference {
+        label: String,
+        target_block: usize,
+    },
     /// Non-constructible source data: only the renderer creates real shaped lines.
     #[doc(hidden)]
     PreparedRichLine(PreparedRichFragment),
@@ -199,6 +206,13 @@ impl From<PdfBlock> for ContentNode {
                 ordered,
             },
             PdfBlock::PageBreak => Self::PageBreak,
+            PdfBlock::PageReference {
+                label,
+                target_block,
+            } => Self::PageReference {
+                label,
+                target_block,
+            },
         }
     }
 }
@@ -326,6 +340,13 @@ impl TryFrom<ContentNode> for PdfBlock {
                 ordered,
             }),
             ContentNode::PageBreak => Ok(Self::PageBreak),
+            ContentNode::PageReference {
+                label,
+                target_block,
+            } => Ok(Self::PageReference {
+                label,
+                target_block,
+            }),
             _ => Err(not_allowed()),
         }
     }
@@ -371,6 +392,7 @@ fn box_from_parts(frame: ContentFrame, children: Vec<ContentNode>) -> Result<Pdf
         padding_sides: frame.padding_sides,
         min_height: frame.min_height,
         max_height: frame.max_height,
+        space_between: frame.space_between,
         border_width: frame.border_width,
         radius: frame.radius,
         border_color: frame.border_color,
@@ -530,6 +552,7 @@ impl SemanticBudget {
         }
         match node {
             ContentNode::Text { text, .. } => self.add_text(text.len())?,
+            ContentNode::PageReference { label, .. } => self.add_text(label.len())?,
             ContentNode::Rich { runs, .. } => {
                 if runs.len() > 1000 {
                     return Err(RenderError::InvalidInput("invalid rich text runs"));
@@ -729,6 +752,7 @@ mod tests {
             padding_sides: None,
             min_height: None,
             max_height: None,
+            space_between: false,
             border_width: 2.,
             radius: 8.,
             border_color: Some([1, 2, 3]),
@@ -846,6 +870,7 @@ mod tests {
                 padding_sides: None,
                 min_height: None,
                 max_height: None,
+                space_between: false,
                 border_width: 0.,
                 radius: 0.,
                 border_color: None,

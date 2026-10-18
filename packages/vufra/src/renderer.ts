@@ -71,6 +71,7 @@ export interface PdfBox {
   padding?:number|Partial<{top:number;right:number;bottom:number;left:number}>;
   minHeight?:number;
   maxHeight?:number;
+  justifyContent?:'start'|'space-between';
   radius?:number;
   background?:string;
   border?:{width?:number;color?:string};
@@ -103,7 +104,10 @@ export type PdfBlock =
   | ({ type: 'image' } & PdfImage)
   | { type: 'row'; row: PdfRow }
   | { type: 'box'; box: PdfBox }
-  | { type: 'page-break' };
+  | { type: 'page-break' }
+  | {type:'toc'}
+  | {type:'section-reference';text:string;sectionTitle:string}
+  | {type:'page-reference';text:string;targetBlock:number};
 
 /** Repeating page bands. Text may contain {{page}} and {{total}} placeholders. */
 export interface PdfPageChrome {
@@ -125,7 +129,7 @@ export interface PdfPageChrome {
   hideEvenFooter?: boolean;
 }
 /** Page masters begin at a block boundary after a mandatory page break. */
-export interface PdfPageMaster {startBlock:number;pageChrome:PdfPageChrome}
+export interface PdfPageMaster {startBlock:number;pageChrome:PdfPageChrome;title?:string}
 export interface PdfDocument {
   /** Shown in the running header. Required, nonempty. */
   title: string;
@@ -141,7 +145,7 @@ export interface PdfDocument {
 }
 
 type NativeBlock = {
-  kind: string; text?: string;
+  kind: string; text?: string; targetBlock?:number;
   runs?: {text:string;font:string;fontSize?:number;color?:string;fallbackFonts?:string[]}[];
   level?: number; style?: PdfTextStyle; height?: number;
   keepWithNext?: boolean; items?: string[]; ordered?: boolean;
@@ -149,7 +153,7 @@ type NativeBlock = {
   image?: { data?: Uint8Array; assetId?:number; width: number; height: number; fit: 'contain' | 'cover' };
   boxData?: {width?:number;align:string;padding:number;
     paddingSides?:{top:number;right:number;bottom:number;left:number};
-    minHeight?:number;maxHeight?:number;radius:number;borderWidth:number;
+    minHeight?:number;maxHeight?:number;spaceBetween?:boolean;radius:number;borderWidth:number;
     borderColor?:string;background?:string;
     keepTogether?:boolean;breakBefore?:boolean;keepWithNext?:boolean;items:Array<{
       kind:string;text?:string;style?:PdfTextStyle;color?:string;height?:number;
@@ -442,6 +446,7 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
         const innerWidth=(boxed?.width ?? printableWidth)-paddingSides.left-paddingSides.right;
         const minHeight=boxed?.minHeight;
         const maxHeight=boxed?.maxHeight;
+        const justify=boxed?.justifyContent??'start';
         const borderWidth=boxed?.border?.width??0;
         const radius=boxed?.radius??0;
         if (!boxed || !Array.isArray(boxed.items) || boxed.items.length<1 ||
@@ -451,6 +456,8 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
             (minHeight!==undefined && (!Number.isFinite(minHeight) || minHeight<0 || minHeight>printableHeight)) ||
             (maxHeight!==undefined && (!Number.isFinite(maxHeight)||maxHeight<=0||maxHeight>20000||
               (minHeight!==undefined&&maxHeight<minHeight))) ||
+            !['start','space-between'].includes(justify) ||
+            (justify==='space-between'&&(minHeight===undefined||boxed.items.length<2||boxed.items.length>32)) ||
             !Number.isFinite(borderWidth) || borderWidth<0 || borderWidth>6 ||
             borderWidth>Math.min(...Object.values(paddingSides)) ||
             !Number.isFinite(radius) || radius<0 || radius>24 || radius>Math.min(...Object.values(paddingSides)) ||
@@ -574,6 +581,7 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
         });
         return {
           width:boxed.width,align:boxed.align??'left',padding,paddingSides,minHeight,maxHeight,
+          spaceBetween:justify==='space-between',
           radius,borderWidth,borderColor:rgb(boxed.border?.color),
           background:rgb(boxed.background),keepTogether:boxed.keepTogether,
           breakBefore:boxed.breakBefore,keepWithNext:boxed.keepWithNext,items
@@ -676,6 +684,13 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
         const w=page?page.width-page.marginLeft-page.marginRight:497;
         const h=page?page.height-page.marginTop-page.marginBottom:650;
         return {kind:'box',boxData:normalizeBox(block.box,w,h)};
+      }
+      if(block?.type==='page-reference'){
+        if(typeof block.text!=='string'||!block.text.trim()||block.text.length>64||
+           !Number.isInteger(block.targetBlock)||block.targetBlock<0||
+           block.targetBlock>=document.blocks.length)
+          throw new TypeError('page reference needs short text and an existing target block');
+        return {kind:'page-reference',text:block.text,targetBlock:block.targetBlock};
       }
       if (block?.type === 'page-break') return {kind:'page-break'};
       if(block?.type==='row'){

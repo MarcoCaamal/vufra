@@ -35,3 +35,7 @@ La geometría de hoja (tamaño/márgenes) permanece uniforme para todo el docume
 ## Verificación
 
 `packages/vufra/tests/page-section-masters.test.mjs`: tres capítulos extensos, 332 IDs en orden, bandas sin fugas entre páginas, índices del AST (`[0,3,6]`), herencia y `null`, portada sin bandas y render síncrono/asíncrono equivalentes, odd/even absoluto y rechazos de índices alterados. Rust prueba índices desordenados/fuera de rango o sin `PageBreak`. Ejemplo `examples/fluent-page-masters.mjs`: 325 registros y tres bandas específicas.
+
+### Ampliación ADR-0053
+
+El soporte original de esta unidad reservaba `firstHeader` y `firstFooter` solo para la primera hoja **del documento**. ADR-0053 añade `firstHeader`/`firstFooter` **específicos de `pageSection()`** que se activan exclusivamente al abrir ese capítulo, sin cambiar que las opciones globales siguen siendo del primer folio del documento. También incorpora `title` para TOC/referencias, con numéricos calculados después de paginar.
