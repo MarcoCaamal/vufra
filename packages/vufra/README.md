@@ -268,3 +268,7 @@ que prevalece sobre las bandas. `border:{width:0}` suprime el trazo.
 `groupTableRows(groups,columnCount,options)` convierte grupos con filas y
 subtotales preformateados a la misma tabla Fluent sin introducir otra DSL.
 No hay `colSpan`/`rowSpan` ni cálculo monetario implícito.
+
+Las celdas también admiten `colSpan`, por ejemplo:
+`[{text:'Sección norte',colSpan:2}, {text:'MXN 1,500',align:'right'}]`
+para una tabla con tres columnas. No se admite todavía `rowSpan`.

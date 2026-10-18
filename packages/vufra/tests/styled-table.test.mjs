@@ -91,7 +91,7 @@ test('oversized plain-text styled row fragments and canonical table still works'
 });
 test('validates styled cells, missing faces, bad fills and row mismatch',()=>{
   const doc=app.document({title:'Bad table'});
-  assert.throws(()=>doc.table([['A']],{columns}),/row cells must match/);
+  assert.throws(()=>doc.table([['A']],{columns}),/row colSpan does not cover all columns/);
   assert.throws(()=>doc.table([['A','B','C']],{columns:[
     {...columns[0],width:500},columns[1],columns[2]
   ]}),/columns exceed/);

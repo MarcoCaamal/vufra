@@ -549,3 +549,11 @@ Se añadieron `border` en tabla/columna/celda,
 por el autor. Ver [ADR-0040](docs/adr/0040-enterprise-table-colors-and-borders.md).
 **No** están implementados aún `rowSpan` ni `colSpan` o separación inteligente
 de filas de grupo al paginar.
+
+### ColSpan paginado
+
+En una tabla de tres columnas, `[{text:'Subtotal general',colSpan:2},'$1,230']`
+produce **dos celdas físicas**, siendo la primera tan ancha como las dos
+columnas declaradas. Los saltos de página y cabeceras repetidas siguen siendo
+nativos. `rowSpan` no está disponible; véase
+[ADR-0041](docs/adr/0041-colspan-and-page-safe-table-tracks.md).

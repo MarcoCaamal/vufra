@@ -75,6 +75,8 @@ export type StyledTableCell = string | number | {
   verticalAlign?: CellVerticalAlign;
   padding?: CellPadding;
   border?: CellBorder;
+  /** Merge this cell across adjacent table columns. No rowSpan yet. */
+  colSpan?: number;
 };
 export interface CellBorder {width?:number;color?:string}
 export interface StyledTableColumn {
@@ -744,20 +746,32 @@ function styledTable(
   const borders:{width:number;color:string}[][]=[];
   const fills:(string|undefined)[][]=[];
   const line=(cells:readonly StyledTableCell[], rowIndex:number)=>{
-    if(!Array.isArray(cells)||cells.length!==columns.length) {
-      fail('styled table row cells must match columns');
+    if(!Array.isArray(cells)||cells.length<1||cells.length>columns.length) {
+      fail('styled table row cells must match columns or use colSpan');
     }
+    let cursor=0;
+    const slots=cells.map(entry=>{
+      const data=typeof entry==='number'||typeof entry==='string'?{text:String(entry)}:entry;
+      if(!data||!plainObject(data)||
+        (data.align!==undefined&&!['left','center','right'].includes(data.align as string)))
+        fail('invalid styled table cell');
+      if('rowSpan' in data)fail('rowSpan is not supported yet');
+      const value=data as Exclude<StyledTableCell,string|number>;
+      const span=value.colSpan??1;
+      if(!Number.isInteger(span)||span<1||rowIndex===0&&span!==1 || cursor+span>columns.length)
+        fail('invalid colSpan: every span must cover 1..remaining columns; header cannot merge');
+      const index=cursor;
+      cursor+=span;
+      const width=widths.slice(index,cursor).reduce((sum,x)=>sum+x,0);
+      return {value,index,width};
+    });
+    if(cursor!==columns.length)fail('styled table row colSpan does not cover all columns');
     const backgrounds:(string|undefined)[]=[];
     const edge:{width:number;color:string}[]=[];
-    const cols:PdfRow['columns']=cells.map((entry,i)=>{
-      const data=typeof entry==='number'||typeof entry==='string'?{text:String(entry)}:entry;
-      if(!data || !plainObject(data) || (data.align!==undefined&&!['left','center','right'].includes(data.align as string))){
-        fail('invalid styled table cell');
-      }
-      const value=data as Exclude<StyledTableCell,string|number>;
+    const cols:PdfRow['columns']=slots.map(({value,index:i,width})=>{
       const padding=cellPadding(cellPadding(tablePadding,columns[i].padding),value.padding);
       const valign=verticalAlign(value.verticalAlign??columns[i].verticalAlign??defaultVertical);
-      if(padding.left+padding.right>widths[i]-12)fail('table cell padding exceeds inner width');
+      if(padding.left+padding.right>width-12)fail('table cell padding exceeds inner width');
       const color=value.color??(rowIndex===0?columns[i].color:undefined);
       if(value.image!==undefined && (value.text!==undefined||value.runs!==undefined)) {
         fail('styled table cell image cannot combine with text or runs');
@@ -766,7 +780,7 @@ function styledTable(
         ? (()=>{
           if(!(value.image instanceof Uint8Array) || !validNumber(value.width) ||
              !validNumber(value.height) || value.width<=0 || value.height<=0 ||
-             value.width>widths[i]-padding.left-padding.right || (value.fit!==undefined&&!['contain','cover'].includes(value.fit))){
+             value.width>width-padding.left-padding.right || (value.fit!==undefined&&!['contain','cover'].includes(value.fit))){
             fail('invalid styled table cell image or dimensions');
           }
           return {type:'image' as const,data:value.image,width:value.width,
@@ -798,7 +812,7 @@ function styledTable(
       backgrounds.push(colorHex(value.background??(rowIndex===0?columns[i].background:undefined),ctx.theme)
         ?? alternate[rowIndex===0?0:rowIndex%2===1?1:2]);
       edge.push(tableBorder(ctx,value.border,columns[i].border??baseBorder));
-      return {width:widths[i],align:value.align??columns[i].align??'left',
+      return {width,align:value.align??columns[i].align??'left',
         cell:{padding,verticalAlign:valign},items:[cell]};
     });
     fills.push(backgrounds);
@@ -812,7 +826,7 @@ function styledTable(
   return {header:head,rows:body,fills,borders};
 }
 
-/** Flatten grouped records into a single paginated table (no implicit merged cells).
+/** Flatten grouped records into a single paginated table with a merged group title.
  * Totals stay as caller-provided strings/numbers to avoid imprecise currency math.
  */
 export function groupTableRows(groups:readonly {
@@ -830,9 +844,9 @@ export function groupTableRows(groups:readonly {
       !Array.isArray(group.rows)||group.rows.length===0)
       fail('groupTableRows group requires title and rows');
     const fill=options.groupBackground;
-    result.push(Array.from({length:columnCount},(_,i)=>({
-      text:i===0?group.title:'',bold:options.bold??false,background:fill
-    })));
+    result.push([{
+      text:group.title,colSpan:columnCount,bold:options.bold??false,background:fill
+    }]);
     for(const row of group.rows){
       if(!Array.isArray(row)||row.length!==columnCount)
         fail('groupTableRows row does not match column count');

@@ -446,18 +446,29 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
             }
             const header=normalizeRow(t.header,innerWidth,printableHeight-2*padding,depth+1);
             const rows=t.rows.map(r=>normalizeRow(r,innerWidth,printableHeight-2*padding,depth+1));
-            if(header.gap!==0 || header.columns.length>6 || rows.some(r=>
-              r.gap!==0 || r.columns.length!==header.columns.length ||
-              r.columns.some((c,i)=>Math.abs(c.width-header.columns[i].width)>0.01))) {
-              throw new TypeError('boxed table must share contiguous 1..6 column widths');
+            const boundaries=header.columns.reduce<number[]>((parts,c)=>{
+              parts.push((parts.at(-1)??0)+c.width);return parts;
+            },[]);
+            const validTracks=(r:typeof header)=>{
+              let end=0;
+              return r.gap===0 && r.columns.length>=1 && r.columns.length<=header.columns.length &&
+                r.columns.every(c=>{
+                  end+=c.width;
+                  return boundaries.some(v=>Math.abs(v-end)<0.02);
+                }) && Math.abs(end-(boundaries.at(-1)??0))<0.02;
+            };
+            if(header.gap!==0 || header.columns.length>6 || rows.some(r=>!validTracks(r))) {
+              throw new TypeError('boxed table cells must align to header column boundaries');
             }
-            const fills=t.fills.map(f=>{
-              if(!Array.isArray(f) || f.length!==header.columns.length)
-                throw new TypeError('boxed table fills must match column count');
+            const fills=t.fills.map((f,i)=>{
+              const n=i===0?header.columns.length:rows[i-1].columns.length;
+              if(!Array.isArray(f) || f.length!==n)
+                throw new TypeError('boxed table fills must match row cell count');
               return f.map(rgb);
             });
-            const borders=t.borders?.map(row=>{
-              if(!Array.isArray(row)||row.length!==header.columns.length)
+            const borders=t.borders?.map((row,i)=>{
+              const n=i===0?header.columns.length:rows[i-1].columns.length;
+              if(!Array.isArray(row)||row.length!==n)
                 throw new TypeError('table borders must match column count');
               return row.map(border=>{
                 if(!border||!Number.isFinite(border.width)||border.width<0||border.width>4||

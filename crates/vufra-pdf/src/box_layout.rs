@@ -93,22 +93,33 @@ impl PdfBoxTable {
             ));
         }
         self.header.validate_depth(width, height, depth + 1)?;
+        let boundaries = self
+            .header
+            .columns
+            .iter()
+            .scan(0.0_f32, |sum, col| {
+                *sum += col.width;
+                Some(*sum)
+            })
+            .collect::<Vec<_>>();
         for (i, row) in std::iter::once(&self.header).chain(&self.rows).enumerate() {
             row.validate_depth(width, height, depth + 1)?;
-            if row.columns.len() != cols
+            let mut x = 0.0;
+            let valid_spans = row.columns.iter().all(|col| {
+                x += col.width;
+                boundaries.iter().any(|bound| (x - bound).abs() < 0.02)
+            }) && (x - boundaries.last().copied().unwrap_or(0.0)).abs() < 0.02;
+            if row.columns.is_empty()
+                || row.columns.len() > cols
                 || row.gap != 0.0
-                || self.fills[i].len() != cols
+                || !valid_spans
+                || self.fills[i].len() != row.columns.len()
                 || self.borders.as_ref().is_some_and(|b| {
-                    b[i].len() != cols
+                    b[i].len() != row.columns.len()
                         || b[i].iter().any(|edge| {
                             !edge.width.is_finite() || !(0.0..=4.0).contains(&edge.width)
                         })
                 })
-                || row
-                    .columns
-                    .iter()
-                    .zip(&self.header.columns)
-                    .any(|(a, b)| (a.width - b.width).abs() > 0.01)
             {
                 return Err(RenderError::InvalidInput(
                     "styled table column widths must match",
