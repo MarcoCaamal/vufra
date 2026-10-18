@@ -33,3 +33,5 @@ doc.box({
 ## Evidencia
 
 `packages/vufra/tests/box-min-height.test.mjs`: compara el posicionamiento Y de un texto siguiente contra caja normal, comprueba minHeight en caja anidada y validaciones SDK/nativas. `packages/vufra/tests/box-side-padding.test.mjs` compara offsets Poppler X/Y contra box padding=0, comprueba ancho interior y crecimiento de altura por `top+bottom`, caso anidado con minHeight y tabla de 140 filas con encabezados repetidos multipágina. Los tests históricos de PDF/rounded boxes también se ejecutan con la suite completa.
+
+Ejemplo actualizado: `examples/fluent-visual-report.mjs` usa portada con padding asimétrico y `minHeight:240`, seguida de 145 métricas vectoriales. Se verificó extracción sin pérdida de datos.

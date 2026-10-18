@@ -15,7 +15,8 @@ const items=Array.from({length:145},(_,i)=>({
 const doc=app.document({title:'Annual operations',page:'Letter'})
  .header(h=>h.text('ANNUAL_OPERATION_REPORT'))
  .footer(f=>f.text(({page,total})=>'Page '+page+' of '+total))
- .coverPage({padding:28,radius:12,background:'panel',border:{width:1,color:'#2A5A88'}},b=>b
+ .coverPage({padding:{top:30,right:20,bottom:18,left:32},minHeight:240,
+   radius:12,background:'panel',border:{width:1,color:'#2A5A88'}},b=>b
    .heading('Annual Operations')
    .paragraph('Performance report and vector-based chart'))
  .heading('Key metrics')
