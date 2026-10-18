@@ -175,7 +175,7 @@ type NativeBlock = {
     graphic?: {kind:string;width:number;height:number;color:string}
   }>}>};
 };
-interface NativePageMaster {startBlock:number;chrome:NativeChrome}
+interface NativePageMaster {startBlock:number;chrome:NativeChrome;title?:string}
 interface NativeChrome {
   header?: NonNullable<NativeBlock['row']>;
   footer?: NonNullable<NativeBlock['row']>;
@@ -738,8 +738,13 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
            entry.startBlock>=blocks.length||entry.startBlock<=last||
            (entry.startBlock>0&&blocks[entry.startBlock-1]?.kind!=='page-break'))
           throw new TypeError('pageMasters must start at increasing page boundaries');
+        if(entry.title!==undefined && (typeof entry.title!=='string'||
+           !entry.title.trim()||entry.title.length>64||entry.title.includes('\0')||
+           entry.title.includes('\r')||entry.title.includes('\n')))
+          throw new TypeError('page master title must be a single-line 1..64 character label');
         last=entry.startBlock;
-        return {startBlock:entry.startBlock,chrome:normalizeChrome(entry.pageChrome)};
+        return {startBlock:entry.startBlock,chrome:normalizeChrome(entry.pageChrome),
+          ...(entry.title!==undefined?{title:entry.title}:{})};
       });
     }
   }

@@ -18,6 +18,12 @@ function inspect(bytes){
  const pages=Array.from({length:n},(_,i)=>execFileSync('pdftotext',['-layout','-f',String(i+1),'-l',String(i+1),file,'-'],{encoding:'utf8'}));
  return {pages,file,pageOf(label){const found=pages.findIndex(x=>x.includes(label));assert.ok(found>=0,label);return found+1;}};
 }
+function navigationXml(pdfFile,from=1,to=1){
+ const prefix=join(mkdtempSync(join(tmpdir(),'vufra-nav-')),'navigation');
+ execFileSync('pdftohtml',['-xml','-hidden','-i',
+  '-f',String(from),'-l',String(to),pdfFile,prefix],{encoding:'utf8'});
+ return readFileSync(prefix+'.xml','utf8');
+}
 test('native TOC and cross-reference pages equal actual pagination of chapters, including content after a TOC',async()=>{
  const doc=app.document({page:'Letter',title:'Indexed report'})
  .coverPage({padding:25,minHeight:180},b=>b.heading('COVER_UNIQUE'))
@@ -42,6 +48,17 @@ test('native TOC and cross-reference pages equal actual pagination of chapters, 
  }
  assert.match(toc,new RegExp('Go to finance\\s+'+out.pageOf('FIN_TARGET')+'(?:\\s|$)'));
  assert.equal(out.pageOf('COVER_UNIQUE'),1);
+ // Poppler inspects actual /Annot /Link destinations and /Outlines —
+ // merely seeing a page number printed in the PDF is not sufficient.
+ const navigation=navigationXml(out.file,2,2);
+ const href=(label,page)=>new RegExp(`<a href="[^"]*#${page}">${label}<\\/a>`);
+ for(const [name,target] of mapping){
+   const actual=out.pageOf(target);
+   assert.match(navigation,href(name,actual));
+   assert.match(navigation,new RegExp(`<item page="${actual}">${name}<\\/item>`));
+ }
+ assert.match(navigation,href('Go to finance',out.pageOf('FIN_TARGET')));
+ assert.equal((navigation.match(/<item page=/g)??[]).length,3);
  const text=out.pages.join('');
  for(const [prefix,n] of [['SALE',95],['FIN',135],['OPS',84]])
   assert.deepEqual([...text.matchAll(new RegExp(prefix+'_(\\d{3})','g'))].map(m=>+m[1]),
@@ -58,6 +75,12 @@ test('TOC page numbers change when earlier sections grow, with no stale second p
  assert.ok(large.pageOf('SECOND_BODY')>small.pageOf('SECOND_BODY'));
  for(const result of [small,large])
   assert.match(result.pages[0],new RegExp('Second\\s+'+result.pageOf('SECOND_BODY')+'(?:\\s|$)'));
+ for(const result of [small,large]){
+  const xml=navigationXml(result.file);
+  const page=result.pageOf('SECOND_BODY');
+  assert.match(xml,new RegExp(`<a href="[^"]*#${page}">Second<\\/a>`));
+  assert.match(xml,new RegExp(`<item page="${page}">Second<\\/item>`));
+ }
 });
 test('TOC rejects missing/ambiguous named sections, oversized labels and corrupted target indices',()=>{
  assert.throws(()=>app.document().tableOfContents('Contents').heading('ONLY').toDocument(),/requires named/);
@@ -70,4 +93,17 @@ test('TOC rejects missing/ambiguous named sections, oversized labels and corrupt
  const snapshot=app.document({page:'Letter'}).tableOfContents().pageSection({title:'Safe'},b=>b.paragraph('GOOD')).toDocument();
  snapshot.blocks[1].targetBlock=999;
  assert.throws(()=>renderPdf(snapshot,font),/target block/);
+});
+
+
+test('PDF chapter title validations also cover manipulated snapshots and unnavigable unnamed chapters',()=>{
+ const named=app.document({page:'Letter'}).pageSection({title:'Legal'},b=>b.paragraph('DOCUMENT'));
+ const invalid=named.toDocument();
+ invalid.pageMasters[0].title='Invalid\nOutline';
+ assert.throws(()=>renderPdf(invalid,font),/page master title/);
+ const untitled=app.document({page:'Letter'}).pageSection({header:h=>h.text('NO_TITLES')},b=>b.paragraph('ONLY'));
+ const pdf=inspect(untitled.renderSync());
+ const xml=navigationXml(pdf.file);
+ assert.doesNotMatch(xml,/<outline>/);
+ assert.doesNotMatch(xml,/<a href=/);
 });

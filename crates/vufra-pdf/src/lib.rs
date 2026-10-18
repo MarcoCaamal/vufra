@@ -39,6 +39,8 @@ pub struct PdfPageMaster {
     /// First canonical body block on the section's starting page.
     pub start_block: usize,
     pub chrome: PdfPageChrome,
+    /// Optional chapter title used for PDF outlines/bookmarks.
+    pub title: Option<String>,
 }
 pub use rich_text::{PdfFontFace, PdfTextRun};
 pub use row::{CellPadding, CellVerticalAlign, PdfRow, PdfRowColumn, PdfRowItem, TableCellLayout};

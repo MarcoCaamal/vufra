@@ -337,8 +337,9 @@ no se recorta. Válido para cajas anidadas y límites multipágina. ADR-0052.
 de cada capítulo, sin heredarlos en capítulos posteriores. Al dar `title` a
 las secciones, `.tableOfContents('Índice')` crea un índice con números reales,
 y `.pageReference('Finanzas','Consultar finanzas')` inserta una referencia a ese
-capítulo. Los números se resuelven tras la paginación de Rust; por ahora son
-texto y no anotaciones PDF clicables. ADR-0053.
+capítulo. Los números se resuelven tras la paginación de Rust y ahora cada
+entrada es un enlace PDF interno clicable. Las secciones con título generan
+bookmarks del PDF. ADR-0053 y ADR-0055.
 
 `box({minHeight:260,justifyContent:'space-between'},...)` distribuye el alto
 sobrante de `minHeight` entre 2–32 hijos directos de la caja con espaciadores

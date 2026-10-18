@@ -668,7 +668,8 @@ folio de ese capítulo y otra a los siguientes. `tableOfContents('Índice')`
 genera entradas paginadas para todas las secciones con `title`, y
 `pageReference('Finanzas','Consultar finanzas')` imprime una referencia con el
 número de página **real**, calculado por Rust después de paginar. Las referencias
-todavía no son hipervínculos clicables. Véase
+son enlaces internos clicables y los títulos de capítulo crean bookmarks
+nativos. Véanse [ADR-0055](docs/adr/0055-clickable-toc-pdf-outlines.md) y
 [ADR-0053](docs/adr/0053-section-openers-and-native-toc.md).
 
 ### Distribución vertical de cajas (fundación U40)

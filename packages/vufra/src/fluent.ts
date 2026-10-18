@@ -1307,7 +1307,7 @@ export class DocumentBuilder {
     if(Object.keys(options).some(k=>k!=='title'&&!keys.includes(k as typeof keys[number])))
       fail('pageSection only supports header/footer and odd/even bands');
     if(options.title!==undefined &&
-      (typeof options.title!=='string'||!options.title.trim()||options.title.length>64||options.title.includes('\0')))
+      (typeof options.title!=='string'||!options.title.trim()||options.title.length>64||options.title.includes('\0')||options.title.includes('\n')||options.title.includes('\r')))
       fail('pageSection title must be nonempty and at most 64 characters');
     const nextChrome:PdfPageChrome=structuredClone(this.chrome);
     // Continue the last section's master unless this is the first section.

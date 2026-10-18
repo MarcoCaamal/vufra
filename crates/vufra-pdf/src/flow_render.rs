@@ -10,8 +10,11 @@ use super::{
 };
 use krilla::{
     Document as KrillaDocument,
+    annotation::{Annotation, LinkAnnotation, Target},
     color::rgb,
-    geom::Point,
+    destination::XyzDestination,
+    geom::{Point, Rect},
+    outline::{Outline, OutlineNode},
     page::PageSettings,
     paint::Fill,
     text::{Font, TextDirection},
@@ -86,6 +89,15 @@ fn validate_semantic_input(
         return Err(RenderError::InvalidInput("too many page masters"));
     }
     for (i, master) in masters.iter().enumerate() {
+        if master.title.as_ref().is_some_and(|title| {
+            title.trim().is_empty()
+                || title.chars().count() > 64
+                || title.contains(['\0', '\r', '\n'])
+        }) {
+            return Err(RenderError::InvalidInput(
+                "invalid PDF outline chapter title",
+            ));
+        }
         if master.start_block >= canonical.len()
             || (i > 0 && masters[i - 1].start_block >= master.start_block)
             || (master.start_block > 0
@@ -613,6 +625,25 @@ fn render_writer_flow(
             }
         }
     }
+    // PDF outlines share the exact final pagination with TOC references.
+    // All target indices are validated before creating Krilla destinations.
+    let mut outline = Outline::new();
+    let mut has_outline = false;
+    for master in masters {
+        if let Some(title) = &master.title {
+            let page = page_of[master.start_block].ok_or(RenderError::InvalidInput(
+                "PDF outline target not paginated",
+            ))?;
+            outline.push_child(OutlineNode::new(
+                title.clone(),
+                XyzDestination::new(
+                    page - 1,
+                    Point::from_xy(geometry.margin_left, geometry.margin_top),
+                ),
+            ));
+            has_outline = true;
+        }
+    }
     let mut output = KrillaDocument::new();
     let mut last_body_block = 0usize;
     let mut prior_master: Option<usize> = None;
@@ -638,6 +669,9 @@ fn render_writer_flow(
         let settings = PageSettings::from_wh(geometry.width, geometry.height)
             .ok_or(RenderError::InvalidInput("invalid paper size"))?;
         let mut page = output.start_page_with(settings);
+        // Page annotations are added only after the paint surface is finished.
+        // Collect locations from the same fragments used to draw the text.
+        let mut links: Vec<(Rect, usize, String)> = Vec::new();
         let mut surface = page.surface();
         let left = geometry.margin_left;
         if active.is_none_or(|c| c.should_draw_default_header_for(index, section_first)) {
@@ -767,6 +801,11 @@ fn render_writer_flow(
                                 false,
                                 TextDirection::Auto,
                             );
+                            let area = Rect::from_xywh(left, y, geometry.content_width(), *height)
+                                .ok_or(RenderError::InvalidInput(
+                                    "invalid page reference link rectangle",
+                                ))?;
+                            links.push((area, number - 1, label.clone()));
                         }
                         (_, PdfBlock::Graphic(graphic)) => graphic.draw(&mut surface, left, y)?,
                         _ => {}
@@ -871,7 +910,21 @@ fn render_writer_flow(
             }
         }
         surface.finish();
+        for (rect, target_page, label) in links {
+            // Validated earlier by the paginator; no phantom PDF destinations.
+            let destination = XyzDestination::new(
+                target_page,
+                Point::from_xy(geometry.margin_left, geometry.margin_top),
+            );
+            page.add_annotation(Annotation::new_link(
+                LinkAnnotation::new(rect, Target::Destination(destination.into())),
+                Some(format!("Go to {label}")),
+            ));
+        }
         page.finish();
+    }
+    if has_outline {
+        output.set_outline(outline);
     }
     check_cancel(cancel)?;
     output
@@ -882,6 +935,32 @@ fn render_writer_flow(
 #[cfg(test)]
 mod section_master_tests {
     use super::*;
+    #[test]
+    fn outline_titles_are_native_validated_even_when_bypassing_the_sdk() {
+        let canonical = vec![ContentNode::paragraph("CHAPTER")];
+        let valid = PdfPageMaster {
+            start_block: 0,
+            chrome: PdfPageChrome::default(),
+            title: Some("Financial overview".into()),
+        };
+        assert!(
+            validate_semantic_input(
+                "Document",
+                &canonical,
+                &[1],
+                None,
+                std::slice::from_ref(&valid)
+            )
+            .is_ok()
+        );
+        for title in [" ".to_owned(), "Bad\nTitle".to_owned(), "X".repeat(65)] {
+            let mut invalid = valid.clone();
+            invalid.title = Some(title);
+            assert!(
+                validate_semantic_input("Document", &canonical, &[1], None, &[invalid]).is_err()
+            );
+        }
+    }
     #[test]
     fn page_references_require_valid_existing_non_reference_targets() {
         let good = vec![
@@ -932,6 +1011,7 @@ mod section_master_tests {
         let master = |start_block| PdfPageMaster {
             start_block,
             chrome: PdfPageChrome::default(),
+            title: None,
         };
         assert!(
             validate_semantic_input(

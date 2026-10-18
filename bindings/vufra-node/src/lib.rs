@@ -144,6 +144,7 @@ pub struct NodeBox {
 pub struct NodePageMaster {
     pub start_block: u32,
     pub chrome: NodePageChrome,
+    pub title: Option<String>,
 }
 #[napi(object)]
 pub struct NodePageChrome {
@@ -744,6 +745,7 @@ fn parse_document(
                 Ok(vufra_pdf::PdfPageMaster {
                     start_block: section.start_block as usize,
                     chrome: convert_chrome(section.chrome, assets)?,
+                    title: section.title,
                 })
             })
             .collect::<napi::Result<Vec<_>>>()?,
