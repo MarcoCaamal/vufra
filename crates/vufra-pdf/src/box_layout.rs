@@ -59,18 +59,28 @@ pub struct PdfBox {
 }
 /// Bounded, rich table inside a decorated box. Each row is atomic; the header
 /// is repainted on continuation pages by the outer page compositor.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellBorder {
+    pub width: f32,
+    pub color: [u8; 3],
+}
 #[derive(Debug, Clone)]
 pub struct PdfBoxTable {
     pub header: PdfRow,
     pub rows: Vec<PdfRow>,
     /// RGB fills: header at index zero, then each body row, one per column.
     pub fills: Vec<Vec<Option<[u8; 3]>>>,
+    pub borders: Option<Vec<Vec<CellBorder>>>,
 }
 impl PdfBoxTable {
     fn validate(&self, width: f32, height: f32, depth: usize) -> Result<(), RenderError> {
         if self.rows.is_empty()
             || self.rows.len() > 1_000
             || self.fills.len() != self.rows.len() + 1
+            || self
+                .borders
+                .as_ref()
+                .is_some_and(|b| b.len() != self.fills.len())
         {
             return Err(RenderError::InvalidInput(
                 "styled table requires 1..1000 rows and fills",
@@ -88,6 +98,12 @@ impl PdfBoxTable {
             if row.columns.len() != cols
                 || row.gap != 0.0
                 || self.fills[i].len() != cols
+                || self.borders.as_ref().is_some_and(|b| {
+                    b[i].len() != cols
+                        || b[i].iter().any(|edge| {
+                            !edge.width.is_finite() || !(0.0..=4.0).contains(&edge.width)
+                        })
+                })
                 || row
                     .columns
                     .iter()
@@ -764,11 +780,22 @@ impl PreparedBox {
                 paint: rgb::Color::new(fill[0], fill[1], fill[2]).into(),
                 ..Fill::default()
             }));
-            surface.set_stroke(Some(Stroke {
-                paint: rgb::Color::new(187, 197, 207).into(),
-                width: 0.5,
-                ..Stroke::default()
-            }));
+            let edge = table.borders.as_ref().map_or(
+                CellBorder {
+                    width: 0.5,
+                    color: [187, 197, 207],
+                },
+                |b| b[row_idx][index],
+            );
+            surface.set_stroke(if edge.width > 0.0 {
+                Some(Stroke {
+                    paint: rgb::Color::new(edge.color[0], edge.color[1], edge.color[2]).into(),
+                    width: edge.width,
+                    ..Stroke::default()
+                })
+            } else {
+                None
+            });
             if let Some(rect) = Rect::from_xywh(x, origin.1, col.width, prepared.height) {
                 let mut path = PathBuilder::new();
                 path.push_rect(rect);

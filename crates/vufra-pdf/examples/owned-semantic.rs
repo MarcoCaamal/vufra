@@ -55,6 +55,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 },
             },
             ContentNode::StyledTable {
+                borders: None,
                 header: Box::new(ContentNode::row(
                     0.,
                     vec![

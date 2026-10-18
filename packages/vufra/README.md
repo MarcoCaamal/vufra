@@ -258,3 +258,13 @@ El centro vertical se aplica en filas completas; en filas que cruzan páginas el
 contenido se alinea al inicio de cada fragmento.
 
 Ejemplo ejecutable: `examples/fluent-table-cells.mjs`.
+
+## Tablas profesionales: bordes, bandas y grupos (Unidad 39 parcial)
+
+`table(rows,{columns,border:{width:1,color:'#CCDDEE'},
+headerBackground:'#EAF2FF',oddRowBackground:'#FFFFFF',evenRowBackground:'#F4F7FB'})`
+admite bordes por tabla, columna o celda y un `background` explícito por celda
+que prevalece sobre las bandas. `border:{width:0}` suprime el trazo.
+`groupTableRows(groups,columnCount,options)` convierte grupos con filas y
+subtotales preformateados a la misma tabla Fluent sin introducir otra DSL.
+No hay `colSpan`/`rowSpan` ni cálculo monetario implícito.

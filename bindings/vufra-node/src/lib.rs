@@ -87,10 +87,16 @@ pub struct NodeRow {
     pub columns: Vec<NodeRowColumn>,
 }
 #[napi(object)]
+pub struct NodeCellBorder {
+    pub width: f64,
+    pub color: String,
+}
+#[napi(object)]
 pub struct NodeBoxTable {
     pub header: NodeRow,
     pub rows: Vec<NodeRow>,
     pub fills: Vec<Vec<Option<String>>>,
+    pub borders: Option<Vec<Vec<NodeCellBorder>>>,
 }
 #[napi(object)]
 pub struct NodeBoxItem {
@@ -318,6 +324,29 @@ fn to_box_depth(input: NodeBox, depth: usize, assets: &NativeAssets) -> napi::Re
                         .into_iter()
                         .map(|row| to_row_depth(row, depth + 1, assets))
                         .collect::<napi::Result<Vec<_>>>()?,
+                    borders: table
+                        .borders
+                        .map(|rows| {
+                            rows.into_iter()
+                                .map(|row| {
+                                    row.into_iter()
+                                        .map(|edge| {
+                                            Ok(vufra_pdf::CellBorder {
+                                                width: edge.width as f32,
+                                                color: optional_rgb(Some(edge.color))?.ok_or_else(
+                                                    || {
+                                                        napi::Error::from_reason(
+                                                            "table border requires color",
+                                                        )
+                                                    },
+                                                )?,
+                                            })
+                                        })
+                                        .collect::<napi::Result<Vec<_>>>()
+                                })
+                                .collect::<napi::Result<Vec<_>>>()
+                        })
+                        .transpose()?,
                     fills: table
                         .fills
                         .into_iter()

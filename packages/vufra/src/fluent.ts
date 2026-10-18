@@ -74,7 +74,9 @@ export type StyledTableCell = string | number | {
   align?: 'left'|'center'|'right';
   verticalAlign?: CellVerticalAlign;
   padding?: CellPadding;
+  border?: CellBorder;
 };
+export interface CellBorder {width?:number;color?:string}
 export interface StyledTableColumn {
   title: string;
   width?: number | '*' | `${number}%`;
@@ -83,11 +85,16 @@ export interface StyledTableColumn {
   padding?: CellPadding;
   background?: string;
   color?: string;
+  border?: CellBorder;
 }
 export interface StyledTableOptions {
   columns: StyledTableColumn[];
   padding?: CellPadding;
   verticalAlign?: CellVerticalAlign;
+  border?: CellBorder;
+  headerBackground?: string;
+  oddRowBackground?: string;
+  evenRowBackground?: string;
   /** Repeated on continuation pages. Always true in Unit18. */
   repeatHeader?: true;
 }
@@ -692,6 +699,16 @@ function verticalAlign(value:CellVerticalAlign|undefined):CellVerticalAlign{
     fail('table verticalAlign must be top, center or bottom');
   return value??'top';
 }
+function tableBorder(ctx:BuilderContext, override:CellBorder|undefined, fallback:CellBorder|undefined):{width:number;color:string}{
+  const chosen:CellBorder=override??fallback??{width:0.5,color:'#BBC5CF'};
+  if(!plainObject(chosen) || Object.keys(chosen).some(k=>!['width','color'].includes(k)))
+    fail('invalid table cell border');
+  const width=chosen.width??0.5;
+  if(!validNumber(width)||width<0||width>4)fail('table border width must be 0..4pt');
+  const rawColor=chosen.color;
+  if(rawColor!==undefined && typeof rawColor!=='string')fail('invalid table border color');
+  return {width,color:colorHex(typeof rawColor==='string'?rawColor:'#BBC5CF',ctx.theme)!};
+}
 function styledTable(
   ctx:BuilderContext, innerWidth:number, rows:readonly (readonly StyledTableCell[])[],
   options:StyledTableOptions
@@ -721,12 +738,17 @@ function styledTable(
     fail('styled table column requires a title and valid align');
   }
   columns.forEach(c=>{cellPadding(tablePadding,c.padding);verticalAlign(c.verticalAlign);});
+  const baseBorder=tableBorder(ctx,options.border,undefined);
+  const alternate=[options.headerBackground,options.oddRowBackground,options.evenRowBackground]
+    .map(value=>colorHex(value,ctx.theme));
+  const borders:{width:number;color:string}[][]=[];
   const fills:(string|undefined)[][]=[];
   const line=(cells:readonly StyledTableCell[], rowIndex:number)=>{
     if(!Array.isArray(cells)||cells.length!==columns.length) {
       fail('styled table row cells must match columns');
     }
     const backgrounds:(string|undefined)[]=[];
+    const edge:{width:number;color:string}[]=[];
     const cols:PdfRow['columns']=cells.map((entry,i)=>{
       const data=typeof entry==='number'||typeof entry==='string'?{text:String(entry)}:entry;
       if(!data || !plainObject(data) || (data.align!==undefined&&!['left','center','right'].includes(data.align as string))){
@@ -765,24 +787,69 @@ function styledTable(
             fontSize:11,lineHeight:18,spaceBefore:0,spaceAfter:0
           }};
         })()
+        : typeof value.text==='string' && !value.text.trim()
+        ? {type:'spacer' as const,height:18}
         : asRowItemText(ctx,String(value.text??''),{
             bold:value.bold??(rowIndex===0&&Object.hasOwn(ctx.fonts,'bold')),
             font:value.font,
             color,fontSize:value.fontSize,
             spaceBefore:0,spaceAfter:0,lineHeight:18
           });
-      backgrounds.push(colorHex(value.background??(rowIndex===0?columns[i].background:undefined),ctx.theme));
+      backgrounds.push(colorHex(value.background??(rowIndex===0?columns[i].background:undefined),ctx.theme)
+        ?? alternate[rowIndex===0?0:rowIndex%2===1?1:2]);
+      edge.push(tableBorder(ctx,value.border,columns[i].border??baseBorder));
       return {width:widths[i],align:value.align??columns[i].align??'left',
         cell:{padding,verticalAlign:valign},items:[cell]};
     });
     fills.push(backgrounds);
+    borders.push(edge);
     return {gap:0,columns:cols};
   };
   const head=line(columns.map(c=>({text:c.title,bold:Object.hasOwn(ctx.fonts,'bold'),
     color:c.color,background:c.background,align:c.align,
-    padding:c.padding,verticalAlign:c.verticalAlign})),0);
+    padding:c.padding,verticalAlign:c.verticalAlign,border:c.border})),0);
   const body=rows.map((r,i)=>line(r,i+1));
-  return {header:head,rows:body,fills};
+  return {header:head,rows:body,fills,borders};
+}
+
+/** Flatten grouped records into a single paginated table (no implicit merged cells).
+ * Totals stay as caller-provided strings/numbers to avoid imprecise currency math.
+ */
+export function groupTableRows(groups:readonly {
+  title:string;
+  rows:readonly (readonly StyledTableCell[])[];
+  subtotal?:readonly StyledTableCell[];
+}[],columnCount:number,options:{groupBackground?:string;subtotalBackground?:string;bold?:boolean}={}):StyledTableCell[][]{
+  if(!Number.isInteger(columnCount)||columnCount<1||columnCount>6)
+    fail('groupTableRows needs 1..6 columns');
+  if(!Array.isArray(groups)||groups.length<1||groups.length>200)
+    fail('groupTableRows needs 1..200 groups');
+  const result:StyledTableCell[][]=[];
+  for(const group of groups){
+    if(!group||typeof group.title!=='string'||!group.title.trim()||
+      !Array.isArray(group.rows)||group.rows.length===0)
+      fail('groupTableRows group requires title and rows');
+    const fill=options.groupBackground;
+    result.push(Array.from({length:columnCount},(_,i)=>({
+      text:i===0?group.title:'',bold:options.bold??false,background:fill
+    })));
+    for(const row of group.rows){
+      if(!Array.isArray(row)||row.length!==columnCount)
+        fail('groupTableRows row does not match column count');
+      result.push([...row]);
+    }
+    if(group.subtotal){
+      if(group.subtotal.length!==columnCount)
+        fail('groupTableRows subtotal does not match column count');
+      result.push(group.subtotal.map((cell:StyledTableCell)=>{
+        const value=typeof cell==='string'||typeof cell==='number'?{text:String(cell)}:cell;
+        if(!value||!plainObject(value))fail('groupTableRows invalid subtotal cell');
+        return {...value,bold:value.bold??options.bold??false,background:value.background??options.subtotalBackground};
+      }));
+    }
+    if(result.length>1000)fail('groupTableRows exceeds the 1000-row table limit');
+  }
+  return result;
 }
 
 /** One visually decorated, page-fragmentable vertical flow. */

@@ -540,3 +540,12 @@ contenido rich, fondos, celdas centradas y padding por lado. Las filas largas
 conservan padding horizontal al paginar; el vertical se aplica una vez en los
 bordes reales de cada fila, no repetido en cada página. Véase
 [ADR-0039](docs/adr/0039-table-cell-padding-and-alignment.md).
+
+## Roadmap Unidad 39 (avance): tabla con bordes y bandas de color
+
+Se añadieron `border` en tabla/columna/celda,
+`headerBackground`, `oddRowBackground`, `evenRowBackground` y el helper
+`groupTableRows()` para organizar encabezados y subtotales suministrados
+por el autor. Ver [ADR-0040](docs/adr/0040-enterprise-table-colors-and-borders.md).
+**No** están implementados aún `rowSpan` ni `colSpan` o separación inteligente
+de filas de grupo al paginar.

@@ -48,6 +48,7 @@ export interface PdfRow {
 }
 /** Rich table rendered inside a decorated box; rows remain atomic across pages. */
 export interface PdfBoxTable {
+  borders?: Array<Array<{width:number;color:string}>>;
   header: PdfRow;
   rows: PdfRow[];
   /** Backgrounds: header first, then every data row, per column. */
@@ -455,7 +456,17 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
                 throw new TypeError('boxed table fills must match column count');
               return f.map(rgb);
             });
-            return {kind:'table',tableData:{header,rows,fills}};
+            const borders=t.borders?.map(row=>{
+              if(!Array.isArray(row)||row.length!==header.columns.length)
+                throw new TypeError('table borders must match column count');
+              return row.map(border=>{
+                if(!border||!Number.isFinite(border.width)||border.width<0||border.width>4||
+                    !/^#[0-9a-fA-F]{6}$/.test(border.color))throw new TypeError('invalid table border');
+                return border;
+              });
+            });
+            if(borders && borders.length!==rows.length+1)throw new TypeError('table border rows mismatch');
+            return {kind:'table',tableData:{header,rows,fills,borders}};
           }
           if(item?.type==='text' && typeof item.text==='string'){
             return {kind:'text',text:item.text,style:normalizeStyle(

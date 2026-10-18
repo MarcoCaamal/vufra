@@ -116,6 +116,7 @@ pub enum ContentNode {
         header: Box<ContentNode>,
         rows: Vec<ContentNode>,
         fills: Vec<Vec<Option<[u8; 3]>>>,
+        borders: Option<Vec<Vec<crate::CellBorder>>>,
     },
     List {
         items: Vec<ContentNode>,
@@ -236,6 +237,7 @@ impl From<PdfBoxItem> for ContentNode {
                 header: Box::new(Self::from(table.header)),
                 rows: table.rows.into_iter().map(Self::from).collect(),
                 fills: table.fills,
+                borders: table.borders,
             },
             PdfBoxItem::Spacer(h) => Self::Spacer(h),
         }
@@ -403,6 +405,7 @@ impl TryFrom<ContentNode> for PdfBoxItem {
                 header,
                 rows,
                 fills,
+                borders,
             } => {
                 let header = match *header {
                     ContentNode::Row { gap, columns } => row_from_parts(gap, columns)?,
@@ -419,6 +422,7 @@ impl TryFrom<ContentNode> for PdfBoxItem {
                     header,
                     rows,
                     fills,
+                    borders,
                 }))
             }
             _ => Err(not_allowed()),
@@ -628,6 +632,7 @@ mod tests {
                         vec![ContentColumn::new(180., vec![make_image(table_bytes)])],
                     )],
                     fills: vec![vec![None], vec![None]],
+                    borders: None,
                 },
             ],
         );
@@ -879,7 +884,8 @@ mod tests {
             PdfBlock::try_from(ContentNode::StyledTable {
                 header: Box::new(ContentNode::paragraph("not a header")),
                 rows: vec![],
-                fills: vec![]
+                fills: vec![],
+                borders: None
             })
             .is_err()
         );
