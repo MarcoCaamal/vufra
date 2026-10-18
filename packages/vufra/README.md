@@ -320,3 +320,11 @@ Las cajas soportan `padding` numérico o por lados `{top,right,bottom,left}`
 (12pt de base por lado), y `minHeight` para altura mínima decorada sin recortar
 contenido. Estas medidas afectan tanto la distribución como la paginación
 real, también en cajas anidadas. Ejemplo en ADR-0049.
+
+`row({justify:'space-between',gap:12},...)` reparte anchura sobrante entre las
+columnas con ancho explícito, con el motor de medidas de Rust.
+`document.pageSection({header:h=>h.text('Sección A')},body=>body.heading('A'))`
+inicia un maestro de página propio para ese capítulo; los encabezados/pies
+pueden sobrescribirse o suprimirse con `null` (también odd/even), heredan los
+anteriores en otros casos y los saltos de página se insertan automáticamente.
+La numeración, el tamaño y los márgenes continúan siendo globales.

@@ -34,6 +34,12 @@ mod semantic;
 pub use box_layout::{BoxAlign, CellBorder, PdfBox, PdfBoxItem, PdfBoxTable, TableRowSpan};
 pub use graphic::{GraphicKind, PdfGraphic};
 pub use page_chrome::PdfPageChrome;
+#[derive(Debug, Clone)]
+pub struct PdfPageMaster {
+    /// First canonical body block on the section's starting page.
+    pub start_block: usize,
+    pub chrome: PdfPageChrome,
+}
 pub use rich_text::{PdfFontFace, PdfTextRun};
 pub use row::{CellPadding, CellVerticalAlign, PdfRow, PdfRowColumn, PdfRowItem, TableCellLayout};
 pub use semantic::{ContentColumn, ContentFrame, ContentNode, SemanticDocument, TextPresentation};
@@ -153,6 +159,7 @@ pub fn render_semantic_pdf_with_cancel(
         page,
         fonts,
         chrome,
+        page_masters,
     } = document;
     flow_render::render_semantic_flow(
         &title,
@@ -162,6 +169,7 @@ pub fn render_semantic_pdf_with_cancel(
         page.unwrap_or_default(),
         fonts,
         chrome.as_ref(),
+        &page_masters,
         cancel,
     )
 }

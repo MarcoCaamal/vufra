@@ -138,6 +138,11 @@ pub struct NodeBox {
     pub items: Vec<NodeBoxItem>,
 }
 #[napi(object)]
+pub struct NodePageMaster {
+    pub start_block: u32,
+    pub chrome: NodePageChrome,
+}
+#[napi(object)]
 pub struct NodePageChrome {
     pub header: Option<NodeRow>,
     pub footer: Option<NodeRow>,
@@ -639,6 +644,52 @@ fn preflight_box_images(
     }
     Ok(())
 }
+fn convert_chrome(c: NodePageChrome, assets: &NativeAssets) -> napi::Result<PdfPageChrome> {
+    Ok(PdfPageChrome {
+        header: c.header.map(|r| to_row(r, assets)).transpose()?,
+        footer: c.footer.map(|r| to_row(r, assets)).transpose()?,
+        first_header: c.first_header.map(|r| to_row(r, assets)).transpose()?,
+        first_footer: c.first_footer.map(|r| to_row(r, assets)).transpose()?,
+        odd_header: c.odd_header.map(|r| to_row(r, assets)).transpose()?,
+        even_header: c.even_header.map(|r| to_row(r, assets)).transpose()?,
+        odd_footer: c.odd_footer.map(|r| to_row(r, assets)).transpose()?,
+        even_footer: c.even_footer.map(|r| to_row(r, assets)).transpose()?,
+        hide_odd_header: c.hide_odd_header.unwrap_or(false),
+        hide_even_header: c.hide_even_header.unwrap_or(false),
+        hide_odd_footer: c.hide_odd_footer.unwrap_or(false),
+        hide_even_footer: c.hide_even_footer.unwrap_or(false),
+        hide_header: c.hide_header.unwrap_or(false),
+        hide_footer: c.hide_footer.unwrap_or(false),
+        hide_first_header: c.hide_first_header.unwrap_or(false),
+        hide_first_footer: c.hide_first_footer.unwrap_or(false),
+    })
+}
+fn preflight_chrome(
+    c: &NodePageChrome,
+    count: &mut usize,
+    bytes: &mut usize,
+    assets: &NativeAssets,
+) -> napi::Result<()> {
+    for row in [
+        &c.header,
+        &c.footer,
+        &c.first_header,
+        &c.first_footer,
+        &c.odd_header,
+        &c.even_header,
+        &c.odd_footer,
+        &c.even_footer,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        preflight_row_images(row, count, bytes, assets)?;
+    }
+    if *count > MAX_IMAGE_BLOCKS || *bytes > MAX_TOTAL_IMAGE_BYTES {
+        return Err(napi::Error::from_reason("page bands exceed image budget"));
+    }
+    Ok(())
+}
 #[allow(clippy::too_many_arguments)]
 fn parse_document(
     title: String,
@@ -646,6 +697,7 @@ fn parse_document(
     page: Option<NodePage>,
     assets: &NativeAssets,
     chrome: Option<NodePageChrome>,
+    masters: Option<Vec<NodePageMaster>>,
 ) -> napi::Result<SemanticDocument> {
     // Verify image budgets recursively before copying native input buffers.
     // Covers regular images, rows, and decorated boxes (including row items
@@ -666,50 +718,30 @@ fn parse_document(
         }
     }
     if let Some(c) = &chrome {
-        for row in [
-            &c.header,
-            &c.footer,
-            &c.first_header,
-            &c.first_footer,
-            &c.odd_header,
-            &c.even_header,
-            &c.odd_footer,
-            &c.even_footer,
-        ]
-        .into_iter()
-        .flatten()
-        {
-            preflight_row_images(row, &mut count, &mut bytes, assets)?;
+        preflight_chrome(c, &mut count, &mut bytes, assets)?;
+    }
+    if let Some(sections) = &masters {
+        if sections.len() > 16 {
+            return Err(napi::Error::from_reason("too many page masters"));
         }
-        if count > MAX_IMAGE_BLOCKS || bytes > MAX_TOTAL_IMAGE_BYTES {
-            return Err(napi::Error::from_reason("page bands exceed image budget"));
+        for section in sections {
+            preflight_chrome(&section.chrome, &mut count, &mut bytes, assets)?;
         }
     }
     let doc = SemanticDocument {
         title,
         page: page.map(Into::into),
-        chrome: chrome
-            .map(|c| {
-                Ok::<PdfPageChrome, napi::Error>(PdfPageChrome {
-                    header: c.header.map(|r| to_row(r, assets)).transpose()?,
-                    footer: c.footer.map(|r| to_row(r, assets)).transpose()?,
-                    first_header: c.first_header.map(|r| to_row(r, assets)).transpose()?,
-                    first_footer: c.first_footer.map(|r| to_row(r, assets)).transpose()?,
-                    odd_header: c.odd_header.map(|r| to_row(r, assets)).transpose()?,
-                    even_header: c.even_header.map(|r| to_row(r, assets)).transpose()?,
-                    odd_footer: c.odd_footer.map(|r| to_row(r, assets)).transpose()?,
-                    even_footer: c.even_footer.map(|r| to_row(r, assets)).transpose()?,
-                    hide_odd_header: c.hide_odd_header.unwrap_or(false),
-                    hide_even_header: c.hide_even_header.unwrap_or(false),
-                    hide_odd_footer: c.hide_odd_footer.unwrap_or(false),
-                    hide_even_footer: c.hide_even_footer.unwrap_or(false),
-                    hide_header: c.hide_header.unwrap_or(false),
-                    hide_footer: c.hide_footer.unwrap_or(false),
-                    hide_first_header: c.hide_first_header.unwrap_or(false),
-                    hide_first_footer: c.hide_first_footer.unwrap_or(false),
+        chrome: chrome.map(|c| convert_chrome(c, assets)).transpose()?,
+        page_masters: masters
+            .unwrap_or_default()
+            .into_iter()
+            .map(|section| {
+                Ok(vufra_pdf::PdfPageMaster {
+                    start_block: section.start_block as usize,
+                    chrome: convert_chrome(section.chrome, assets)?,
                 })
             })
-            .transpose()?,
+            .collect::<napi::Result<Vec<_>>>()?,
         fonts: assets.fonts.clone(),
         nodes: blocks
             .into_iter()
@@ -980,8 +1012,9 @@ pub fn render_pdf_native(
     page: Option<NodePage>,
     assets: &NativeAssets,
     chrome: Option<NodePageChrome>,
+    masters: Option<Vec<NodePageMaster>>,
 ) -> napi::Result<Buffer> {
-    let doc = parse_document(title, blocks, page, assets, chrome)?;
+    let doc = parse_document(title, blocks, page, assets, chrome, masters)?;
     vufra_pdf::render_semantic_pdf(doc, Arc::clone(&font_data.bytes), RenderOptions::default())
         .map(Buffer::from)
         .map_err(|e| napi::Error::from_reason(e.to_string()))
@@ -1058,6 +1091,7 @@ impl Task for PdfRenderTask {
 }
 
 /// NAPI worker executes only the owned semantic document.
+#[allow(clippy::too_many_arguments)]
 #[napi]
 pub fn render_pdf_async_native(
     title: String,
@@ -1067,8 +1101,9 @@ pub fn render_pdf_async_native(
     token: Option<&PdfCancellationToken>,
     assets: &NativeAssets,
     chrome: Option<NodePageChrome>,
+    masters: Option<Vec<NodePageMaster>>,
 ) -> napi::Result<AsyncTask<PdfRenderTask>> {
-    let doc = parse_document(title, blocks, page, assets, chrome)?;
+    let doc = parse_document(title, blocks, page, assets, chrome, masters)?;
     Ok(AsyncTask::new(PdfRenderTask {
         doc: Some(doc),
         font_data: Some(Arc::clone(&font_data.bytes)),

@@ -636,3 +636,18 @@ comprueba que todas las etiquetas de origen aparecen una sola vez. Se suma a
 las pruebas de coordenadas y píxeles del motor, pero no reemplaza fuzzing
 de seguridad ni golden images multiplataforma. Véase
 [experimento 50](docs/experiments/50-composition-regression-corpus.md).
+
+### Distribución y maestros de página (U40/U41)
+
+`row({gap:12,justify:'space-between'},...)` reparte el espacio restante entre
+columnas de ancho explícito, usando el motor de filas existente.
+
+`document.pageSection({header:h=>h.text('Finanzas'),footer:f=>f.text('{{page}}')},
+section=>section.heading('Finanzas').table(data,options))` inicia un capítulo
+en página nueva con bandas propias; las páginas siguientes de ese capítulo
+repiten su maestro. Los defaults de la sección anterior se heredan cuando
+no se redefinen. Máximo 16 maestros. Véanse
+[ADR-0050](docs/adr/0050-native-row-space-between.md),
+[ADR-0051](docs/adr/0051-section-page-masters.md) y
+`examples/fluent-page-masters.mjs`. Sigue pendiente la paginación con
+márgenes o tamaño de hoja independientes por sección y un índice automático.

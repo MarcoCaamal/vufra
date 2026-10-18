@@ -123,6 +123,8 @@ export interface PdfPageChrome {
   hideOddFooter?: boolean;
   hideEvenFooter?: boolean;
 }
+/** Page masters begin at a block boundary after a mandatory page break. */
+export interface PdfPageMaster {startBlock:number;pageChrome:PdfPageChrome}
 export interface PdfDocument {
   /** Shown in the running header. Required, nonempty. */
   title: string;
@@ -134,6 +136,7 @@ export interface PdfDocument {
   fontFaces?: Record<string, Uint8Array>;
   /** Optional repeated page headers and footers. */
   pageChrome?: PdfPageChrome;
+  pageMasters?: PdfPageMaster[];
 }
 
 type NativeBlock = {
@@ -167,6 +170,7 @@ type NativeBlock = {
     graphic?: {kind:string;width:number;height:number;color:string}
   }>}>};
 };
+interface NativePageMaster {startBlock:number;chrome:NativeChrome}
 interface NativeChrome {
   header?: NonNullable<NativeBlock['row']>;
   footer?: NonNullable<NativeBlock['row']>;
@@ -238,11 +242,12 @@ interface NativeBinding {
   NativeAssets: new (faces:NativeFontFace[]) => NativeAssetResource;
   renderPdfNative(
     title:string,blocks:NativeBlock[],font:NativeFontResource,page?:NativePage,
-    assets?:NativeAssetResource,chrome?:NativeChrome
+    assets?:NativeAssetResource,chrome?:NativeChrome,masters?:NativePageMaster[]
   ):Uint8Array;
   renderPdfAsyncNative(
     title:string,blocks:NativeBlock[],font:NativeFontResource,page?:NativePage,
-    token?:NativeToken,assets?:NativeAssetResource,chrome?:NativeChrome
+    token?:NativeToken,assets?:NativeAssetResource,chrome?:NativeChrome,
+    masters?:NativePageMaster[]
   ):Promise<{pdf:Uint8Array;renderMs:number}>;
 }
 declare const require: (path: string) => NativeBinding;
@@ -293,7 +298,8 @@ function normalizeStyle(style: Partial<PdfTextStyle>): PdfTextStyle {
 
 type NativeArguments=[
   title:string,blocks:NativeBlock[],font:NativeFontResource,
-  page?:NativePage,assets?:NativeAssetResource,chrome?:NativeChrome
+  page?:NativePage,assets?:NativeAssetResource,chrome?:NativeChrome,
+  masters?:NativePageMaster[]
 ];
 
 /** Shared preflight/normalization for both the synchronous and asynchronous API. */
@@ -327,6 +333,7 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
     return id>=0?{assetId:id,width,height,fit}:{data,width,height,fit};
   };
   let normalizedChrome: NativeChrome | undefined;
+  let masters:NativePageMaster[]|undefined;
   let blocks:NativeBlock[];
   {
     let imageCount=0, imageBytes=0;
@@ -674,45 +681,52 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
       }
       throw new TypeError('invalid flow block type or payload');
     });
-    if (document.pageChrome !== undefined) {
-      const chrome = document.pageChrome;
-      if (!chrome || typeof chrome !== 'object' || Array.isArray(chrome)) {
+    const normalizeChrome=(chrome:PdfPageChrome):NativeChrome=>{
+      if (!chrome || typeof chrome !== 'object' || Array.isArray(chrome))
         throw new TypeError('pageChrome must be an object');
-      }
-      const keys = ['header','footer','firstHeader','firstFooter',
+      const keys=['header','footer','firstHeader','firstFooter',
         'oddHeader','evenHeader','oddFooter','evenFooter'] as const;
-      const flags = ['hideHeader','hideFooter','hideFirstHeader','hideFirstFooter',
+      const flags=['hideHeader','hideFooter','hideFirstHeader','hideFirstFooter',
         'hideOddHeader','hideEvenHeader','hideOddFooter','hideEvenFooter'] as const;
-      normalizedChrome = {};
-      for (const name of keys) {
-        if (chrome[name] !== undefined) {
-          normalizedChrome[name] = normalizeRow(chrome[name]!,
-            page ? page.width-page.marginLeft-page.marginRight : 497,
-            page ? page.height-24 : 818);
+      const result:NativeChrome={};
+      for(const name of keys){
+        if(chrome[name]!==undefined){
+          result[name]=normalizeRow(chrome[name]!,
+            page?page.width-page.marginLeft-page.marginRight:497,
+            page?page.height-24:818);
         }
       }
-      for (const flag of flags) {
-        if (chrome[flag] !== undefined) {
-          if (typeof chrome[flag] !== 'boolean') {
-            throw new TypeError('pageChrome hide flags must be boolean');
-          }
-          normalizedChrome[flag] = chrome[flag];
+      for(const flag of flags){
+        if(chrome[flag]!==undefined){
+          if(typeof chrome[flag]!=='boolean')throw new TypeError('pageChrome hide flags must be boolean');
+          result[flag]=chrome[flag];
         }
       }
-      if ((chrome.header && chrome.hideHeader) || (chrome.footer && chrome.hideFooter) ||
-          (chrome.firstHeader && chrome.hideFirstHeader) ||
-          (chrome.firstFooter && chrome.hideFirstFooter) ||
-          (chrome.oddHeader && chrome.hideOddHeader) ||
-          (chrome.evenHeader && chrome.hideEvenHeader) ||
-          (chrome.oddFooter && chrome.hideOddFooter) ||
-          (chrome.evenFooter && chrome.hideEvenFooter)) {
-        throw new TypeError('pageChrome cannot both hide and define the same band');
+      for(const name of keys){
+        const flag=('hide'+name[0].toUpperCase()+name.slice(1)) as keyof PdfPageChrome;
+        if(chrome[name]&&chrome[flag])
+          throw new TypeError('pageChrome cannot both hide and define the same band');
       }
+      return result;
+    };
+    if(document.pageChrome!==undefined)normalizedChrome=normalizeChrome(document.pageChrome);
+    let last=-1;
+    if(document.pageMasters!==undefined){
+      if(!Array.isArray(document.pageMasters)||document.pageMasters.length<1 || document.pageMasters.length>16)
+        throw new TypeError('pageMasters requires 1..16 sections');
+      masters=document.pageMasters.map(entry=>{
+        if(!entry||!Number.isInteger(entry.startBlock)||entry.startBlock<0||
+           entry.startBlock>=blocks.length||entry.startBlock<=last||
+           (entry.startBlock>0&&blocks[entry.startBlock-1]?.kind!=='page-break'))
+          throw new TypeError('pageMasters must start at increasing page boundaries');
+        last=entry.startBlock;
+        return {startBlock:entry.startBlock,chrome:normalizeChrome(entry.pageChrome)};
+      });
     }
   }
   return [document.title,blocks,
     font instanceof native.NativeFont?font:prepareFont(font),
-    page,assets,normalizedChrome];
+    page,assets,normalizedChrome,masters];
 }
 
 /** Synchronous native render. Blocks the Node.js event loop until the PDF is ready. */
@@ -738,11 +752,11 @@ export async function renderPdfAsyncMeasured(
   signal?.addEventListener('abort', cancel, { once: true });
   try {
     if (signal?.aborted) token.cancel();
-    const [title,blocks,regular,page,faces,chrome]=args;
+    const [title,blocks,regular,page,faces,chrome,masters]=args;
     let nativePromise:Promise<{pdf:Uint8Array;renderMs:number}>;
     try {
       nativePromise=native.renderPdfAsyncNative(
-        title,blocks,regular,page,token,faces,chrome
+        title,blocks,regular,page,token,faces,chrome,masters
       );
     } finally {
       // NAPI snapshots image/font Arcs synchronously before returning AsyncTask.

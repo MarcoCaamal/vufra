@@ -1,8 +1,8 @@
 //! Rendering of ordered, styled blocks with configurable page geometry.
 use super::check_cancel;
 use super::{
-    MAX_FONT_BYTES, MAX_TOTAL_TEXT_BYTES, PageGeometry, PdfBlock, PdfPageChrome, RenderError,
-    RenderOptions, TextStyle,
+    MAX_FONT_BYTES, MAX_TOTAL_TEXT_BYTES, PageGeometry, PdfBlock, PdfPageChrome, PdfPageMaster,
+    RenderError, RenderOptions, TextStyle,
     image::{MAX_IMAGE_BLOCKS, MAX_TOTAL_IMAGE_BYTES, MAX_TOTAL_IMAGE_PIXELS, PreparedImage},
     measure_text_lines,
     rich_text::{FontRegistry, PdfFontFace, RichLine, prepare_rich},
@@ -55,6 +55,7 @@ fn validate_semantic_input(
     canonical: &[ContentNode],
     font: &[u8],
     chrome: Option<&PdfPageChrome>,
+    masters: &[PdfPageMaster],
 ) -> Result<(), RenderError> {
     if title.trim().is_empty() || title.contains('\0') {
         return Err(RenderError::InvalidInput(
@@ -77,7 +78,21 @@ fn validate_semantic_input(
             return Err(RenderError::InvalidInput("too many rows or too much text"));
         }
     }
-    if let Some(chrome) = chrome {
+    if masters.len() > 16 {
+        return Err(RenderError::InvalidInput("too many page masters"));
+    }
+    for (i, master) in masters.iter().enumerate() {
+        if master.start_block >= canonical.len()
+            || (i > 0 && masters[i - 1].start_block >= master.start_block)
+            || (master.start_block > 0
+                && !matches!(canonical[master.start_block - 1], ContentNode::PageBreak))
+        {
+            return Err(RenderError::InvalidInput(
+                "page masters must start at increasing page breaks",
+            ));
+        }
+    }
+    for chrome in chrome.into_iter().chain(masters.iter().map(|m| &m.chrome)) {
         for row in [
             &chrome.header,
             &chrome.footer,
@@ -149,13 +164,14 @@ pub(crate) fn render_semantic_flow(
     geometry: PageGeometry,
     extra_fonts: Vec<PdfFontFace>,
     chrome: Option<&PdfPageChrome>,
+    masters: &[PdfPageMaster],
     cancel: &AtomicBool,
 ) -> Result<Vec<u8>, RenderError> {
     check_cancel(cancel)?;
     geometry.validate()?;
     // Preflight the canonical tree before consuming it. This keeps one
     // ownership path from NAPI to the painter without cloning image buffers.
-    validate_semantic_input(title, &canonical, &font_bytes, chrome)?;
+    validate_semantic_input(title, &canonical, &font_bytes, chrome, masters)?;
     let writer = canonical
         .into_iter()
         .map(PdfBlock::try_from)
@@ -169,6 +185,7 @@ pub(crate) fn render_semantic_flow(
         geometry,
         extra_fonts,
         chrome,
+        masters,
         cancel,
     )
 }
@@ -182,6 +199,7 @@ fn render_writer_flow(
     mut geometry: PageGeometry,
     extra_fonts: Vec<PdfFontFace>,
     chrome: Option<&PdfPageChrome>,
+    masters: &[PdfPageMaster],
     cancel: &AtomicBool,
 ) -> Result<Vec<u8>, RenderError> {
     // One font payload is shared between Krilla, Parley and glyph coverage.
@@ -217,6 +235,7 @@ fn render_writer_flow(
 
     // Do not allocate duplicate font contexts for documents without rich text.
     let mut font_registry = if chrome.is_some()
+        || !masters.is_empty()
         || !extra_fonts.is_empty()
         || blocks.iter().any(|b| {
             matches!(
@@ -228,20 +247,24 @@ fn render_writer_flow(
     } else {
         None
     };
-    if let Some(chrome) = chrome {
-        geometry = chrome.reserve(
-            geometry,
+    let base_geometry = geometry;
+    for current in chrome.into_iter().chain(masters.iter().map(|m| &m.chrome)) {
+        let measured = current.reserve(
+            base_geometry,
             &family,
             &mut fonts,
             &mut context,
             font_registry.as_mut().expect("chrome needs font registry"),
             cancel,
         )?;
+        geometry.margin_top = geometry.margin_top.max(measured.margin_top);
+        geometry.margin_bottom = geometry.margin_bottom.max(measured.margin_bottom);
     }
+    geometry.validate()?;
     let mut prepared = Vec::with_capacity(blocks.len());
     let mut measurements = Vec::with_capacity(blocks.len());
     let mut total_image_pixels = 0u64;
-    if let Some(c) = chrome {
+    for c in chrome.into_iter().chain(masters.iter().map(|m| &m.chrome)) {
         for row in [
             &c.header,
             &c.footer,
@@ -508,14 +531,30 @@ fn render_writer_flow(
     let pages = paginate_flow_with_keep(&measurements, &keeps, geometry.content_height())
         .map_err(RenderError::InvalidLayout)?;
     let mut output = KrillaDocument::new();
+    let mut last_body_block = 0usize;
     for (index, plan) in pages.iter().enumerate() {
         check_cancel(cancel)?;
+        if let Some(first_fragment) = plan.fragments.first() {
+            last_body_block = match first_fragment {
+                FlowFragment::Box { block, .. }
+                | FlowFragment::Graphic { block, .. }
+                | FlowFragment::Image { block, .. }
+                | FlowFragment::Spacer { block, .. }
+                | FlowFragment::Paragraph { block, .. } => *block,
+            };
+        }
+        let active = masters
+            .iter()
+            .rev()
+            .find(|master| master.start_block <= last_body_block)
+            .map(|master| &master.chrome)
+            .or(chrome);
         let settings = PageSettings::from_wh(geometry.width, geometry.height)
             .ok_or(RenderError::InvalidInput("invalid paper size"))?;
         let mut page = output.start_page_with(settings);
         let mut surface = page.surface();
         let left = geometry.margin_left;
-        if chrome.is_none_or(|c| c.should_draw_default_header(index)) {
+        if active.is_none_or(|c| c.should_draw_default_header(index)) {
             surface.draw_text(
                 Point::from_xy(left, geometry.margin_top - 69.0),
                 font.clone(),
@@ -533,7 +572,7 @@ fn render_writer_flow(
                 TextDirection::Auto,
             );
         }
-        if chrome.is_none_or(|c| c.should_draw_default_footer(index)) {
+        if active.is_none_or(|c| c.should_draw_default_footer(index)) {
             surface.draw_text(
                 Point::from_xy(left, geometry.height - geometry.margin_bottom * 0.4),
                 font.clone(),
@@ -543,7 +582,7 @@ fn render_writer_flow(
                 TextDirection::Auto,
             );
         }
-        if let Some(chrome) = chrome {
+        if let Some(chrome) = active {
             chrome.draw(
                 index,
                 pages.len(),
@@ -727,6 +766,43 @@ fn render_writer_flow(
         .map_err(|e| RenderError::InvalidPdf(format!("{e:?}")))
 }
 
+#[cfg(test)]
+mod section_master_tests {
+    use super::*;
+    #[test]
+    fn section_masters_require_monotone_page_break_boundaries() {
+        let canonical = vec![
+            ContentNode::paragraph("ONE"),
+            ContentNode::PageBreak,
+            ContentNode::paragraph("TWO"),
+            ContentNode::PageBreak,
+            ContentNode::paragraph("THREE"),
+        ];
+        let master = |start_block| PdfPageMaster {
+            start_block,
+            chrome: PdfPageChrome::default(),
+        };
+        assert!(
+            validate_semantic_input(
+                "Test",
+                &canonical,
+                &[42],
+                None,
+                &[master(0), master(2), master(4)]
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_semantic_input("Test", &canonical, &[42], None, &[master(0), master(3)])
+                .is_err()
+        );
+        assert!(
+            validate_semantic_input("Test", &canonical, &[42], None, &[master(2), master(2)])
+                .is_err()
+        );
+        assert!(validate_semantic_input("Test", &canonical, &[42], None, &[master(99)]).is_err());
+    }
+}
 #[cfg(test)]
 mod owned_font_tests {
     use super::*;

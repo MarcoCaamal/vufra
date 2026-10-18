@@ -104,7 +104,11 @@ export interface StyledTableOptions {
   /** Repeated on continuation pages. Always true in Unit18. */
   repeatHeader?: true;
 }
-export interface RowOptions { gap?: number }
+export interface RowOptions {
+  gap?:number;
+  /** Spread unused width across real column gaps; requires explicit widths. */
+  justify?:'start'|'space-between';
+}
 export interface ColumnOptions {
   width?: number | `${number}%` | '*';
   align?: 'left' | 'center' | 'right';
@@ -140,6 +144,11 @@ export interface BarChartOptions {
 }
 export interface ImageOptions { width:number; height:number; fit?: 'contain'|'cover' }
 export interface DividerOptions {height?:number;color?:string;width?:number}
+/** A separate running-band composition selected at a physical page boundary. */
+export type PageMasterOptions = Partial<Record<
+  'header'|'footer'|'oddHeader'|'evenHeader'|'oddFooter'|'evenFooter',
+  ((band:PageBandScope)=>void)|null
+>>;
 export interface BoxOptions {
   /** Named box style from theme.presets.box, local options override. */
   preset?:string;
@@ -615,13 +624,16 @@ class RowScope {
     this.entries.push({options,items:col.items});
     return this;
   }
-  finish(printableWidth:number,gap:number):PdfRow {
+  finish(printableWidth:number,gap:number,justify:RowOptions['justify']='start'):PdfRow {
     this.active=false;
     if(this.entries.length<1||this.entries.length>6)fail('row needs between 1 and 6 columns');
     const usable=printableWidth-gap*(this.entries.length-1);
     const defined=this.entries.map(e=>buildColumnWidth(e.options.width,usable));
     const fixed=defined.reduce<number>((sum,w)=>sum+(w??0),0);
     const autoCount=defined.filter(w=>w===null).length;
+    if(!['start','space-between'].includes(justify??'start'))fail('row.justify must be start or space-between');
+    if(justify==='space-between'&&(autoCount>0||this.entries.length<2))
+      fail('space-between requires at least two explicitly sized columns');
     const auto=autoCount?(usable-fixed)/autoCount:0;
     const cols:PdfRowColumn[]=this.entries.map((e,i)=>{
       const width=defined[i]??auto;
@@ -638,6 +650,12 @@ class RowScope {
     if(cols.some(c=>!validNumber(c.width)||c.width<60) ||
       cols.reduce((a,c)=>a+c.width,0)+gap*(cols.length-1)>printableWidth+0.02){
       fail('row columns do not fit printable width (each column needs >=60pt)');
+    }
+    if(justify==='space-between'){
+      const remainder=printableWidth-cols.reduce((sum,col)=>sum+col.width,0);
+      const distributed=remainder/(cols.length-1);
+      if(distributed>80)fail('row space-between gap exceeds native 80pt limit');
+      return {gap:distributed,columns:cols};
     }
     return {gap,columns:cols};
   }
@@ -1154,7 +1172,7 @@ export class ContentBuilder {
     let result:PdfRow;
     try{
       requireSyncResult(cb(row));
-      result=row.finish(this.width,gap);
+      result=row.finish(this.width,gap,options.justify);
     } finally {row.close();}
     return this.append({type:'row',row:result});
   }
@@ -1195,7 +1213,8 @@ export class DocumentBuilder {
   private constructor(private readonly ctx:BuilderContext,
     private readonly blocks:readonly PdfBlock[],
     private readonly chrome:PdfPageChrome={},
-    private readonly pendingCoverBreak=false){}
+    private readonly pendingCoverBreak=false,
+    private readonly masters:readonly {startBlock:number;pageChrome:PdfPageChrome}[]=[]){}
   static create(config:BuilderContext):DocumentBuilder{return new DocumentBuilder(config,[]);}
   private append(f:(scope:ContentBuilder)=>void):DocumentBuilder{
     const scope=new ContentBuilder(this.ctx);
@@ -1205,7 +1224,7 @@ export class DocumentBuilder {
     const previous=this.pendingCoverBreak
       ? [...this.blocks,{type:'page-break' as const}]:this.blocks;
     return new DocumentBuilder(this.ctx,[...previous,...structuredClone(scope.blocks)],
-      this.chrome);
+      this.chrome,false,this.masters);
   }
   private withBand(
     name:'header'|'footer'|'firstHeader'|'firstFooter'|'oddHeader'|'evenHeader'|'oddFooter'|'evenFooter',
@@ -1226,7 +1245,7 @@ export class DocumentBuilder {
       finally{scope.close();}
       chrome[hideName]=false;
     }
-    return new DocumentBuilder(this.ctx,this.blocks,chrome,this.pendingCoverBreak);
+    return new DocumentBuilder(this.ctx,this.blocks,chrome,this.pendingCoverBreak,this.masters);
   }
   /** Define a repeating header, or pass null to hide the default header. */
   header(callback:((scope:PageBandScope)=>void)|null):DocumentBuilder{
@@ -1263,7 +1282,44 @@ export class DocumentBuilder {
     if(typeof callback!=='function')fail('coverPage requires a synchronous content callback');
     const framed=this.box({...options,keepTogether:true},callback)
       .firstHeader(null).firstFooter(null);
-    return new DocumentBuilder(this.ctx,framed.blocks,framed.chrome,true);
+    return new DocumentBuilder(this.ctx,framed.blocks,framed.chrome,true,this.masters);
+  }
+  /** Begin a physical page section with its own header/footer master.
+   * Per-section masters override the current base chrome; firstHeader remains
+   * document-first only, while parity counts across the complete PDF.
+   */
+  pageSection(options:PageMasterOptions,callback:(content:ContentBuilder)=>void):DocumentBuilder{
+    if(!options||!plainObject(options)||typeof callback!=='function')
+      fail('pageSection requires band options and synchronous content callback');
+    const keys=['header','footer','oddHeader','evenHeader','oddFooter','evenFooter'] as const;
+    if(Object.keys(options).some(k=>!keys.includes(k as typeof keys[number])))
+      fail('pageSection only supports header/footer and odd/even bands');
+    const nextChrome:PdfPageChrome=structuredClone(this.chrome);
+    // Continue the last section's master unless this is the first section.
+    if(this.masters.length)Object.assign(nextChrome,structuredClone(this.masters.at(-1)!.pageChrome));
+    for(const name of keys){
+      const cb=options[name];
+      if(cb===undefined)continue;
+      const hideName=({header:'hideHeader',footer:'hideFooter',
+        oddHeader:'hideOddHeader',evenHeader:'hideEvenHeader',
+        oddFooter:'hideOddFooter',evenFooter:'hideEvenFooter'} as const)[name];
+      if(cb===null){delete nextChrome[name];nextChrome[hideName]=true;continue;}
+      if(typeof cb!=='function')fail('pageSection bands require a callback or null');
+      const band=new PageBandScope(this.ctx);
+      try{requireSyncResult(cb(band));nextChrome[name]=structuredClone(band.finish());}
+      finally{band.close();}
+      nextChrome[hideName]=false;
+    }
+    const scope=new ContentBuilder(this.ctx);
+    try{requireSyncResult(callback(scope));}finally{scope.close();}
+    if(!scope.blocks.length)fail('pageSection must have content');
+    const breakBefore=(this.blocks.length>0||this.pendingCoverBreak) &&
+      this.blocks.at(-1)?.type!=='page-break';
+    const blocks=[...this.blocks,...(breakBefore?[{type:'page-break' as const}]:[]),
+      ...structuredClone(scope.blocks)];
+    const startBlock=this.blocks.length+(breakBefore?1:0);
+    return new DocumentBuilder(this.ctx,blocks,this.chrome,false,
+      [...this.masters,{startBlock,pageChrome:nextChrome}]);
   }
   /** Reuse one or many functional nodes while retaining the immutable fluent chain. */
   add(children:VufraChildren):DocumentBuilder{
@@ -1324,7 +1380,8 @@ export class DocumentBuilder {
   private renderInput():PdfDocument {
     return {title:this.ctx.title,blocks:this.blocks as PdfBlock[],
       page:this.ctx.page,fontFaces:this.ctx.fonts,
-      ...(Object.keys(this.chrome).length?{pageChrome:this.chrome}:{})};
+      ...(Object.keys(this.chrome).length?{pageChrome:this.chrome}:{}),
+      ...(this.masters.length?{pageMasters:this.masters.map(m=>structuredClone(m))}:{})};
   }
   /** Deep snapshot for inspection or mutation without changing the builder. */
   toDocument():PdfDocument {

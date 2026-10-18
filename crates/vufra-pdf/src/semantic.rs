@@ -497,6 +497,7 @@ pub struct SemanticDocument {
     pub page: Option<crate::PageGeometry>,
     pub fonts: Vec<crate::PdfFontFace>,
     pub chrome: Option<crate::PdfPageChrome>,
+    pub page_masters: Vec<crate::PdfPageMaster>,
 }
 impl SemanticDocument {
     pub fn new(title: impl Into<String>) -> Self {
@@ -506,6 +507,7 @@ impl SemanticDocument {
             page: None,
             fonts: Vec::new(),
             chrome: None,
+            page_masters: Vec::new(),
         }
     }
 }
