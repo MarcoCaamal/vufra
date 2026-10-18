@@ -514,3 +514,29 @@ node examples/fluent-rounded-dashboard.mjs REGULAR.ttf BOLD.ttf artifacts/fluent
 
 El ejemplo muestra 9 tarjetas y 165 registros en 11 páginas.
 Ver [ADR-0038](docs/adr/0038-page-aware-rounded-boxes.md).
+
+## Unidad 38 — Alineación y padding de tablas
+
+Las tablas admiten `align: 'left'|'center'|'right'` y
+`verticalAlign: 'top'|'center'|'bottom'`, y padding por tabla, columna o celda.
+Las celdas heredan únicamente los lados no especificados:
+
+```ts
+doc.table([
+  ['Servicio', {text:'3',align:'center'}, {text:'$980',padding:{right:16}}]
+], {
+  padding:{top:8,bottom:8,left:10,right:10},
+  verticalAlign:'center',
+  columns:[
+    {title:'Concepto',width:'50%'},
+    {title:'Cantidad',width:'20%',align:'center'},
+    {title:'Importe',width:'30%',align:'right'}
+  ]
+});
+```
+
+`examples/fluent-table-cells.mjs` genera un estado de cuenta real con
+contenido rich, fondos, celdas centradas y padding por lado. Las filas largas
+conservan padding horizontal al paginar; el vertical se aplica una vez en los
+bordes reales de cada fila, no repetido en cada página. Véase
+[ADR-0039](docs/adr/0039-table-cell-padding-and-alignment.md).

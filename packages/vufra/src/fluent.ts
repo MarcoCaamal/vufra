@@ -54,6 +54,9 @@ export interface HeadingOptions extends VufraStyle {
 /** Tokens resolved by Rust once the final page count is known; not JS per-page callbacks. */
 export interface PageNumberTokens { page: string; total: string }
 export type PageBandText = string | ((tokens:PageNumberTokens)=>string);
+/** Padding is expressed in PDF points. Missing sides inherit from the broader scope. */
+export type CellPadding = number | Partial<{top:number;right:number;bottom:number;left:number}>;
+export type CellVerticalAlign = 'top' | 'center' | 'bottom';
 /** A table cell may carry a full sequence of spans with genuine embedded fonts. */
 export type StyledTableCell = string | number | {
   /** Cell content: choose text, rich runs or a raster image. */
@@ -68,17 +71,23 @@ export type StyledTableCell = string | number | {
   color?: string;
   fontSize?: number;
   background?: string;
-  align?: 'left'|'right';
+  align?: 'left'|'center'|'right';
+  verticalAlign?: CellVerticalAlign;
+  padding?: CellPadding;
 };
 export interface StyledTableColumn {
   title: string;
   width?: number | '*' | `${number}%`;
-  align?: 'left' | 'right';
+  align?: 'left' | 'center' | 'right';
+  verticalAlign?: CellVerticalAlign;
+  padding?: CellPadding;
   background?: string;
   color?: string;
 }
 export interface StyledTableOptions {
   columns: StyledTableColumn[];
+  padding?: CellPadding;
+  verticalAlign?: CellVerticalAlign;
   /** Repeated on continuation pages. Always true in Unit18. */
   repeatHeader?: true;
 }
@@ -666,11 +675,30 @@ export class PageBandScope {
   }
 }
 
+function cellPadding(base:{top:number;right:number;bottom:number;left:number},
+    option:CellPadding|undefined):{top:number;right:number;bottom:number;left:number}{
+  if(option===undefined)return {...base};
+  const source=typeof option==='number'?{top:option,right:option,bottom:option,left:option}:option;
+  if(!plainObject(source))fail('table padding requires a number or side values');
+  if(Object.keys(source).some(k=>!['top','right','bottom','left'].includes(k)))
+    fail('invalid table padding side');
+  const result={...base,...source};
+  if(Object.values(result).some(x=>!validNumber(x)||x<0||x>40))
+    fail('table padding sides must be between 0 and 40pt');
+  return result;
+}
+function verticalAlign(value:CellVerticalAlign|undefined):CellVerticalAlign{
+  if(value!==undefined && !['top','center','bottom'].includes(value))
+    fail('table verticalAlign must be top, center or bottom');
+  return value??'top';
+}
 function styledTable(
   ctx:BuilderContext, innerWidth:number, rows:readonly (readonly StyledTableCell[])[],
   options:StyledTableOptions
 ):PdfBoxTable {
   const columns=options?.columns;
+  const tablePadding=cellPadding({top:5,right:0,bottom:5,left:0},options?.padding);
+  const defaultVertical=verticalAlign(options?.verticalAlign);
   if(!Array.isArray(columns)||columns.length<1||columns.length>6 ||
      (options.repeatHeader!==undefined&&options.repeatHeader!==true)) {
     fail('styled table requires 1..6 columns and repeatHeader true');
@@ -689,9 +717,10 @@ function styledTable(
     fail('styled table columns exceed available width or need 60pt minimum');
   }
   if(columns.some(c=>!c || typeof c.title!=='string'||!c.title.trim() ||
-    (c.align!==undefined && !['left','right'].includes(c.align)))){
+    (c.align!==undefined && !['left','center','right'].includes(c.align)))){
     fail('styled table column requires a title and valid align');
   }
+  columns.forEach(c=>{cellPadding(tablePadding,c.padding);verticalAlign(c.verticalAlign);});
   const fills:(string|undefined)[][]=[];
   const line=(cells:readonly StyledTableCell[], rowIndex:number)=>{
     if(!Array.isArray(cells)||cells.length!==columns.length) {
@@ -700,10 +729,13 @@ function styledTable(
     const backgrounds:(string|undefined)[]=[];
     const cols:PdfRow['columns']=cells.map((entry,i)=>{
       const data=typeof entry==='number'||typeof entry==='string'?{text:String(entry)}:entry;
-      if(!data || !plainObject(data) || (data.align!==undefined&&!['left','right'].includes(data.align as string))){
+      if(!data || !plainObject(data) || (data.align!==undefined&&!['left','center','right'].includes(data.align as string))){
         fail('invalid styled table cell');
       }
       const value=data as Exclude<StyledTableCell,string|number>;
+      const padding=cellPadding(cellPadding(tablePadding,columns[i].padding),value.padding);
+      const valign=verticalAlign(value.verticalAlign??columns[i].verticalAlign??defaultVertical);
+      if(padding.left+padding.right>widths[i]-12)fail('table cell padding exceeds inner width');
       const color=value.color??(rowIndex===0?columns[i].color:undefined);
       if(value.image!==undefined && (value.text!==undefined||value.runs!==undefined)) {
         fail('styled table cell image cannot combine with text or runs');
@@ -712,7 +744,7 @@ function styledTable(
         ? (()=>{
           if(!(value.image instanceof Uint8Array) || !validNumber(value.width) ||
              !validNumber(value.height) || value.width<=0 || value.height<=0 ||
-             value.width>widths[i] || (value.fit!==undefined&&!['contain','cover'].includes(value.fit))){
+             value.width>widths[i]-padding.left-padding.right || (value.fit!==undefined&&!['contain','cover'].includes(value.fit))){
             fail('invalid styled table cell image or dimensions');
           }
           return {type:'image' as const,data:value.image,width:value.width,
@@ -730,23 +762,25 @@ function styledTable(
               fontSize:r.fontSize};
           });
           return {type:'rich' as const,runs,style:{
-            fontSize:11,lineHeight:18,spaceBefore:5,spaceAfter:5
+            fontSize:11,lineHeight:18,spaceBefore:0,spaceAfter:0
           }};
         })()
         : asRowItemText(ctx,String(value.text??''),{
             bold:value.bold??(rowIndex===0&&Object.hasOwn(ctx.fonts,'bold')),
             font:value.font,
             color,fontSize:value.fontSize,
-            spaceBefore:5,spaceAfter:5,lineHeight:18
+            spaceBefore:0,spaceAfter:0,lineHeight:18
           });
       backgrounds.push(colorHex(value.background??(rowIndex===0?columns[i].background:undefined),ctx.theme));
-      return {width:widths[i],align:value.align??columns[i].align??'left',items:[cell]};
+      return {width:widths[i],align:value.align??columns[i].align??'left',
+        cell:{padding,verticalAlign:valign},items:[cell]};
     });
     fills.push(backgrounds);
     return {gap:0,columns:cols};
   };
   const head=line(columns.map(c=>({text:c.title,bold:Object.hasOwn(ctx.fonts,'bold'),
-    color:c.color,background:c.background,align:c.align})),0);
+    color:c.color,background:c.background,align:c.align,
+    padding:c.padding,verticalAlign:c.verticalAlign})),0);
   const body=rows.map((r,i)=>line(r,i+1));
   return {header:head,rows:body,fills};
 }

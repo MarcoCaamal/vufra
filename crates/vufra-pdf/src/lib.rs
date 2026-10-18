@@ -35,7 +35,7 @@ pub use box_layout::{BoxAlign, PdfBox, PdfBoxItem, PdfBoxTable};
 pub use graphic::{GraphicKind, PdfGraphic};
 pub use page_chrome::PdfPageChrome;
 pub use rich_text::{PdfFontFace, PdfTextRun};
-pub use row::{PdfRow, PdfRowColumn, PdfRowItem};
+pub use row::{CellPadding, CellVerticalAlign, PdfRow, PdfRowColumn, PdfRowItem, TableCellLayout};
 pub use semantic::{ContentColumn, ContentFrame, ContentNode, SemanticDocument, TextPresentation};
 mod style;
 pub use image::{ImageFit, MAX_IMAGE_BLOCKS, MAX_IMAGE_BYTES, MAX_TOTAL_IMAGE_BYTES, PdfImage};

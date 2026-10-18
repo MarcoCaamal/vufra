@@ -37,8 +37,9 @@ export type PdfRowItem =
   | { type: 'rule' | 'rectangle'; width: number; height: number; color?: string }
   | { type: 'spacer'; height: number };
 export interface PdfRowColumn {
+  cell?: {padding:{top:number;right:number;bottom:number;left:number};verticalAlign:'top'|'center'|'bottom'};
   width: number;
-  align?: 'left' | 'right';
+  align?: 'left' | 'center' | 'right';
   items: PdfRowItem[];
 }
 export interface PdfRow {
@@ -142,7 +143,9 @@ type NativeBlock = {
       image?:{data?:Uint8Array;assetId?:number;width:number;height:number;fit:'contain'|'cover'};
       graphic?:{kind:string;width:number;height:number;color:string}
     }>};
-  row?: {gap:number;columns:Array<{width:number;rightAlign:boolean;items:Array<{
+  row?: {gap:number;columns:Array<{width:number;rightAlign:boolean;
+    cell?:{centerAlign:boolean;verticalAlign:'top'|'center'|'bottom';
+      padding:{top:number;right:number;bottom:number;left:number}};items:Array<{
     kind:string;text?:string;style?:PdfTextStyle;height?:number;
     runs?:{text:string;font:string;fontSize?:number;color?:string;fallbackFonts?:string[]}[];
     image?: {data?:Uint8Array;assetId?:number;width:number;height:number;fit:'contain'|'cover'};
@@ -333,13 +336,21 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
         const columns=row.columns.map(col=>{
           if (!col || !Number.isFinite(col.width) || col.width<60 ||
               !Array.isArray(col.items) || col.items.length>50 ||
-              (col.align!==undefined && !['left','right'].includes(col.align))) {
+              (col.align!==undefined && !['left','center','right'].includes(col.align)) ||
+              (col.align==='center' && !col.cell)) {
             throw new TypeError('row columns require width >= 60, valid align and <=50 items');
           }
+          if(col.cell){
+            const p=col.cell.padding;
+            if(!p || !['top','center','bottom'].includes(col.cell.verticalAlign) ||
+              ![p.top,p.right,p.bottom,p.left].every(x=>Number.isFinite(x)&&x>=0&&x<=40) ||
+              p.left+p.right>col.width-12)throw new TypeError('invalid table cell padding or vertical alignment');
+          }
           totalWidth+=col.width;
+          const cellWidth=col.width-(col.cell?.padding.left??0)-(col.cell?.padding.right??0);
           const items=col.items.map(item=>{
             if(item?.type==='box'){
-              return {kind:'box',boxData:normalizeBox(item.box,col.width,printableHeight,depth+1)};
+              return {kind:'box',boxData:normalizeBox(item.box,cellWidth,printableHeight,depth+1)};
             }
             if(item?.type==='rich'){
               const nested=normalizeNestedRich(item.runs,item.style);
@@ -355,7 +366,7 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
               if(!(item.data instanceof Uint8Array) || item.data.length===0 ||
                   item.data.length>8*1024*1024 || !Number.isFinite(item.width) ||
                   !Number.isFinite(item.height) || item.width<=0 || item.height<=0 ||
-                  item.width>col.width || item.height>printableHeight ||
+                  item.width>cellWidth || item.height>printableHeight ||
                   !['contain','cover',undefined].includes(item.fit)) {
                 throw new TypeError('invalid row image format, data or dimensions');
               }
@@ -369,7 +380,7 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
             if(item?.type==='rule' || item?.type==='rectangle'){
               const color=item.color??'#333333';
               if(!Number.isFinite(item.width)||!Number.isFinite(item.height)||
-                item.width<=0||item.height<=0||item.width>col.width||
+                item.width<=0||item.height<=0||item.width>cellWidth||
                 item.height>printableHeight||(item.type==='rule'&&item.height>8)||
                 !/^#[0-9a-fA-F]{6}$/.test(color)) {
                 throw new TypeError('invalid row graphic dimensions or color');
@@ -379,7 +390,8 @@ function normalizePdf(document: PdfDocument, font: FontInput, preparedAssets?:Na
             }
             throw new TypeError('unsupported or invalid row column item');
           });
-          return {width:col.width,rightAlign:col.align==='right',items};
+          return {width:col.width,rightAlign:col.align==='right',
+            cell:col.cell?{...col.cell,centerAlign:col.align==='center'}:undefined,items};
         });
         if(totalWidth>printableWidth+0.02){
           throw new TypeError('row columns exceed printable width');

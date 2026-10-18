@@ -244,3 +244,17 @@ encabezados repetidos. `radius:0` conserva el dibujo anterior.
 
 Ejemplo: `examples/fluent-rounded-dashboard.mjs`.
 Detalles: ADR-0038.
+
+## Alineación y espacio interior de tablas
+
+La Fluent API permite controlar `align`, `verticalAlign` y `padding` en la tabla,
+la columna y cada celda. `align` admite `left`, `center`, `right`; `verticalAlign`
+admite `top`, `center`, `bottom`. `padding` puede ser un número (todos los lados)
+o un objeto parcial de `{top,right,bottom,left}` expresados en puntos PDF.
+Cada lado hereda por separado del nivel superior; los valores predeterminados
+son 5pt arriba/abajo y 0 a los lados, evitando un cambio inesperado en los
+reportes preexistentes. El área interior reserva por lo menos 12pt de ancho.
+El centro vertical se aplica en filas completas; en filas que cruzan páginas el
+contenido se alinea al inicio de cada fragmento.
+
+Ejemplo ejecutable: `examples/fluent-table-cells.mjs`.

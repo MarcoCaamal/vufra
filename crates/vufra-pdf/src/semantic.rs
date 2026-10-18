@@ -73,6 +73,7 @@ impl From<&PdfBox> for ContentFrame {
 pub struct ContentColumn {
     pub width: f32,
     pub right_align: bool,
+    pub cell: Option<crate::row::TableCellLayout>,
     pub children: Vec<ContentNode>,
 }
 impl ContentColumn {
@@ -80,6 +81,7 @@ impl ContentColumn {
         Self {
             width,
             right_align: false,
+            cell: None,
             children,
         }
     }
@@ -207,6 +209,7 @@ impl From<PdfRow> for ContentNode {
                 .map(|col| ContentColumn {
                     width: col.width,
                     right_align: col.right_align,
+                    cell: col.cell,
                     children: col.items.into_iter().map(Self::from).collect(),
                 })
                 .collect(),
@@ -330,6 +333,7 @@ fn row_from_parts(gap: f32, columns: Vec<ContentColumn>) -> Result<PdfRow, Rende
             Ok(PdfRowColumn {
                 width: c.width,
                 right_align: c.right_align,
+                cell: c.cell,
                 items: c
                     .children
                     .into_iter()
@@ -704,7 +708,17 @@ mod tests {
                 gap: 7.,
                 columns: vec![PdfRowColumn {
                     width: 150.,
-                    right_align: true,
+                    right_align: false,
+                    cell: Some(crate::TableCellLayout {
+                        center_align: true,
+                        vertical_align: crate::CellVerticalAlign::Bottom,
+                        padding: crate::CellPadding {
+                            top: 8.0,
+                            right: 9.0,
+                            bottom: 10.0,
+                            left: 11.0,
+                        },
+                    }),
                     items: vec![PdfRowItem::Text {
                         text: "HELLO".into(),
                         style,
@@ -728,7 +742,11 @@ mod tests {
             panic!("must remain row")
         };
         assert_eq!(r.gap, 7.);
-        assert!(r.columns[0].right_align);
+        let layout = r.columns[0].cell.expect("cell geometry survives owned AST");
+        assert!(layout.center_align);
+        assert_eq!(layout.vertical_align, crate::CellVerticalAlign::Bottom);
+        assert_eq!(layout.padding.left, 11.0);
+        assert_eq!(layout.padding.bottom, 10.0);
     }
     #[test]
     fn roundtrip_all_root_node_kinds_preserves_original_wire_semantics() {
@@ -782,6 +800,7 @@ mod tests {
                 columns: vec![PdfRowColumn {
                     width: 150.,
                     right_align: true,
+                    cell: None,
                     items: vec![PdfRowItem::Text {
                         text: "INNER".into(),
                         style,

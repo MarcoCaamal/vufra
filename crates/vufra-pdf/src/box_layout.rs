@@ -1136,6 +1136,7 @@ mod tests {
                     columns: vec![crate::PdfRowColumn {
                         width: 200.0,
                         right_align: false,
+                        cell: None,
                         items: vec![crate::PdfRowItem::Box(Box::new(child))],
                     }],
                 })],

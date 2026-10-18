@@ -62,9 +62,23 @@ pub struct NodeRowItem {
     pub graphic: Option<NodeGraphic>,
 }
 #[napi(object)]
+pub struct NodeCellPadding {
+    pub top: f64,
+    pub right: f64,
+    pub bottom: f64,
+    pub left: f64,
+}
+#[napi(object)]
+pub struct NodeCellLayout {
+    pub padding: NodeCellPadding,
+    pub center_align: bool,
+    pub vertical_align: String,
+}
+#[napi(object)]
 pub struct NodeRowColumn {
     pub width: f64,
     pub right_align: bool,
+    pub cell: Option<NodeCellLayout>,
     pub items: Vec<NodeRowItem>,
 }
 #[napi(object)]
@@ -394,6 +408,32 @@ fn to_row_depth(input: NodeRow, depth: usize, assets: &NativeAssets) -> napi::Re
             Ok(PdfRowColumn {
                 width: column.width as f32,
                 right_align: column.right_align,
+                cell: column
+                    .cell
+                    .map(|layout| {
+                        use vufra_pdf::{CellPadding, CellVerticalAlign, TableCellLayout};
+                        let vertical_align = match layout.vertical_align.as_str() {
+                            "top" => CellVerticalAlign::Top,
+                            "center" => CellVerticalAlign::Center,
+                            "bottom" => CellVerticalAlign::Bottom,
+                            _ => {
+                                return Err(napi::Error::from_reason(
+                                    "invalid cell vertical alignment",
+                                ));
+                            }
+                        };
+                        Ok(TableCellLayout {
+                            padding: CellPadding {
+                                top: layout.padding.top as f32,
+                                right: layout.padding.right as f32,
+                                bottom: layout.padding.bottom as f32,
+                                left: layout.padding.left as f32,
+                            },
+                            center_align: layout.center_align,
+                            vertical_align,
+                        })
+                    })
+                    .transpose()?,
                 items,
             })
         })

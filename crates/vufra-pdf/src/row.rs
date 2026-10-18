@@ -77,10 +77,44 @@ pub enum PdfRowItem {
     Graphic(PdfGraphic),
     Spacer(f32),
 }
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellPadding {
+    pub top: f32,
+    pub right: f32,
+    pub bottom: f32,
+    pub left: f32,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellVerticalAlign {
+    Top,
+    Center,
+    Bottom,
+}
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TableCellLayout {
+    pub padding: CellPadding,
+    pub center_align: bool,
+    pub vertical_align: CellVerticalAlign,
+}
+impl TableCellLayout {
+    fn validate(self, width: f32, page_height: f32) -> Result<(), RenderError> {
+        let p = self.padding;
+        if [p.top, p.right, p.bottom, p.left]
+            .iter()
+            .any(|v| !v.is_finite() || !(0.0..=40.0).contains(v))
+            || p.left + p.right > width - 12.0
+            || p.top + p.bottom >= page_height
+        {
+            return Err(RenderError::InvalidInput("invalid table cell padding"));
+        }
+        Ok(())
+    }
+}
 #[derive(Debug, Clone)]
 pub struct PdfRowColumn {
     pub width: f32,
     pub right_align: bool,
+    pub cell: Option<TableCellLayout>,
     pub items: Vec<PdfRowItem>,
 }
 #[derive(Debug, Clone)]
@@ -111,8 +145,10 @@ struct PreparedItem {
 }
 struct PreparedColumn {
     x: f32,
+    content_height: f32,
     width: f32,
     right_align: bool,
+    cell: Option<TableCellLayout>,
     items: Vec<PreparedItem>,
 }
 pub struct PreparedRow {
@@ -199,6 +235,7 @@ impl PdfRow {
             columns.push(PdfRowColumn {
                 width: source_col.width,
                 right_align: source_col.right_align,
+                cell: source_col.cell,
                 items: expanded,
             });
         }
@@ -210,22 +247,42 @@ impl PdfRow {
     fn assemble_fragment_columns(gap: f32, columns: Vec<PdfRowColumn>) -> PdfBox {
         let mut queues = columns
             .into_iter()
-            .map(|col| (col.width, col.right_align, VecDeque::from(col.items)))
+            .map(|col| {
+                (
+                    col.width,
+                    col.right_align,
+                    col.cell,
+                    VecDeque::from(col.items),
+                )
+            })
             .collect::<Vec<_>>();
         let len = queues
             .iter()
-            .map(|(_, _, items)| items.len())
+            .map(|(_, _, _, items)| items.len())
             .max()
             .unwrap_or(0);
         let items = (0..len)
-            .map(|_| {
+            .map(|index| {
                 PdfBoxItem::Row(PdfRow {
                     gap,
                     columns: queues
                         .iter_mut()
-                        .map(|(width, right_align, items)| PdfRowColumn {
+                        .map(|(width, right_align, cell, items)| PdfRowColumn {
                             width: *width,
                             right_align: *right_align,
+                            cell: cell.map(|layout| TableCellLayout {
+                                padding: CellPadding {
+                                    top: if index == 0 { layout.padding.top } else { 0.0 },
+                                    bottom: if index + 1 == len {
+                                        layout.padding.bottom
+                                    } else {
+                                        0.0
+                                    },
+                                    ..layout.padding
+                                },
+                                vertical_align: CellVerticalAlign::Top,
+                                ..layout
+                            }),
                             items: items.pop_front().into_iter().collect(),
                         })
                         .collect(),
@@ -279,6 +336,24 @@ impl PdfRow {
                 ));
             }
             sum += col.width;
+            let padding = col
+                .cell
+                .map(|layout| layout.padding)
+                .unwrap_or(CellPadding {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+            let inner_width = col.width - padding.left - padding.right;
+            if let Some(layout) = col.cell {
+                layout.validate(col.width, page_height)?;
+                if layout.center_align && col.right_align {
+                    return Err(RenderError::InvalidInput(
+                        "table cell cannot be both centered and right-aligned",
+                    ));
+                }
+            }
             for item in &col.items {
                 match item {
                     PdfRowItem::Text { text, style } => {
@@ -327,18 +402,27 @@ impl PdfRow {
                             return Err(RenderError::InvalidInput("invalid measured rich line"));
                         }
                     }
-                    PdfRowItem::Image(img) => img.validate_box(col.width, page_height)?,
+                    PdfRowItem::Image(img) => {
+                        img.validate_box(inner_width, page_height - padding.top - padding.bottom)?
+                    }
                     PdfRowItem::CachedImage(img) => {
-                        img.placement.validate_box(col.width, page_height)?;
+                        img.placement.validate_box(
+                            inner_width,
+                            page_height - padding.top - padding.bottom,
+                        )?;
                         if img.bitmap.pixel_count() > crate::image::MAX_IMAGE_PIXELS {
                             return Err(RenderError::InvalidInput("invalid cached image pixels"));
                         }
                     }
 
-                    PdfRowItem::Box(boxed) => {
-                        boxed.validate_depth(col.width, page_height, depth + 1)?
+                    PdfRowItem::Box(boxed) => boxed.validate_depth(
+                        inner_width,
+                        page_height - padding.top - padding.bottom,
+                        depth + 1,
+                    )?,
+                    PdfRowItem::Graphic(g) => {
+                        g.validate(inner_width, page_height - padding.top - padding.bottom)?
                     }
-                    PdfRowItem::Graphic(g) => g.validate(col.width, page_height)?,
                     PdfRowItem::Spacer(h) if !h.is_finite() || *h <= 0.0 || *h > page_height => {
                         return Err(RenderError::InvalidInput("invalid row spacer"));
                     }
@@ -412,31 +496,49 @@ impl PdfRow {
         for col in &self.columns {
             check_cancel(cancel)?;
             let mut items = Vec::new();
-            let mut y = 0.0;
+            let padding = col
+                .cell
+                .map(|layout| layout.padding)
+                .unwrap_or(CellPadding {
+                    top: 0.0,
+                    right: 0.0,
+                    bottom: 0.0,
+                    left: 0.0,
+                });
+            let content_width = col.width - padding.left - padding.right;
+            let mut y = padding.top;
             for item in &col.items {
                 check_cancel(cancel)?;
                 let (height, kind) = match item {
                     PdfRowItem::Text { text, style } => {
                         let lines = measure_text_lines(
                             text,
-                            col.width,
+                            content_width,
                             family,
                             fonts,
                             context,
                             style.font_size,
                             cancel,
                         )?;
-                        let offsets = if col.right_align {
-                            let mut positions = Vec::new();
-                            for line in &lines {
-                                let advance =
-                                    line_width(line, style.font_size, family, fonts, context)?;
-                                positions.push((col.width - advance).max(0.0));
-                            }
-                            positions
-                        } else {
-                            vec![0.0; lines.len()]
-                        };
+                        let offsets =
+                            if !col.right_align && !col.cell.is_some_and(|c| c.center_align) {
+                                vec![padding.left; lines.len()]
+                            } else {
+                                let mut positions = Vec::with_capacity(lines.len());
+                                for line in &lines {
+                                    let advance =
+                                        line_width(line, style.font_size, family, fonts, context)?;
+                                    positions.push(
+                                        padding.left
+                                            + if col.right_align {
+                                                (content_width - advance).max(0.0)
+                                            } else {
+                                                ((content_width - advance) / 2.0).max(0.0)
+                                            },
+                                    );
+                                }
+                                positions
+                            };
                         let h = style.space_before
                             + lines.len() as f32 * style.line_height
                             + style.space_after;
@@ -450,22 +552,29 @@ impl PdfRow {
                         )
                     }
                     PdfRowItem::RichText { runs, style } => {
-                        let lines = prepare_rich(runs, *style, col.width, registry, cancel)?;
+                        let lines = prepare_rich(runs, *style, content_width, registry, cancel)?;
                         let largest = runs
                             .iter()
                             .map(|r| r.font_size.unwrap_or(style.font_size))
                             .fold(style.font_size, f32::max);
                         let line_height = style.line_height.max(largest * 1.35);
-                        let offsets = if col.right_align {
-                            lines
-                                .iter()
-                                .map(|line| {
-                                    registry.line_width(line).map(|w| (col.width - w).max(0.0))
-                                })
-                                .collect::<Result<Vec<_>, _>>()?
-                        } else {
-                            vec![0.0; lines.len()]
-                        };
+                        let offsets =
+                            if !col.right_align && !col.cell.is_some_and(|c| c.center_align) {
+                                vec![padding.left; lines.len()]
+                            } else {
+                                lines
+                                    .iter()
+                                    .map(|line| {
+                                        let width = registry.line_width(line)?;
+                                        Ok(padding.left
+                                            + if col.right_align {
+                                                (content_width - width).max(0.0)
+                                            } else {
+                                                ((content_width - width) / 2.0).max(0.0)
+                                            })
+                                    })
+                                    .collect::<Result<Vec<_>, RenderError>>()?
+                            };
                         let h = style.space_before
                             + lines.len() as f32 * line_height
                             + style.space_after;
@@ -500,9 +609,9 @@ impl PdfRow {
                         let offset = if let Some(saved) = offset {
                             *saved
                         } else if col.right_align {
-                            (col.width - registry.line_width(line)?).max(0.0)
+                            padding.left + (content_width - registry.line_width(line)?).max(0.0)
                         } else {
-                            0.0
+                            padding.left
                         };
                         (
                             style.space_before + line_height + style.space_after,
@@ -528,7 +637,10 @@ impl PdfRow {
                     }
                     PdfRowItem::Box(boxed) => {
                         let prepared = boxed.prepare_depth(
-                            (col.width, printable_height),
+                            (
+                                content_width,
+                                printable_height - padding.top - padding.bottom,
+                            ),
                             family,
                             fonts,
                             context,
@@ -546,11 +658,13 @@ impl PdfRow {
                 items.push(PreparedItem { top: y, kind });
                 y += height;
             }
-            total_height = total_height.max(y);
+            total_height = total_height.max(y + padding.bottom);
             result.push(PreparedColumn {
                 x,
+                content_height: y + padding.bottom,
                 width: col.width,
                 right_align: col.right_align,
+                cell: col.cell,
                 items,
             });
             x += col.width + self.gap;
@@ -559,6 +673,21 @@ impl PdfRow {
             return Err(RenderError::InvalidInput(
                 "row needs at least one visible item",
             ));
+        }
+        for col in &mut result {
+            let extra = (total_height - col.content_height).max(0.0);
+            let shift = match col
+                .cell
+                .map(|cell| cell.vertical_align)
+                .unwrap_or(CellVerticalAlign::Top)
+            {
+                CellVerticalAlign::Top => 0.0,
+                CellVerticalAlign::Center => extra / 2.0,
+                CellVerticalAlign::Bottom => extra,
+            };
+            for item in &mut col.items {
+                item.top += shift;
+            }
         }
         Ok(PreparedRow {
             height: total_height,
@@ -648,11 +777,23 @@ impl PreparedRow {
                             _ => None,
                         };
                         if let Some(placement) = placement {
-                            let x = if col.right_align {
-                                left + col.x + col.width - placement.width
-                            } else {
-                                left + col.x
-                            };
+                            let p = col.cell.map(|c| c.padding).unwrap_or(CellPadding {
+                                top: 0.0,
+                                right: 0.0,
+                                bottom: 0.0,
+                                left: 0.0,
+                            });
+                            let usable = col.width - p.left - p.right;
+                            let x = left
+                                + col.x
+                                + p.left
+                                + if col.right_align {
+                                    (usable - placement.width).max(0.0)
+                                } else if col.cell.is_some_and(|c| c.center_align) {
+                                    ((usable - placement.width) / 2.0).max(0.0)
+                                } else {
+                                    0.0
+                                };
                             prepared.draw(surface, placement, x, position_y)?;
                         }
                     }
@@ -664,7 +805,9 @@ impl PreparedRow {
                                 font,
                                 registry,
                                 BoxFragmentPosition {
-                                    left: left + col.x,
+                                    left: left
+                                        + col.x
+                                        + col.cell.map_or(0.0, |cell| cell.padding.left),
                                     top: position_y,
                                     start: 0,
                                     end: prepared.item_heights.len(),
@@ -679,11 +822,23 @@ impl PreparedRow {
                     }
                     PreparedItemKind::Graphic => {
                         if let PdfRowItem::Graphic(g) = &row.columns[col_idx].items[item_idx] {
-                            let x = if col.right_align {
-                                left + col.x + col.width - g.width
-                            } else {
-                                left + col.x
-                            };
+                            let p = col.cell.map(|c| c.padding).unwrap_or(CellPadding {
+                                top: 0.0,
+                                right: 0.0,
+                                bottom: 0.0,
+                                left: 0.0,
+                            });
+                            let usable = col.width - p.left - p.right;
+                            let x = left
+                                + col.x
+                                + p.left
+                                + if col.right_align {
+                                    (usable - g.width).max(0.0)
+                                } else if col.cell.is_some_and(|c| c.center_align) {
+                                    ((usable - g.width) / 2.0).max(0.0)
+                                } else {
+                                    0.0
+                                };
                             g.draw(surface, x, position_y)?;
                         }
                     }
@@ -737,11 +892,13 @@ mod tests {
                     PdfRowColumn {
                         width: 180.0,
                         right_align: true,
+                        cell: None,
                         items: vec![PdfRowItem::Image(original)],
                     },
                     PdfRowColumn {
                         width: 180.0,
                         right_align: false,
+                        cell: None,
                         items: vec![PdfRowItem::Text {
                             text: "original long paragraph".into(),
                             style: TextStyle::paragraph(),
@@ -755,8 +912,10 @@ mod tests {
                 columns: vec![
                     PreparedColumn {
                         x: 0.0,
+                        content_height: 0.0,
                         width: 180.0,
                         right_align: true,
+                        cell: None,
                         items: vec![PreparedItem {
                             top: 0.0,
                             kind: PreparedItemKind::Image(Arc::clone(&bitmap)),
@@ -764,8 +923,10 @@ mod tests {
                     },
                     PreparedColumn {
                         x: 180.0,
+                        content_height: 0.0,
                         width: 180.0,
                         right_align: false,
+                        cell: None,
                         items: vec![PreparedItem {
                             top: 0.0,
                             kind: PreparedItemKind::Text {
@@ -822,6 +983,7 @@ mod tests {
                 PdfRowColumn {
                     width: 180.0,
                     right_align: true,
+                    cell: None,
                     items: vec![PdfRowItem::Text {
                         text: "source text".into(),
                         style,
@@ -830,6 +992,7 @@ mod tests {
                 PdfRowColumn {
                     width: 180.0,
                     right_align: true,
+                    cell: None,
                     items: vec![PdfRowItem::RichText {
                         runs: vec![PdfTextRun {
                             text: "source rich".into(),
@@ -849,8 +1012,10 @@ mod tests {
             columns: vec![
                 PreparedColumn {
                     x: 0.,
+                    content_height: 0.0,
                     width: 180.,
                     right_align: true,
+                    cell: None,
                     items: vec![PreparedItem {
                         top: 0.,
                         kind: PreparedItemKind::Text {
@@ -862,8 +1027,10 @@ mod tests {
                 },
                 PreparedColumn {
                     x: 192.,
+                    content_height: 0.0,
                     width: 180.,
                     right_align: true,
+                    cell: None,
                     items: vec![PreparedItem {
                         top: 0.,
                         kind: PreparedItemKind::Rich {
@@ -939,6 +1106,7 @@ mod tests {
                 PdfRowColumn {
                     width: 190.0,
                     right_align: false,
+                    cell: None,
                     items: vec![
                         PdfRowItem::Image(PdfImage {
                             data: Arc::new(image_bytes),
@@ -953,6 +1121,7 @@ mod tests {
                 PdfRowColumn {
                     width: 170.0,
                     right_align: true,
+                    cell: None,
                     items: vec![PdfRowItem::Spacer(5.0)],
                 },
             ],
@@ -986,6 +1155,73 @@ mod tests {
         ));
     }
     #[test]
+    fn table_cell_padding_geometry_is_validated_natively() {
+        let mut row = PdfRow {
+            gap: 0.0,
+            columns: vec![PdfRowColumn {
+                width: 100.0,
+                right_align: false,
+                cell: Some(TableCellLayout {
+                    padding: CellPadding {
+                        top: 8.0,
+                        right: 12.0,
+                        bottom: 6.0,
+                        left: 14.0,
+                    },
+                    center_align: true,
+                    vertical_align: CellVerticalAlign::Center,
+                }),
+                items: vec![PdfRowItem::Text {
+                    text: "CENTERED".into(),
+                    style: TextStyle::paragraph(),
+                }],
+            }],
+        };
+        assert!(row.validate_structure(100.0, 600.0).is_ok());
+        row.columns[0].cell.as_mut().unwrap().padding.left = 90.0;
+        assert!(row.validate_structure(100.0, 600.0).is_err());
+        row.columns[0].cell.as_mut().unwrap().padding.left = f32::NAN;
+        assert!(row.validate_structure(100.0, 600.0).is_err());
+    }
+    #[test]
+    fn fragment_padding_applies_only_to_first_and_last_synchronized_rows() {
+        let cell = TableCellLayout {
+            padding: CellPadding {
+                top: 13.0,
+                right: 9.0,
+                bottom: 17.0,
+                left: 7.0,
+            },
+            center_align: true,
+            vertical_align: CellVerticalAlign::Bottom,
+        };
+        let box_rows = PdfRow::assemble_fragment_columns(
+            0.0,
+            vec![PdfRowColumn {
+                width: 120.0,
+                right_align: false,
+                cell: Some(cell),
+                items: vec![
+                    PdfRowItem::Spacer(10.0),
+                    PdfRowItem::Spacer(12.0),
+                    PdfRowItem::Spacer(9.0),
+                ],
+            }],
+        );
+        assert_eq!(box_rows.items.len(), 3);
+        for (index, item) in box_rows.items.iter().enumerate() {
+            let PdfBoxItem::Row(row) = item else {
+                panic!("expected fragment row")
+            };
+            let layout = row.columns[0].cell.unwrap();
+            assert_eq!(layout.padding.left, 7.0);
+            assert_eq!(layout.padding.right, 9.0);
+            assert_eq!(layout.padding.top, if index == 0 { 13.0 } else { 0.0 });
+            assert_eq!(layout.padding.bottom, if index == 2 { 17.0 } else { 0.0 });
+            assert_eq!(layout.vertical_align, CellVerticalAlign::Top);
+        }
+    }
+    #[test]
     fn columns_validate_width_and_page_constraints() {
         let row = PdfRow {
             gap: 12.0,
@@ -993,6 +1229,7 @@ mod tests {
                 PdfRowColumn {
                     width: 230.0,
                     right_align: false,
+                    cell: None,
                     items: vec![PdfRowItem::Text {
                         text: "Company".into(),
                         style: TextStyle::paragraph(),
@@ -1001,6 +1238,7 @@ mod tests {
                 PdfRowColumn {
                     width: 255.0,
                     right_align: true,
+                    cell: None,
                     items: vec![PdfRowItem::Spacer(12.0)],
                 },
             ],
@@ -1021,6 +1259,7 @@ mod tests {
                 columns: vec![PdfRowColumn {
                     width: 50.0,
                     right_align: false,
+                    cell: None,
                     items: vec![]
                 }]
             }
@@ -1033,6 +1272,7 @@ mod tests {
                 columns: vec![PdfRowColumn {
                     width: 230.0,
                     right_align: false,
+                    cell: None,
                     items: vec![PdfRowItem::Spacer(700.0)]
                 }]
             }

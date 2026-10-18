@@ -191,6 +191,7 @@ mod tests {
             columns: vec![PdfRowColumn {
                 width: 250.0,
                 right_align: false,
+                cell: None,
                 items: vec![PdfRowItem::Text {
                     text: text.into(),
                     style: TextStyle::paragraph(),
